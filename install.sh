@@ -384,7 +384,7 @@ After=network.target
 
 [Service]
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/gost
+ExecStart=$INSTALL_DIR/gost -C /etc/gost/gost.json
 Restart=on-failure
 
 [Install]

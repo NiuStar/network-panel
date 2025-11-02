@@ -67,17 +67,9 @@ func desiredServices(nodeID int64) []map[string]any {
     for _, r := range rows {
         name := buildServiceName(r.ID, r.UserID, r.TunnelID)
         iface := preferIface(r.InterfaceName, r.TInterface)
-        if r.TType == 2 { // tunnel-forward
-            if r.OutNodeID != nil && *r.OutNodeID == nodeID && r.OutPort != nil {
-                svc := buildServiceConfig(name, *r.OutPort, r.RemoteAddr, iface)
-                services = append(services, svc)
-            }
-            if r.InNodeID == nodeID && r.OutPort != nil {
-                ip := getOutNodeIP(model.Tunnel{OutIP: r.OutIP, OutNodeID: r.OutNodeID})
-                target := safeHostPort(ip, *r.OutPort)
-                svc := buildServiceConfig(name, r.InPort, target, iface)
-                services = append(services, svc)
-            }
+        if r.TType == 2 {
+            // Do not compute desired services for tunnel-forward; these are managed at create/update time
+            continue
         } else {
             if r.InNodeID == nodeID {
                 svc := buildServiceConfig(name, r.InPort, r.RemoteAddr, iface)

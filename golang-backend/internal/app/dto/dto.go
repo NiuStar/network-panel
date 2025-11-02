@@ -92,6 +92,10 @@ type ForwardDto struct {
     RemoteAddr string  `json:"remoteAddr" binding:"required"`
     Strategy   *string `json:"strategy"`
     InterfaceName *string `json:"interfaceName"`
+    // optional SS tunnel parameters (for tunnel-forward)
+    SsPort     *int    `json:"ssPort"`
+    SsPassword *string `json:"ssPassword"`
+    SsMethod   *string `json:"ssMethod"`
 }
 
 type ForwardUpdateDto struct {
@@ -102,6 +106,10 @@ type ForwardUpdateDto struct {
     RemoteAddr string  `json:"remoteAddr"`
     Strategy   *string `json:"strategy"`
     InterfaceName *string `json:"interfaceName"`
+    // optional SS tunnel parameters
+    SsPort     *int    `json:"ssPort"`
+    SsPassword *string `json:"ssPassword"`
+    SsMethod   *string `json:"ssMethod"`
 }
 
 // Speed limit

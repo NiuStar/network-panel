@@ -5,6 +5,7 @@ import { Input } from "@heroui/input";
 import { Textarea } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
 import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter } from "@heroui/modal";
+import { Divider } from "@heroui/divider";
 import { Chip } from "@heroui/chip";
 import { Spinner } from "@heroui/spinner";
 import { Switch } from "@heroui/switch";
@@ -82,6 +83,10 @@ interface ForwardForm {
   remoteAddr: string;
   interfaceName?: string;
   strategy: string;
+  // optional SS tunnel params for tunnel-forward
+  ssPort?: number | null;
+  ssPassword?: string;
+  ssMethod?: string;
 }
 
 interface AddressItem {
@@ -194,7 +199,10 @@ export default function ForwardPage() {
     inPort: null,
     remoteAddr: '',
     interfaceName: '',
-    strategy: 'fifo'
+    strategy: 'fifo',
+    ssPort: null,
+    ssPassword: '',
+    ssMethod: 'AEAD_CHACHA20_POLY1305'
   });
   
   // 表单验证错误
@@ -544,7 +552,10 @@ export default function ForwardPage() {
           inPort: form.inPort,
           remoteAddr: processedRemoteAddr,
           interfaceName: form.interfaceName,
-          strategy: addressCount > 1 ? form.strategy : 'fifo'
+          strategy: addressCount > 1 ? form.strategy : 'fifo',
+          ssPort: form.ssPort || undefined,
+          ssPassword: form.ssPassword || undefined,
+          ssMethod: form.ssMethod || undefined,
         };
         res = await updateForward(updateData);
       } else {
@@ -555,7 +566,10 @@ export default function ForwardPage() {
           inPort: form.inPort,
           remoteAddr: processedRemoteAddr,
           interfaceName: form.interfaceName,
-          strategy: addressCount > 1 ? form.strategy : 'fifo'
+          strategy: addressCount > 1 ? form.strategy : 'fifo',
+          ssPort: form.ssPort || undefined,
+          ssPassword: form.ssPassword || undefined,
+          ssMethod: form.ssMethod || undefined,
         };
         res = await createForward(createData);
       }
@@ -1645,6 +1659,34 @@ export default function ForwardPage() {
                         <SelectItem key="hash" >哈希模式 - IP哈希</SelectItem>
                       </Select>
                     )}
+
+                    <Divider />
+                    <h3 className="text-base font-semibold">隧道(SS)参数（仅隧道转发生效）</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <Input
+                        label="SS 端口"
+                        type="number"
+                        placeholder="例如 10086"
+                        value={form.ssPort ? String(form.ssPort) : ''}
+                        onChange={(e) => setForm(prev => ({ ...prev, ssPort: e.target.value ? Number(e.target.value) : null }))}
+                        variant="bordered"
+                      />
+                      <Input
+                        label="SS 密码"
+                        placeholder="不少于6位"
+                        value={form.ssPassword || ''}
+                        onChange={(e) => setForm(prev => ({ ...prev, ssPassword: e.target.value }))}
+                        variant="bordered"
+                      />
+                      <Input
+                        label="SS 方法"
+                        placeholder="AEAD_CHACHA20_POLY1305"
+                        value={form.ssMethod || ''}
+                        onChange={(e) => setForm(prev => ({ ...prev, ssMethod: e.target.value }))}
+                        variant="bordered"
+                        description="默认 AEAD_CHACHA20_POLY1305"
+                      />
+                    </div>
                   </div>
                 </ModalBody>
                 <ModalFooter>

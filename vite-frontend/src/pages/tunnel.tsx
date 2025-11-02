@@ -19,7 +19,6 @@ import {
   getNodeList,
   diagnoseTunnelStep
 } from "@/api";
-import { setExitNode } from "@/api";
 
 interface Tunnel {
   id: number;
@@ -293,17 +292,7 @@ export default function TunnelPage() {
         
       if (response.code === 0) {
         toast.success(isEdit ? '更新成功' : '创建成功');
-        // 若为隧道转发且选择了出口节点，并填了端口/密码，则在出口节点上创建SS服务
-        if (form.type === 2 && form.outNodeId && exitPort && exitPassword) {
-          try {
-            const metadata: any = {};
-            exitMetaItems.forEach(it => { if (it.key && it.value) metadata[it.key] = it.value });
-            const r = await setExitNode({ nodeId: form.outNodeId, port: exitPort, password: exitPassword, method: exitMethod, observer: exitObserver, limiter: exitLimiter, rlimiter: exitRLimiter, metadata } as any);
-            if (r.code === 0) toast.success('出口SS服务已创建/更新'); else toast.error(r.msg || '出口SS创建失败');
-          } catch {
-            toast.error('出口SS创建失败');
-          }
-        }
+        // 入口/出口服务由转发创建时一并配置（forward.create/update 负责下发），此处不再直接创建SS
         setModalOpen(false);
         loadData();
       } else {

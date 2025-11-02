@@ -487,8 +487,8 @@ func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
 // --- gost.json helpers ---
 // prefer installed gost.json under /usr/local/gost, fallback to /etc/gost/gost.json
 var gostConfigPathCandidates = []string{
-    "/usr/local/gost/gost.json",
     "/etc/gost/gost.json",
+    "/usr/local/gost/gost.json",
     "./gost.json",
 }
 
@@ -499,7 +499,7 @@ func resolveGostConfigPathForRead() string {
         }
     }
     // default
-    return "/usr/local/gost/gost.json"
+    return "/etc/gost/gost.json"
 }
 
 func resolveGostConfigPathForWrite() string { return resolveGostConfigPathForRead() }
@@ -599,9 +599,57 @@ func portListening(port int) bool {
 // addOrUpdateServices merges provided services into gost.json services array.
 // If updateOnly is true, only update existing by name; otherwise upsert (add if missing).
 func addOrUpdateServices(services []map[string]any, updateOnly bool) error {
-	cfg := readGostConfig()
-	// ensure services array exists
-	arrAny, _ := cfg["services"].([]any)
+    cfg := readGostConfig()
+    // merge optional chains injected per-service under _chains (upsert by name)
+    chainsAny, _ := cfg["chains"].([]any)
+    chainIdx := map[string]int{}
+    for i, it := range chainsAny {
+        if m, ok := it.(map[string]any); ok {
+            if n, ok2 := m["name"].(string); ok2 && n != "" { chainIdx[n] = i }
+        }
+    }
+    for _, svc := range services {
+        if extra, ok := svc["_chains"]; ok {
+            if arr, ok2 := extra.([]any); ok2 {
+                for _, it := range arr {
+                    if m, ok3 := it.(map[string]any); ok3 {
+                        n, _ := m["name"].(string)
+                        if n == "" { continue }
+                        if i, ok4 := chainIdx[n]; ok4 { chainsAny[i] = m } else { chainsAny = append(chainsAny, m); chainIdx[n] = len(chainsAny)-1 }
+                    }
+                }
+            }
+            delete(svc, "_chains")
+        }
+        // fallback: if service references handler.chain but chain not present and no _chains provided, synthesize a simple chain
+        if h, ok := svc["handler"].(map[string]any); ok {
+            if cn, ok2 := h["chain"].(string); ok2 && cn != "" {
+                if _, exists := chainIdx[cn]; !exists {
+                    // try to extract a node addr from forwarder.nodes[0]
+                    addr := ""
+                    if fwd, ok3 := svc["forwarder"].(map[string]any); ok3 {
+                        if nodes, ok4 := fwd["nodes"].([]any); ok4 && len(nodes) > 0 {
+                            if n0, ok5 := nodes[0].(map[string]any); ok5 {
+                                if a, ok6 := n0["addr"].(string); ok6 { addr = a }
+                            }
+                        }
+                    }
+                    if addr != "" {
+                        c := map[string]any{
+                            "name": cn,
+                            "hops": []any{ map[string]any{ "name": cn + "_hop", "nodes": []any{ map[string]any{"name":"auto","addr": addr} } } },
+                        }
+                        chainsAny = append(chainsAny, c)
+                        chainIdx[cn] = len(chainsAny)-1
+                    }
+                }
+            }
+        }
+    }
+    if len(chainsAny) > 0 { cfg["chains"] = chainsAny }
+
+    // ensure services array exists
+    arrAny, _ := cfg["services"].([]any)
 	// build name -> index map
 	idx := map[string]int{}
 	for i, it := range arrAny {

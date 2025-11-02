@@ -74,8 +74,10 @@ interface DiagnosisResult {
     averageTime?: number;
     packetLoss?: number;
     reqId?: string;
+    bandwidthMbps?: number;  // 添加此属性
   }>;
 }
+
 
 export default function TunnelPage() {
   const [loading, setLoading] = useState(true);
@@ -1077,34 +1079,57 @@ export default function TunnelPage() {
                             </CardHeader>
                             <CardBody className="pt-0">
                               {result.success ? (
-                                <div className="space-y-3">
-                                  <div className="grid grid-cols-3 gap-4">
-                                    <div className="text-center">
-                                      <div className="text-2xl font-bold text-primary">{result.averageTime?.toFixed(0)}</div>
-                                      <div className="text-small text-default-500">平均延迟(ms)</div>
+                                (typeof result.bandwidthMbps === 'number') ? (
+                                  <div className="space-y-3">
+                                    <div className="grid grid-cols-3 gap-4">
+                                      <div className="text-center">
+                                        <div className="text-2xl font-bold text-primary">
+                                          {Number(result.bandwidthMbps).toFixed(2)}
+                                        </div>
+                                        <div className="text-small text-default-500">带宽(Mbps)</div>
+                                      </div>
                                     </div>
-                                    <div className="text-center">
-                                      <div className="text-2xl font-bold text-warning">{result.packetLoss?.toFixed(1)}</div>
-                                      <div className="text-small text-default-500">丢包率(%)</div>
+                                    <div className="text-small text-default-500">
+                                      目标地址: <code className="font-mono">{result.targetIp}{result.targetPort ? ':' + result.targetPort : ''}</code>
                                     </div>
-                                    <div className="text-center">
-                                      {quality && (
-                                        <>
-                                          <Chip color={quality.color as any} variant="flat" size="lg">
-                                            {quality.text}
-                                          </Chip>
-                                          <div className="text-small text-default-500 mt-1">连接质量</div>
-                                        </>
-                                      )}
-                                    </div>
+                                    {result.reqId && (
+                                      <div className="text-small text-default-400">reqId: <code className="font-mono">{result.reqId}</code></div>
+                                    )}
                                   </div>
-                                  <div className="text-small text-default-500">
-                                    目标地址: <code className="font-mono">{result.targetIp}{result.targetPort ? ':' + result.targetPort : ''}</code>
+                                ) : (
+                                  <div className="space-y-3">
+                                    <div className="grid grid-cols-3 gap-4">
+                                      <div className="text-center">
+                                        <div className="text-2xl font-bold text-primary">
+                                          {result.averageTime?.toFixed(0)}
+                                        </div>
+                                        <div className="text-small text-default-500">平均延迟(ms)</div>
+                                      </div>
+                                      <div className="text-center">
+                                        <div className="text-2xl font-bold text-warning">
+                                          {result.packetLoss?.toFixed(1)}
+                                        </div>
+                                        <div className="text-small text-default-500">丢包率(%)</div>
+                                      </div>
+                                      <div className="text-center">
+                                        {quality && (
+                                          <>
+                                            <Chip color={quality.color as any} variant="flat" size="lg">
+                                              {quality.text}
+                                            </Chip>
+                                            <div className="text-small text-default-500 mt-1">连接质量</div>
+                                          </>
+                                        )}
+                                      </div>
+                                    </div>
+                                    <div className="text-small text-default-500">
+                                      目标地址: <code className="font-mono">{result.targetIp}{result.targetPort ? ':' + result.targetPort : ''}</code>
+                                    </div>
+                                    {result.reqId && (
+                                      <div className="text-small text-default-400">reqId: <code className="font-mono">{result.reqId}</code></div>
+                                    )}
                                   </div>
-                                  {result.reqId && (
-                                    <div className="text-small text-default-400">reqId: <code className="font-mono">{result.reqId}</code></div>
-                                  )}
-                                </div>
+                                )
                               ) : (
                                 <div className="space-y-2">
                                   <div className="text-small text-default-500">
@@ -1122,6 +1147,7 @@ export default function TunnelPage() {
                                 </div>
                               )}
                             </CardBody>
+
                           </Card>
                         );
                       })}

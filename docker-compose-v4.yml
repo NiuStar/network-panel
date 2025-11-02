@@ -10,7 +10,6 @@ services:
       DB_PASSWORD: 123456
       JWT_SECRET: flux-panel-secret-yjkj02
       LOG_DIR: /app/logs
-      JAVA_OPTS: "-Xms256m -Xmx512m -Dfile.encoding=UTF-8 -Duser.timezone=Asia/Shanghai"
     ports:
       - "16365:6365"
     volumes:

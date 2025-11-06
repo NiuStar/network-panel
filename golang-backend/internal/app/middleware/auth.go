@@ -3,8 +3,8 @@ package middleware
 import (
 	"net/http"
 
-	"flux-panel/golang-backend/internal/app/response"
-	"flux-panel/golang-backend/internal/app/util"
+	"network-panel/golang-backend/internal/app/response"
+	"network-panel/golang-backend/internal/app/util"
 
 	"github.com/gin-gonic/gin"
 )

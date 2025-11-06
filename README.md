@@ -1,4 +1,4 @@
-# flux-panel 转发面板（哆啦A梦转发面板）
+# network-panel 转发面板（哆啦A梦转发面板）
 
 ## 更新记录
 - 2025-11-06 迁移页新增“真·进度条”，实时显示表级进度  \
@@ -22,7 +22,7 @@
 - 安全与可靠
     - 出入口认证使用稳定随机（用户名 u-ForwardID；密码 MD5 前 16 位）
     - IPv6 统一 `[addr]:port`
-    - 仅管理 `metadata.managedBy=flux-panel` 服务，不删除外部服务
+    - 仅管理 `metadata.managedBy=network-panel` 服务，不删除外部服务
 - 诊断与可观测
     - 节点在线/系统信息、链路诊断（ping/tcp/iperf3）
     - 节点服务状态查询（已部署/监听/端口）
@@ -55,7 +55,17 @@
 - 失败：展示错误原因并停止轮询；成功：进度 100% 并提示完成。
 
 注意：若以单文件后端二进制部署而没有前端静态资源，UI 将不可用。
-建议使用 Docker 镜像部署，或使用 `scripts/install_server.sh` 从源码构建（服务器有 Node/npm 时将自动构建前端并安装到 `public/`）。
+推荐一键安装脚本（默认 SQLite）：
+
+```
+curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/panel_install.sh -o panel_install.sh \
+  && bash panel_install.sh
+```
+
+说明：
+- 选择“二进制安装”时默认使用 SQLite（可自定义 `DB_SQLITE_PATH`）
+- 选择“Docker Compose 安装”时使用 MySQL（会创建 `network-panel/` 并启动 compose）
+- 如需手动安装，可使用 `scripts/install_server.sh`（服务器有 Node/npm 时将自动构建前端并安装到 `public/`）
 
 ---
 ## Agent 自升级
@@ -64,7 +74,7 @@
 - 升级流程：Agent 根据自身 CPU 架构从后端下载对应二进制 `/flux-agent/flux-agent-linux-<arch>`（容器内置 amd64/arm64/armv7），替换本地 `/etc/gost/flux-agent` 并 `systemctl restart flux-agent`。
 - 配置：
   - Docker：在运行容器时设置环境变量 `AGENT_VERSION` 即可控制目标版本。
-  - Systemd：使用 `scripts/install_server.sh` 安装时，`/etc/default/flux-panel` 中包含 `AGENT_VERSION` 项，可手动填写目标版本。
+  - Systemd：使用一键脚本或 `scripts/install_server.sh` 安装时，`/etc/default/network-panel` 中可设置 `AGENT_VERSION` 项。
   - 产物：Docker 镜像内置 `flux-agent-linux-amd64/arm64/armv7`，发布脚本 `scripts/build_flux_agent_all.sh` 会生成更多平台二进制以供手动替换到 `golang-backend/public/flux-agent/`。
 
 ---
@@ -81,7 +91,7 @@
     "auth": {"username": "u-<forwardID>", "password": "<stable-16char>"},
     "chain": "chain_<serviceName>"
   },
-  "metadata": {"managedBy": "flux-panel"}
+  "metadata": {"managedBy": "network-panel"}
 }
 ```
 
@@ -105,7 +115,7 @@
   "addr": ":<inPort>",
   "listener": {"type": "tcp"},
   "handler": {"type": "http", "chain": "chain_<serviceName>"},
-  "metadata": {"managedBy": "flux-panel"}
+  "metadata": {"managedBy": "network-panel"}
 }
 ```
 
@@ -145,4 +155,4 @@
 本项目仅供学习与研究使用，请在合法、合规前提下使用。作者不对使用本项目造成的任何直接或间接损失负责。
 
 ## 感谢
-- 来源：https://github.com/bqlpfy/flux-panel
+- 来源：https://github.com/bqlpfy/network-panel

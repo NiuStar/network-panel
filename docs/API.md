@@ -107,7 +107,7 @@ POST `/captcha/verify`
 POST `/agent/desired-services` 按节点 secret 返回期望服务（agent 拉取）
 POST `/agent/push-services`    推送服务（AddService）
 POST `/agent/reconcile`        简单对齐（仅新增）
-POST `/agent/remove-services`  删除服务（仅 managedBy=flux-panel）
+POST `/agent/remove-services`  删除服务（仅 managedBy=network-panel）
 POST `/agent/reconcile-node`   管理员手动触发对齐
 
 Agent WebSocket：`/system-info`（type=1 节点、type=0 管理端）

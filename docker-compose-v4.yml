@@ -1,14 +1,14 @@
 services:
   backend:
-    image: 24802117/flux-panel:latest
-    container_name: flux-panel
+    image: 24802117/network-panel:latest
+    container_name: network-panel
     restart: unless-stopped
     environment:
       DB_HOST: ip
       DB_NAME: panel
       DB_USER: root
       DB_PASSWORD: 123456
-      JWT_SECRET: flux-panel-secret-yjkj02
+      JWT_SECRET: network-panel-secret-yjkj02
       LOG_DIR: /app/logs
     ports:
       - "16365:6365"

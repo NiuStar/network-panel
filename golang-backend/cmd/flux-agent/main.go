@@ -557,7 +557,7 @@ func reconcile(addr, secret, scheme string) {
 						if n, ok := obj["name"].(string); ok && n != "" {
 							present[n] = struct{}{}
 							if meta, _ := obj["metadata"].(map[string]any); meta != nil {
-								if v, ok2 := meta["managedBy"].(string); ok2 && v == "flux-panel" {
+								if v, ok2 := meta["managedBy"].(string); ok2 && v == "network-panel" {
 									managed[n] = true
 								}
 							}

@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"flux-panel/golang-backend/internal/app/model"
-	apputil "flux-panel/golang-backend/internal/app/util"
-	dbpkg "flux-panel/golang-backend/internal/db"
 	"fmt"
+	"network-panel/golang-backend/internal/app/model"
+	apputil "network-panel/golang-backend/internal/app/util"
+	dbpkg "network-panel/golang-backend/internal/db"
 	"strings"
 
 	"os"

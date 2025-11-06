@@ -4,11 +4,11 @@ import (
 	"net/http"
 	"time"
 
-	"flux-panel/golang-backend/internal/app/dto"
-	"flux-panel/golang-backend/internal/app/model"
-	"flux-panel/golang-backend/internal/app/response"
-	dbpkg "flux-panel/golang-backend/internal/db"
 	"github.com/gin-gonic/gin"
+	"network-panel/golang-backend/internal/app/dto"
+	"network-panel/golang-backend/internal/app/model"
+	"network-panel/golang-backend/internal/app/response"
+	dbpkg "network-panel/golang-backend/internal/db"
 )
 
 // POST /api/v1/node/create
@@ -24,10 +24,10 @@ func NodeCreate(c *gin.Context) {
 	}
 	now := time.Now().UnixMilli()
 	status := 0
-    n := model.Node{BaseEntity: model.BaseEntity{CreatedTime: now, UpdatedTime: now, Status: &status}, Name: req.Name, IP: req.IP, ServerIP: req.ServerIP, PortSta: req.PortSta, PortEnd: req.PortEnd}
-    n.PriceCents = req.PriceCents
-    n.CycleDays = req.CycleDays
-    n.StartDateMs = req.StartDateMs
+	n := model.Node{BaseEntity: model.BaseEntity{CreatedTime: now, UpdatedTime: now, Status: &status}, Name: req.Name, IP: req.IP, ServerIP: req.ServerIP, PortSta: req.PortSta, PortEnd: req.PortEnd}
+	n.PriceCents = req.PriceCents
+	n.CycleDays = req.CycleDays
+	n.StartDateMs = req.StartDateMs
 	// simple secret
 	n.Secret = RandUUID()
 	if err := dbpkg.DB.Create(&n).Error; err != nil {
@@ -63,10 +63,16 @@ func NodeUpdate(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("端口范围无效"))
 		return
 	}
-    n.Name, n.IP, n.ServerIP, n.PortSta, n.PortEnd = req.Name, req.IP, req.ServerIP, req.PortSta, req.PortEnd
-    if req.PriceCents != nil { n.PriceCents = req.PriceCents }
-    if req.CycleDays != nil { n.CycleDays = req.CycleDays }
-    if req.StartDateMs != nil { n.StartDateMs = req.StartDateMs }
+	n.Name, n.IP, n.ServerIP, n.PortSta, n.PortEnd = req.Name, req.IP, req.ServerIP, req.PortSta, req.PortEnd
+	if req.PriceCents != nil {
+		n.PriceCents = req.PriceCents
+	}
+	if req.CycleDays != nil {
+		n.CycleDays = req.CycleDays
+	}
+	if req.StartDateMs != nil {
+		n.StartDateMs = req.StartDateMs
+	}
 	n.UpdatedTime = time.Now().UnixMilli()
 	if err := dbpkg.DB.Save(&n).Error; err != nil {
 		c.JSON(http.StatusOK, response.ErrMsg("节点更新失败"))
@@ -121,12 +127,12 @@ func NodeInstallCmd(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("请先前往网站配置中设置ip"))
 		return
 	}
-    server := wrapIPv6(cfg.Value)
-    // Pull install.sh from the deployed service instead of GitHub raw
-    // Assumes the service exposes GET /install.sh on the same address stored in vite_config.ip
-    // Example: ip = 1.2.3.4:6365 or [2001:db8::1]:6365
-    cmd := "curl -fsSL http://" + server + "/install.sh -o ./install.sh && chmod +x ./install.sh && ./install.sh -a " + server + " -s " + n.Secret
-    c.JSON(http.StatusOK, response.Ok(cmd))
+	server := wrapIPv6(cfg.Value)
+	// Pull install.sh from the deployed service instead of GitHub raw
+	// Assumes the service exposes GET /install.sh on the same address stored in vite_config.ip
+	// Example: ip = 1.2.3.4:6365 or [2001:db8::1]:6365
+	cmd := "curl -fsSL http://" + server + "/install.sh -o ./install.sh && chmod +x ./install.sh && ./install.sh -a " + server + " -s " + n.Secret
+	c.JSON(http.StatusOK, response.Ok(cmd))
 }
 
 // utils (local)

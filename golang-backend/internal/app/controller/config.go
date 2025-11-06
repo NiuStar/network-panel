@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"time"
 
-	"flux-panel/golang-backend/internal/app/model"
-	"flux-panel/golang-backend/internal/app/response"
-	dbpkg "flux-panel/golang-backend/internal/db"
+	"network-panel/golang-backend/internal/app/model"
+	"network-panel/golang-backend/internal/app/response"
+	dbpkg "network-panel/golang-backend/internal/db"
 
 	"github.com/gin-gonic/gin"
 )

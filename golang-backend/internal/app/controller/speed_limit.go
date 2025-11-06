@@ -4,11 +4,11 @@ import (
 	"net/http"
 	"time"
 
-	"flux-panel/golang-backend/internal/app/dto"
-	"flux-panel/golang-backend/internal/app/model"
-	"flux-panel/golang-backend/internal/app/response"
-	dbpkg "flux-panel/golang-backend/internal/db"
 	"github.com/gin-gonic/gin"
+	"network-panel/golang-backend/internal/app/dto"
+	"network-panel/golang-backend/internal/app/model"
+	"network-panel/golang-backend/internal/app/response"
+	dbpkg "network-panel/golang-backend/internal/db"
 )
 
 // POST /api/v1/speed-limit/create

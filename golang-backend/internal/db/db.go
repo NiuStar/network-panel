@@ -1,27 +1,27 @@
 package db
 
 import (
-    "fmt"
-    "os"
-    "time"
+	"fmt"
+	"os"
+	"time"
 
-    "flux-panel/golang-backend/internal/app/model"
-    "flux-panel/golang-backend/internal/app/util"
+	"network-panel/golang-backend/internal/app/model"
+	"network-panel/golang-backend/internal/app/util"
 
-    "gorm.io/driver/mysql"
-    "gorm.io/driver/sqlite"
-    "gorm.io/gorm"
-    "gorm.io/gorm/logger"
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 var DB *gorm.DB
 
 func dsn() string {
-    host := os.Getenv("DB_HOST")
-    port := os.Getenv("DB_PORT")
-    if port == "" {
-        port = "3306"
-    }
+	host := os.Getenv("DB_HOST")
+	port := os.Getenv("DB_PORT")
+	if port == "" {
+		port = "3306"
+	}
 	name := os.Getenv("DB_NAME")
 	user := os.Getenv("DB_USER")
 	pass := os.Getenv("DB_PASSWORD")
@@ -30,46 +30,58 @@ func dsn() string {
 }
 
 func dsnNoDB() string {
-    host := os.Getenv("DB_HOST")
-    port := os.Getenv("DB_PORT")
-    if port == "" { port = "3306" }
-    user := os.Getenv("DB_USER")
-    pass := os.Getenv("DB_PASSWORD")
-    params := "charset=utf8mb4&parseTime=True&loc=Local&timeout=10s"
-    return fmt.Sprintf("%s:%s@tcp(%s:%s)/?%s", user, pass, host, port, params)
+	host := os.Getenv("DB_HOST")
+	port := os.Getenv("DB_PORT")
+	if port == "" {
+		port = "3306"
+	}
+	user := os.Getenv("DB_USER")
+	pass := os.Getenv("DB_PASSWORD")
+	params := "charset=utf8mb4&parseTime=True&loc=Local&timeout=10s"
+	return fmt.Sprintf("%s:%s@tcp(%s:%s)/?%s", user, pass, host, port, params)
 }
 
 func ensureDatabase() error {
-    if os.Getenv("DB_DIALECT") == "sqlite" {
-        return nil
-    }
-    name := os.Getenv("DB_NAME")
-    if name == "" { return fmt.Errorf("DB_NAME is empty") }
-    tmp, err := gorm.Open(mysql.Open(dsnNoDB()), &gorm.Config{ Logger: logger.Default.LogMode(logger.Warn) })
-    if err != nil { return err }
-    if err := tmp.Exec("CREATE DATABASE IF NOT EXISTS `"+name+"` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci").Error; err != nil {
-        return err
-    }
-    sqlDB, _ := tmp.DB();
-    if sqlDB != nil { _ = sqlDB.Close() }
-    return nil
+	if os.Getenv("DB_DIALECT") == "sqlite" {
+		return nil
+	}
+	name := os.Getenv("DB_NAME")
+	if name == "" {
+		return fmt.Errorf("DB_NAME is empty")
+	}
+	tmp, err := gorm.Open(mysql.Open(dsnNoDB()), &gorm.Config{Logger: logger.Default.LogMode(logger.Warn)})
+	if err != nil {
+		return err
+	}
+	if err := tmp.Exec("CREATE DATABASE IF NOT EXISTS `" + name + "` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci").Error; err != nil {
+		return err
+	}
+	sqlDB, _ := tmp.DB()
+	if sqlDB != nil {
+		_ = sqlDB.Close()
+	}
+	return nil
 }
 
 func Init() error {
-    if err := ensureDatabase(); err != nil { return err }
-    cfg := &gorm.Config{Logger: logger.Default.LogMode(logger.Info)}
-    var db *gorm.DB
-    var err error
-    if os.Getenv("DB_DIALECT") == "sqlite" {
-        path := os.Getenv("DB_SQLITE_PATH")
-        if path == "" { path = "./flux.db" }
-        db, err = gorm.Open(sqlite.Open(path), cfg)
-    } else {
-        db, err = gorm.Open(mysql.Open(dsn()), cfg)
-    }
-    if err != nil {
-        return err
-    }
+	if err := ensureDatabase(); err != nil {
+		return err
+	}
+	cfg := &gorm.Config{Logger: logger.Default.LogMode(logger.Info)}
+	var db *gorm.DB
+	var err error
+	if os.Getenv("DB_DIALECT") == "sqlite" {
+		path := os.Getenv("DB_SQLITE_PATH")
+		if path == "" {
+			path = "./flux.db"
+		}
+		db, err = gorm.Open(sqlite.Open(path), cfg)
+	} else {
+		db, err = gorm.Open(mysql.Open(dsn()), cfg)
+	}
+	if err != nil {
+		return err
+	}
 	sqlDB, err := db.DB()
 	if err != nil {
 		return err

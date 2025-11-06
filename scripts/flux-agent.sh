@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Lightweight Bash-based Diagnose Agent for flux-panel
+# Lightweight Bash-based Diagnose Agent for network-panel
 # Requirements: websocat, jq, nc(netcat), iperf3, ping
 
 set -euo pipefail

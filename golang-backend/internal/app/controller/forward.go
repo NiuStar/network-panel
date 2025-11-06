@@ -1,19 +1,19 @@
 package controller
 
 import (
-	"flux-panel/golang-backend/internal/app/util"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"network-panel/golang-backend/internal/app/util"
 	"strings"
 	"time"
 
-	"flux-panel/golang-backend/internal/app/dto"
-	"flux-panel/golang-backend/internal/app/model"
-	"flux-panel/golang-backend/internal/app/response"
-	dbpkg "flux-panel/golang-backend/internal/db"
 	"github.com/gin-gonic/gin"
+	"network-panel/golang-backend/internal/app/dto"
+	"network-panel/golang-backend/internal/app/model"
+	"network-panel/golang-backend/internal/app/response"
+	dbpkg "network-panel/golang-backend/internal/db"
 )
 
 // POST /api/v1/forward/create
@@ -73,21 +73,23 @@ func ForwardCreate(c *gin.Context) {
 		// gRPC HTTP 隧道（出口=relay+grpc，入口=http+chain(dialer=grpc, connector=relay)）
 		user := fmt.Sprintf("u-%d", f.ID)
 		pass := util.MD5(fmt.Sprintf("%d:%d", f.ID, f.CreatedTime))[:16]
-        outSvc := map[string]any{
-            "name":     name,
-            "addr":     fmt.Sprintf(":%d", *f.OutPort),
-            "listener": map[string]any{"type": "grpc"},
-            "handler":  map[string]any{"type": "relay", "auth": map[string]any{"username": user, "password": pass}, "chain": "chain_" + name},
-            "metadata": map[string]any{"managedBy": "flux-panel"},
-        }
-        // server-side chain to forward to real exit remotes
-        nodes := []any{}
-        for _, raw := range strings.Split(f.RemoteAddr, ",") {
-            addr := strings.TrimSpace(raw)
-            if addr == "" { continue }
-            nodes = append(nodes, map[string]any{"name": "target", "addr": addr})
-        }
-        outSvc["_chains"] = []any{ map[string]any{"name": "chain_" + name, "metadata": map[string]any{"managedBy":"flux-panel"}, "hops": []any{ map[string]any{"name": "hop_" + name, "nodes": nodes } } } }
+		outSvc := map[string]any{
+			"name":     name,
+			"addr":     fmt.Sprintf(":%d", *f.OutPort),
+			"listener": map[string]any{"type": "grpc"},
+			"handler":  map[string]any{"type": "relay", "auth": map[string]any{"username": user, "password": pass}, "chain": "chain_" + name},
+			"metadata": map[string]any{"managedBy": "network-panel"},
+		}
+		// server-side chain to forward to real exit remotes
+		nodes := []any{}
+		for _, raw := range strings.Split(f.RemoteAddr, ",") {
+			addr := strings.TrimSpace(raw)
+			if addr == "" {
+				continue
+			}
+			nodes = append(nodes, map[string]any{"name": "target", "addr": addr})
+		}
+		outSvc["_chains"] = []any{map[string]any{"name": "chain_" + name, "metadata": map[string]any{"managedBy": "network-panel"}, "hops": []any{map[string]any{"name": "hop_" + name, "nodes": nodes}}}}
 		_ = sendWSCommand(outNodeIDOr0(tun), "AddService", []map[string]any{outSvc})
 
 		outIP := getOutNodeIP(tun)
@@ -97,7 +99,7 @@ func ForwardCreate(c *gin.Context) {
 			"addr":     fmt.Sprintf(":%d", f.InPort),
 			"listener": map[string]any{"type": "tcp"},
 			"handler":  map[string]any{"type": "http", "chain": "chain_" + name},
-			"metadata": map[string]any{"managedBy": "flux-panel"},
+			"metadata": map[string]any{"managedBy": "network-panel"},
 		}
 		chainName := "chain_" + name
 		hopName := "hop_" + name
@@ -107,7 +109,7 @@ func ForwardCreate(c *gin.Context) {
 			"connector": map[string]any{"type": "relay", "auth": map[string]any{"username": user, "password": pass}},
 			"dialer":    map[string]any{"type": "grpc"},
 		}
-		inSvc["_chains"] = []any{map[string]any{"name": chainName, "metadata": map[string]any{"managedBy": "flux-panel"}, "hops": []any{map[string]any{"name": hopName, "nodes": []any{node}}}}}
+		inSvc["_chains"] = []any{map[string]any{"name": chainName, "metadata": map[string]any{"managedBy": "network-panel"}, "hops": []any{map[string]any{"name": hopName, "nodes": []any{node}}}}}
 		_ = sendWSCommand(tun.InNodeID, "AddService", []map[string]any{inSvc})
 	} else {
 		// port-forward: in-node listens on inPort and forwards to remoteAddr
@@ -189,7 +191,7 @@ func ForwardUpdate(c *gin.Context) {
 			"addr":     fmt.Sprintf(":%d", *f.OutPort),
 			"listener": map[string]any{"type": "tls"},
 			"handler":  map[string]any{"type": "rtcp"},
-			"metadata": map[string]any{"managedBy": "flux-panel"},
+			"metadata": map[string]any{"managedBy": "network-panel"},
 		}
 		_ = sendWSCommand(outNodeIDOr0(tun), "AddService", []map[string]any{outSvc})
 
@@ -708,7 +710,7 @@ func buildServiceConfig(name string, listenPort int, target string, iface *strin
 		},
 	}
 	// attach panel-managed marker and optional interface
-	meta := map[string]any{"managedBy": "flux-panel"}
+	meta := map[string]any{"managedBy": "network-panel"}
 	if iface != nil && *iface != "" {
 		meta["interface"] = *iface
 	}
@@ -732,7 +734,7 @@ func buildSSService(name string, listenPort int, password string, method string,
 	}
 	// optional extras: observer, limiter, rlimiter, metadata
 	// base metadata includes panel marker
-	baseMeta := map[string]any{"managedBy": "flux-panel"}
+	baseMeta := map[string]any{"managedBy": "network-panel"}
 	if len(opts) > 0 && opts[0] != nil {
 		o := opts[0]
 		if v, ok := o["observer"].(string); ok && v != "" {

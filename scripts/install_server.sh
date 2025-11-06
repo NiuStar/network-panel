@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# One-click install and run the flux-panel server as a systemd service (Linux only).
+# One-click install and run the network-panel server as a systemd service (Linux only).
 # This is NOT the agent installer. It installs the backend server binary
 # and configures DB env + auto-start.
 
@@ -12,10 +12,10 @@ if [[ "$(uname -s)" != "Linux" ]]; then
   exit 1
 fi
 
-SERVICE_NAME="flux-panel"
-INSTALL_DIR="/opt/flux-panel"
-BIN_PATH="/usr/local/bin/flux-panel-server"
-ENV_FILE="/etc/default/flux-panel"
+SERVICE_NAME="network-panel"
+INSTALL_DIR="/opt/network-panel"
+BIN_PATH="/usr/local/bin/network-panel-server"
+ENV_FILE="/etc/default/network-panel"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 PROXY_PREFIX=""
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -63,18 +63,18 @@ choose_source() {
 
 download_prebuilt() {
   local arch="$1"
-  local base="https://github.com/NiuStar/flux-panel/releases/latest/download"
+  local base="https://github.com/NiuStar/network-panel/releases/latest/download"
   if [[ -n "$PROXY_PREFIX" ]]; then base="${PROXY_PREFIX}${base}"; fi
   local name
   for name in \
-    "flux-panel-server-linux-${arch}" \
+    "network-panel-server-linux-${arch}" \
     "server-linux-${arch}" \
-    "flux-panel_linux_${arch}.tar.gz" \
+    "network-panel_linux_${arch}.tar.gz" \
     "server_linux_${arch}.tar.gz"
   do
     log "Trying to download ${base}/${name}"
-    if curl -fSL --retry 3 --retry-delay 1 "${base}/${name}" -o /tmp/flux-panel.dl; then
-      printf '/tmp/flux-panel.dl\n'
+    if curl -fSL --retry 3 --retry-delay 1 "${base}/${name}" -o /tmp/network-panel.dl; then
+      printf '/tmp/network-panel.dl\n'
       return 0
     fi
   done
@@ -103,7 +103,7 @@ extract_or_install() {
   # If binary exists inside INSTALL_DIR after extraction, move it to BIN_PATH
   if [[ ! -x "$BIN_PATH" ]]; then
     local cand
-    cand=$(find "$INSTALL_DIR" -maxdepth 2 -type f \( -name "server" -o -name "flux-panel-server" \) | head -n1 || true)
+    cand=$(find "$INSTALL_DIR" -maxdepth 2 -type f \( -name "server" -o -name "network-panel-server" \) | head -n1 || true)
     if [[ -n "$cand" ]]; then
       install -m 0755 "$cand" "$BIN_PATH"
     fi

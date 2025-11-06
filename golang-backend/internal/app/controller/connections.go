@@ -1,8 +1,8 @@
 package controller
 
 import (
-	"flux-panel/golang-backend/internal/app/response"
 	"net/http"
+	"network-panel/golang-backend/internal/app/response"
 
 	"github.com/gin-gonic/gin"
 )

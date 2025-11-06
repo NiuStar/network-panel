@@ -4,27 +4,30 @@ import (
 	"net/http"
 	"strings"
 
-	"flux-panel/golang-backend/internal/app/controller"
-	"flux-panel/golang-backend/internal/app/middleware"
+	"network-panel/golang-backend/internal/app/controller"
+	"network-panel/golang-backend/internal/app/middleware"
 
 	"github.com/gin-gonic/gin"
 )
 
 func RegisterRoutes(r *gin.Engine) {
-    // enable CORS and preflight handling globally
-    r.Use(middleware.CORS())
-    // health
-    r.GET("/health", func(c *gin.Context) { c.String(200, "ok") })
-    // serve install script for nodes
-    r.GET("/install.sh", controller.InstallScript)
-    // serve flux-agent binaries
-    r.GET("/flux-agent/:file", func(c *gin.Context) {
-        f := c.Param("file")
-        if f == "" { c.JSON(404, gin.H{"code":404}); return }
-        c.File("public/flux-agent/" + f)
-    })
-    // websocket for node status
-    r.GET("/system-info", controller.SystemInfoWS)
+	// enable CORS and preflight handling globally
+	r.Use(middleware.CORS())
+	// health
+	r.GET("/health", func(c *gin.Context) { c.String(200, "ok") })
+	// serve install script for nodes
+	r.GET("/install.sh", controller.InstallScript)
+	// serve flux-agent binaries
+	r.GET("/flux-agent/:file", func(c *gin.Context) {
+		f := c.Param("file")
+		if f == "" {
+			c.JSON(404, gin.H{"code": 404})
+			return
+		}
+		c.File("public/flux-agent/" + f)
+	})
+	// websocket for node status
+	r.GET("/system-info", controller.SystemInfoWS)
 
 	api := r.Group("/api/v1")
 
@@ -71,20 +74,20 @@ func RegisterRoutes(r *gin.Engine) {
 		node.POST("/list", controller.NodeList)
 		node.POST("/update", controller.NodeUpdate)
 		node.POST("/delete", controller.NodeDelete)
-        node.POST("/install", controller.NodeInstallCmd)
-        node.GET("/connections", controller.NodeConnections)
-        // create/update exit node SS service
-        node.POST("/set-exit", controller.NodeSetExit)
-        // get last saved exit settings for node
-        node.POST("/get-exit", controller.NodeGetExit)
-        // query services on node
-        node.POST("/query-services", controller.NodeQueryServices)
-        // network stats for node
-        node.POST("/network-stats", controller.NodeNetworkStats)
-        node.POST("/network-stats-batch", controller.NodeNetworkStatsBatch)
-        node.POST("/sysinfo", controller.NodeSysinfo)
-        node.POST("/interfaces", controller.NodeInterfaces)
-    }
+		node.POST("/install", controller.NodeInstallCmd)
+		node.GET("/connections", controller.NodeConnections)
+		// create/update exit node SS service
+		node.POST("/set-exit", controller.NodeSetExit)
+		// get last saved exit settings for node
+		node.POST("/get-exit", controller.NodeGetExit)
+		// query services on node
+		node.POST("/query-services", controller.NodeQueryServices)
+		// network stats for node
+		node.POST("/network-stats", controller.NodeNetworkStats)
+		node.POST("/network-stats-batch", controller.NodeNetworkStatsBatch)
+		node.POST("/sysinfo", controller.NodeSysinfo)
+		node.POST("/interfaces", controller.NodeInterfaces)
+	}
 
 	// tunnel
 	tunnel := api.Group("/tunnel")
@@ -142,47 +145,47 @@ func RegisterRoutes(r *gin.Engine) {
 	// version
 	api.GET("/version", controller.Version)
 
-    // migrate (admin only)
-    api.POST("/migrate", middleware.RequireRole(), controller.MigrateFrom)
-    api.POST("/migrate/test", middleware.RequireRole(), controller.MigrateTest)
-    api.POST("/migrate/start", middleware.RequireRole(), controller.MigrateStart)
-    api.GET("/migrate/status", middleware.RequireRole(), controller.MigrateStatus)
+	// migrate (admin only)
+	api.POST("/migrate", middleware.RequireRole(), controller.MigrateFrom)
+	api.POST("/migrate/test", middleware.RequireRole(), controller.MigrateTest)
+	api.POST("/migrate/start", middleware.RequireRole(), controller.MigrateStart)
+	api.GET("/migrate/status", middleware.RequireRole(), controller.MigrateStatus)
 
 	// flow
 	r.POST("/flow/config", controller.FlowConfig)
 	r.Any("/flow/test", controller.FlowTest)
 	r.Any("/flow/upload", controller.FlowUpload)
-    // alerts
-    api.POST("/alerts/recent", middleware.RequireRole(), controller.AlertsRecent)
+	// alerts
+	api.POST("/alerts/recent", middleware.RequireRole(), controller.AlertsRecent)
 
-    // probe targets (admin)
-    probe := api.Group("/probe")
-    probe.Use(middleware.RequireRole())
-    {
-        probe.POST("/list", controller.ProbeList)
-        probe.POST("/create", controller.ProbeCreate)
-        probe.POST("/update", controller.ProbeUpdate)
-        probe.POST("/delete", controller.ProbeDelete)
-    }
+	// probe targets (admin)
+	probe := api.Group("/probe")
+	probe.Use(middleware.RequireRole())
+	{
+		probe.POST("/list", controller.ProbeList)
+		probe.POST("/create", controller.ProbeCreate)
+		probe.POST("/update", controller.ProbeUpdate)
+		probe.POST("/delete", controller.ProbeDelete)
+	}
 
-    // serve static frontend under /app to avoid root conflicts
-    r.Static("/app", "./public")
+	// serve static frontend under /app to avoid root conflicts
+	r.Static("/app", "./public")
 
-    // SPA fallback for /app paths; return JSON 404 for others
-    r.NoRoute(func(c *gin.Context) {
-        p := c.Request.URL.Path
-        if strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/flow/") || p == "/health" {
-            c.JSON(http.StatusNotFound, gin.H{"code": 404, "msg": "not found"})
-            return
-        }
-        if strings.HasPrefix(p, "/app") || p == "/app" {
-            c.File("public/index.html")
-            return
-        }
-        c.JSON(http.StatusNotFound, gin.H{"code": 404, "msg": "not found"})
-    })
+	// SPA fallback for /app paths; return JSON 404 for others
+	r.NoRoute(func(c *gin.Context) {
+		p := c.Request.URL.Path
+		if strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/flow/") || p == "/health" {
+			c.JSON(http.StatusNotFound, gin.H{"code": 404, "msg": "not found"})
+			return
+		}
+		if strings.HasPrefix(p, "/app") || p == "/app" {
+			c.File("public/index.html")
+			return
+		}
+		c.JSON(http.StatusNotFound, gin.H{"code": 404, "msg": "not found"})
+	})
 
-    // agent endpoints (authenticated by node secret in payload)
+	// agent endpoints (authenticated by node secret in payload)
 	agent := api.Group("/agent")
 	{
 		agent.POST("/desired-services", controller.AgentDesiredServices)
@@ -190,7 +193,7 @@ func RegisterRoutes(r *gin.Engine) {
 		agent.POST("/reconcile", controller.AgentReconcile)
 		agent.POST("/remove-services", controller.AgentRemoveServices)
 		agent.POST("/reconcile-node", controller.AgentReconcileNode)
-        agent.POST("/probe-targets", controller.AgentProbeTargets)
-        agent.POST("/report-probe", controller.AgentReportProbe)
+		agent.POST("/probe-targets", controller.AgentProbeTargets)
+		agent.POST("/report-probe", controller.AgentReportProbe)
 	}
 }

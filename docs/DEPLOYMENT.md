@@ -13,21 +13,21 @@
 - 开放面板 HTTP/HTTPS 端口与节点到面板的 WebSocket 端口
 
 ---
-## 2. 面板部署（Docker 一键安装）
+## 2. 面板部署（一键脚本）
 
 ```bash
-curl -L https://raw.githubusercontent.com/bqlpfy/flux-panel/refs/heads/main/panel_install.sh -o panel_install.sh \
-  && chmod +x panel_install.sh \
-  && ./panel_install.sh
+curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/panel_install.sh -o panel_install.sh \
+  && bash panel_install.sh
 ```
 
 安装过程包含：
-- 后端（Go）与前端（Vite）打包
-- 反向代理（可选 Caddy）
-- 数据库初始化
+- 交互选择安装方式：二进制（默认 SQLite）或 Docker Compose（MySQL）
+- 二进制：安装 systemd 服务，环境配置位于 `/etc/default/network-panel`
+- Docker Compose：在 `network-panel/` 下下载并启动 `docker-compose.yaml`
 
-配置文件与环境变量：
-- 面板使用 `.env`（如果使用 compose/反代脚本）存放站点域名、端口等参数；建议使用占位值或在部署主机本地维护，不要将实际 IP/域名/密码提交到仓库。
+配置与环境变量：
+- 二进制：`/etc/default/network-panel`（SQLite：`DB_DIALECT=sqlite`，可选 `DB_SQLITE_PATH`；MySQL：`DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD`）
+- Docker Compose：如使用 `docker-compose-v4_mysql.yml`，可直接修改 compose 环境段或 `.env` 文件
 
 默认管理员账号：
 - 账号：admin_user
@@ -53,7 +53,7 @@ curl -L https://raw.githubusercontent.com/bqlpfy/flux-panel/refs/heads/main/pane
 - `/etc/gost/config.json`  面板接入配置
 - `/etc/gost/gost.json`   gost 主配置（由面板/Agent 写入）
 
-> 安全提示：请勿在公开渠道粘贴/分享包含实际 IP、密码、JWT 的 `.env` 或配置内容。排障时建议脱敏（使用 `example.com`、`<password>` 等占位）。
+> 安全提示：请勿在公开渠道粘贴/分享包含实际 IP、密码、JWT 的环境文件或配置内容。排障时建议脱敏（使用 `example.com`、`<password>` 等占位）。
 
 服务管理（systemd）：
 ```bash
@@ -75,8 +75,8 @@ systemctl restart flux-agent
 ---
 ## 5. 安全与维护
 
-- 面板仅管理带 `metadata.managedBy=flux-panel` 的服务
-- Agent reconcile 默认不删除任何服务；如需严格对齐，可显式开启严格模式，但删除范围仍仅限 `managedBy=flux-panel` 的冗余项
+- 面板仅管理带 `metadata.managedBy=network-panel` 的服务
+- Agent reconcile 默认不删除任何服务；如需严格对齐，可显式开启严格模式，但删除范围仍仅限 `managedBy=network-panel` 的冗余项
 - IPv6 地址统一 `[ip]:port` 形式以避免解析问题
 
 ---

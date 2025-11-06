@@ -1,7 +1,8 @@
 # 服务端部署指南（面板）
 
-本文介绍两种部署方式：
+本文提供三种视角，推荐优先使用“一键脚本”：
 
+- 一键脚本安装（推荐，默认 SQLite，可选 MySQL+Compose）
 - 二进制一键脚本部署（systemd，Linux）
 - Docker Compose 部署
 
@@ -9,6 +10,24 @@
 - 一台 Linux 服务器（建议 Ubuntu 20.04+/Debian 11+/CentOS 8+）
 - 已开放面板端口（默认 6365 提供 API；前端静态资源可由反代提供 HTTPS）
 - MySQL 数据库（或在 Docker Compose 中随容器启动）
+
+---
+## 方式零：一键脚本安装（推荐）
+
+脚本位置：仓库根 `panel_install.sh`
+
+在线一键安装：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/panel_install.sh -o panel_install.sh \
+  && bash panel_install.sh
+```
+
+交互说明：
+- 选择 1）二进制安装：默认 SQLite 模式；将向 `/etc/default/network-panel` 写入 `DB_DIALECT=sqlite`，可自定义 `DB_SQLITE_PATH`（默认 `/opt/network-panel/flux.db`）
+- 选择 2）Docker Compose 安装：使用 MySQL 模式，会在当前目录创建 `network-panel/`，下载 `docker-compose-v4_mysql.yml` 重命名为 `docker-compose.yaml` 并启动
+
+如需更细粒度控制，可参考下文“二进制部署”或“Docker Compose 部署”。
 
 ---
 ## 方式一：二进制一键脚本部署（Linux）
@@ -19,7 +38,7 @@
 1）下载并执行安装脚本（root 权限）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NiuStar/flux-panel/refs/heads/main/scripts/install_server.sh -o install_server.sh \
+curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/scripts/install_server.sh -o install_server.sh \
   && sudo bash install_server.sh
 ```
 
@@ -29,11 +48,11 @@ curl -fsSL https://raw.githubusercontent.com/NiuStar/flux-panel/refs/heads/main/
 - 选择从 GitHub Releases 下载预编译，或本地源码编译（需要已安装 Go）
 
 3）服务与配置：
-- systemd 服务名：`flux-panel`
-- 可执行文件：`/usr/local/bin/flux-panel-server`
-- 工作目录：`/opt/flux-panel`
-- 请把前端静态资源放置于 `/opt/flux-panel/public/`(二进制安装必须自行npm 构建前端)
-- 环境配置：`/etc/default/flux-panel/.env`
+- systemd 服务名：`network-panel`
+- 可执行文件：`/usr/local/bin/network-panel-server`
+- 工作目录：`/opt/network-panel`
+- 请把前端静态资源放置于 `/opt/network-panel/public/`(二进制安装必须自行npm 构建前端)
+- 环境配置：`/etc/default/network-panel`
 
 环境变量说明：
 ```
@@ -48,9 +67,9 @@ AGENT_VERSION=go-agent-1.0.7  # (可选) 期望的 Agent 版本，用于触发�
 
 4）常用命令：
 ```bash
-sudo systemctl status flux-panel
-sudo systemctl restart flux-panel
-sudo journalctl -u flux-panel -f
+sudo systemctl status network-panel
+sudo systemctl restart network-panel
+sudo journalctl -u network-panel -f
 ```
 
 > 首次启动会自动创建数据库（如权限允许）与管理员账号（admin_user/admin_user），请尽快登录修改密码。
@@ -63,7 +82,7 @@ sudo journalctl -u flux-panel -f
 ---
 ## 方式二：Docker Compose 部署
 
-仓库内提供 `docker-compose-v4.yml`手动部署。
+仓库内提供 `docker-compose-v4.yml` 与 `docker-compose-v4_mysql.yml`。
 
 1）准备环境与变量
 - 确保 Docker 与 Docker Compose 可用
@@ -71,9 +90,9 @@ sudo journalctl -u flux-panel -f
   - 面板访问域名/端口
   - 数据库相关变量（DB_HOST/DB_NAME/DB_USER/DB_PASSWORD）
 
-2）启动服务
+2）启动服务（MySQL 版示例）
 ```bash
-docker compose -f docker-compose-v4.yml up -d
+docker compose -f docker-compose-v4_mysql.yml up -d
 ```
 
 3）反向代理（可选）

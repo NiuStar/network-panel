@@ -27,7 +27,7 @@
 
 在线执行：
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NiuStar/flux-panel/refs/heads/main/install.sh -o install.sh \
+curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/install.sh -o install.sh \
   && sudo bash install.sh -a <面板地址:端口> -s <节点密钥>
 ```
 

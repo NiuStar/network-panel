@@ -4,11 +4,11 @@ import (
 	"net/http"
 	"time"
 
-	"flux-panel/golang-backend/internal/app/dto"
-	"flux-panel/golang-backend/internal/app/model"
-	"flux-panel/golang-backend/internal/app/response"
-	"flux-panel/golang-backend/internal/app/util"
-	dbpkg "flux-panel/golang-backend/internal/db"
+	"network-panel/golang-backend/internal/app/dto"
+	"network-panel/golang-backend/internal/app/model"
+	"network-panel/golang-backend/internal/app/response"
+	"network-panel/golang-backend/internal/app/util"
+	dbpkg "network-panel/golang-backend/internal/db"
 
 	"github.com/gin-gonic/gin"
 )
@@ -170,66 +170,66 @@ func UserDelete(c *gin.Context) {
 
 // POST /api/v1/user/package
 func UserPackage(c *gin.Context) {
-    // Return aggregated package info as frontend expects
-    uidInf, exists := c.Get("user_id")
-    if !exists {
-        c.JSON(http.StatusOK, response.ErrMsg("用户未登录或token无效"))
-        return
-    }
-    uid := uidInf.(int64)
+	// Return aggregated package info as frontend expects
+	uidInf, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusOK, response.ErrMsg("用户未登录或token无效"))
+		return
+	}
+	uid := uidInf.(int64)
 
-    var user model.User
-    if err := dbpkg.DB.First(&user, uid).Error; err != nil {
-        c.JSON(http.StatusOK, response.ErrMsg("用户不存在"))
-        return
-    }
+	var user model.User
+	if err := dbpkg.DB.First(&user, uid).Error; err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("用户不存在"))
+		return
+	}
 
-    // build userInfo payload (camelCase)
-    userInfo := gin.H{
-        "flow":          user.Flow,
-        "inFlow":        user.InFlow,
-        "outFlow":       user.OutFlow,
-        "num":           user.Num,
-        "expTime":       user.ExpTime,
-        "flowResetTime": user.FlowResetTime,
-    }
+	// build userInfo payload (camelCase)
+	userInfo := gin.H{
+		"flow":          user.Flow,
+		"inFlow":        user.InFlow,
+		"outFlow":       user.OutFlow,
+		"num":           user.Num,
+		"expTime":       user.ExpTime,
+		"flowResetTime": user.FlowResetTime,
+	}
 
-    // tunnel permissions with names and tunnelFlow
-    var tunnelPermissions []struct {
-        model.UserTunnel
-        TunnelName     string  `json:"tunnelName"`
-        SpeedLimitName *string `json:"speedLimitName,omitempty"`
-        TunnelFlow     *int    `json:"tunnelFlow,omitempty"`
-    }
-    dbpkg.DB.Table("user_tunnel ut").
-        Select("ut.*, t.name as tunnel_name, sl.name as speed_limit_name, t.flow as tunnel_flow").
-        Joins("left join tunnel t on t.id = ut.tunnel_id").
-        Joins("left join speed_limit sl on sl.id = ut.speed_id").
-        Where("ut.user_id = ?", uid).
-        Scan(&tunnelPermissions)
+	// tunnel permissions with names and tunnelFlow
+	var tunnelPermissions []struct {
+		model.UserTunnel
+		TunnelName     string  `json:"tunnelName"`
+		SpeedLimitName *string `json:"speedLimitName,omitempty"`
+		TunnelFlow     *int    `json:"tunnelFlow,omitempty"`
+	}
+	dbpkg.DB.Table("user_tunnel ut").
+		Select("ut.*, t.name as tunnel_name, sl.name as speed_limit_name, t.flow as tunnel_flow").
+		Joins("left join tunnel t on t.id = ut.tunnel_id").
+		Joins("left join speed_limit sl on sl.id = ut.speed_id").
+		Where("ut.user_id = ?", uid).
+		Scan(&tunnelPermissions)
 
-    // forwards with tunnel name and in ip
-    var forwards []struct {
-        model.Forward
-        TunnelName string `json:"tunnelName"`
-        InIp       string `json:"inIp"`
-    }
-    dbpkg.DB.Table("forward f").
-        Select("f.*, t.name as tunnel_name, t.in_ip as in_ip").
-        Joins("left join tunnel t on t.id = f.tunnel_id").
-        Where("f.user_id = ?", uid).
-        Scan(&forwards)
+	// forwards with tunnel name and in ip
+	var forwards []struct {
+		model.Forward
+		TunnelName string `json:"tunnelName"`
+		InIp       string `json:"inIp"`
+	}
+	dbpkg.DB.Table("forward f").
+		Select("f.*, t.name as tunnel_name, t.in_ip as in_ip").
+		Joins("left join tunnel t on t.id = f.tunnel_id").
+		Where("f.user_id = ?", uid).
+		Scan(&forwards)
 
-    // recent statistics flows (optional; return whatever exists)
-    var statisticsFlows []model.StatisticsFlow
-    dbpkg.DB.Where("user_id = ?", uid).Order("created_time desc").Limit(200).Find(&statisticsFlows)
+	// recent statistics flows (optional; return whatever exists)
+	var statisticsFlows []model.StatisticsFlow
+	dbpkg.DB.Where("user_id = ?", uid).Order("created_time desc").Limit(200).Find(&statisticsFlows)
 
-    c.JSON(http.StatusOK, response.Ok(gin.H{
-        "userInfo":         userInfo,
-        "tunnelPermissions": tunnelPermissions,
-        "forwards":          forwards,
-        "statisticsFlows":   statisticsFlows,
-    }))
+	c.JSON(http.StatusOK, response.Ok(gin.H{
+		"userInfo":          userInfo,
+		"tunnelPermissions": tunnelPermissions,
+		"forwards":          forwards,
+		"statisticsFlows":   statisticsFlows,
+	}))
 }
 
 // POST /api/v1/user/updatePassword

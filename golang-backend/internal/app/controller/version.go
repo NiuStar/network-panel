@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"os"
 
-	"flux-panel/golang-backend/internal/app/response"
-	appver "flux-panel/golang-backend/internal/app/version"
 	"github.com/gin-gonic/gin"
+	"network-panel/golang-backend/internal/app/response"
+	appver "network-panel/golang-backend/internal/app/version"
 )
 
 // GET /api/v1/version

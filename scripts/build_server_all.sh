@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Cross-compile flux-panel server for common Linux targets.
-# Outputs to golang-backend/public/server as flux-panel-server-linux-<arch>
+# Cross-compile network-panel server for common Linux targets.
+# Outputs to golang-backend/public/server as network-panel-server-linux-<arch>
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 MAIN_PKG="${ROOT_DIR}/golang-backend/cmd/server"
@@ -43,7 +43,7 @@ build_one() {
     *) echo "Unknown arch token: $arch" >&2; return 1 ;;
   esac
 
-  local out_name="flux-panel-server-${os}-${out_arch}"
+  local out_name="network-panel-server-${os}-${out_arch}"
   echo "==> Building $target -> $out_name"
 
   local ldflags=("-s" "-w")

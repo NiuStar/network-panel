@@ -30,6 +30,6 @@ Notes
 Docker
 - One image bundles frontend (vite-frontend) and backend (golang-backend).
 - Dockerfile at repo root builds both and serves frontend via Gin static files.
-- Build: `docker build -t flux-panel:latest .`
-- Run: `PORT=6365 JWT_SECRET=... DB_HOST=... DB_NAME=... DB_USER=... DB_PASSWORD=... docker run -p 6365:6365 --name flux-panel --rm flux-panel:latest`
+- Build: `docker build -t network-panel:latest .`
+- Run: `PORT=6365 JWT_SECRET=... DB_HOST=... DB_NAME=... DB_USER=... DB_PASSWORD=... docker run -p 6365:6365 --name network-panel --rm network-panel:latest`
 - Or use `./install_docker.sh up` (reads .env if present, see script help).

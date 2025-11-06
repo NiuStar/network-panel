@@ -4,11 +4,11 @@ import (
 	"net/http"
 	"strconv"
 
-	"flux-panel/golang-backend/internal/app/model"
-	"flux-panel/golang-backend/internal/app/response"
-	"flux-panel/golang-backend/internal/app/util"
-	dbpkg "flux-panel/golang-backend/internal/db"
 	"github.com/gin-gonic/gin"
+	"network-panel/golang-backend/internal/app/model"
+	"network-panel/golang-backend/internal/app/response"
+	"network-panel/golang-backend/internal/app/util"
+	dbpkg "network-panel/golang-backend/internal/db"
 )
 
 // GET /api/v1/open_api/sub_store?user=...&pwd=...&tunnel=-1|id

@@ -1,4 +1,4 @@
-module flux-panel
+module network-panel
 
 go 1.25.1
 

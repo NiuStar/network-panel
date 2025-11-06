@@ -83,6 +83,11 @@ build_one() {
   (cd "$ROOT_DIR" && \
     env CGO_ENABLED=0 GOOS="$os" ${envs[@]} \
     go build -trimpath -buildvcs=false -ldflags "${ldflags[*]}" -o "$OUT_DIR/$out_name$ext" "$MAIN_PKG")
+
+  # Also produce agent2 variant (same binary, different name triggers agent2 role by argv0)
+  local out_name2="flux-agent2-${os}-${out_arch}"
+  cp "$OUT_DIR/$out_name$ext" "$OUT_DIR/$out_name2$ext"
+  chmod +x "$OUT_DIR/$out_name2$ext" || true
 }
 
 main() {

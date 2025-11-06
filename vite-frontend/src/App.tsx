@@ -7,6 +7,7 @@ import DashboardPage from "@/pages/dashboard";
 import ForwardPage from "@/pages/forward";
 import ProbePage from "@/pages/probe";
 import NetworkPage from "@/pages/network";
+import MigratePage from "@/pages/migrate";
 import TunnelPage from "@/pages/tunnel";
 import NodePage from "@/pages/node";
 import UserPage from "@/pages/user";
@@ -196,6 +197,14 @@ function App() {
         element={
           <ProtectedRoute>
             <NetworkPage />
+          </ProtectedRoute>
+        } 
+      />
+      <Route 
+        path="/migrate" 
+        element={
+          <ProtectedRoute>
+            <MigratePage />
           </ProtectedRoute>
         } 
       />

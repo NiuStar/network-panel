@@ -42,6 +42,7 @@ DB_PORT=3306
 DB_NAME=flux_panel
 DB_USER=flux
 DB_PASSWORD=123456
+AGENT_VERSION=go-agent-1.0.7  # (可选) 期望的 Agent 版本，用于触发自升级
 ```
 
 4）常用命令：
@@ -52,6 +53,11 @@ sudo journalctl -u flux-panel -f
 ```
 
 > 首次启动会自动创建数据库（如权限允许）与管理员账号（admin_user/admin_user），请尽快登录修改密码。
+
+自升级说明：
+- 后端通过环境变量 `AGENT_VERSION` 指定期望的 Agent 版本；若为空则使用后端内置默认值。
+- Agent 连接后端 WS 时会携带自身版本；若与期望版本不一致，后端会下发 `UpgradeAgent` 指令。
+- Agent 将从后端下载 `/flux-agent/flux-agent-linux-<arch>` 二进制（镜像/发布包已内置常见架构），替换本地 `/etc/gost/flux-agent` 并尝试重启自身（systemd/service/或进程内 Exec 替换）。
 
 ---
 ## 方式二：Docker Compose 部署
@@ -78,9 +84,23 @@ docker compose -f docker-compose-v4.yml pull
 docker compose -f docker-compose-v4.yml up -d
 ```
 
+如需控制 Agent 自升级目标版本，在 docker-compose 配置或容器运行参数中加入：
+```
+-e AGENT_VERSION=go-agent-1.0.7
+```
+
 ---
 ## 端口与安全
 - 后端默认监听 6365（可通过 `PORT` 修改）
 - 建议将前端静态资源置于反代服务器并启用 HTTPS
 - 不要在公开渠道泄露 `.env`、数据库密码、JWT 等敏感信息
 
+---
+## Agent 二进制分发与重启回退策略
+
+- 镜像/发布包内置位置：`public/flux-agent/`
+  - Docker 镜像已内置：`flux-agent-linux-amd64`、`flux-agent-linux-arm64`、`flux-agent-linux-armv7`
+  - 如需更多平台，可使用 `scripts/build_flux_agent_all.sh` 生成并放入该目录（供后端 `/flux-agent/:file` 路由下发）
+
+- 非 systemd 系统的回退重启：
+  - Agent 升级后首先尝试 `systemctl restart flux-agent`；失败则尝试 `service flux-agent restart`；若仍失败，Agent 进程将使用 Exec 方式直接以新二进制替换当前进程（保持原参数与环境变量），确保无人工干预也能完成升级生效。

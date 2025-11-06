@@ -139,8 +139,14 @@ func RegisterRoutes(r *gin.Engine) {
 		openAPI.GET("/sub_store", controller.OpenAPISubStore)
 	}
 
-    // version
-    api.GET("/version", controller.Version)
+	// version
+	api.GET("/version", controller.Version)
+
+    // migrate (admin only)
+    api.POST("/migrate", middleware.RequireRole(), controller.MigrateFrom)
+    api.POST("/migrate/test", middleware.RequireRole(), controller.MigrateTest)
+    api.POST("/migrate/start", middleware.RequireRole(), controller.MigrateStart)
+    api.GET("/migrate/status", middleware.RequireRole(), controller.MigrateStatus)
 
 	// flow
 	r.POST("/flow/config", controller.FlowConfig)

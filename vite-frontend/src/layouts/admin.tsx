@@ -58,6 +58,16 @@ export default function AdminLayout({
       )
     },
     {
+      path: '/migrate',
+      label: '数据迁移',
+      icon: (
+        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M4 3h12v4H4V3zm0 6h12v8H4V9zm2 2v4h8v-4H6z" />
+        </svg>
+      ),
+      adminOnly: true
+    },
+    {
       path: '/probe',
       label: '探针目标',
       icon: (

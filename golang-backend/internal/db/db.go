@@ -9,6 +9,7 @@ import (
     "flux-panel/golang-backend/internal/app/util"
 
     "gorm.io/driver/mysql"
+    "gorm.io/driver/sqlite"
     "gorm.io/gorm"
     "gorm.io/gorm/logger"
 )
@@ -16,11 +17,11 @@ import (
 var DB *gorm.DB
 
 func dsn() string {
-	host := os.Getenv("DB_HOST")
-	port := os.Getenv("DB_PORT")
-	if port == "" {
-		port = "3306"
-	}
+    host := os.Getenv("DB_HOST")
+    port := os.Getenv("DB_PORT")
+    if port == "" {
+        port = "3306"
+    }
 	name := os.Getenv("DB_NAME")
 	user := os.Getenv("DB_USER")
 	pass := os.Getenv("DB_PASSWORD")
@@ -39,6 +40,9 @@ func dsnNoDB() string {
 }
 
 func ensureDatabase() error {
+    if os.Getenv("DB_DIALECT") == "sqlite" {
+        return nil
+    }
     name := os.Getenv("DB_NAME")
     if name == "" { return fmt.Errorf("DB_NAME is empty") }
     tmp, err := gorm.Open(mysql.Open(dsnNoDB()), &gorm.Config{ Logger: logger.Default.LogMode(logger.Warn) })
@@ -54,10 +58,18 @@ func ensureDatabase() error {
 func Init() error {
     if err := ensureDatabase(); err != nil { return err }
     cfg := &gorm.Config{Logger: logger.Default.LogMode(logger.Info)}
-	db, err := gorm.Open(mysql.Open(dsn()), cfg)
-	if err != nil {
-		return err
-	}
+    var db *gorm.DB
+    var err error
+    if os.Getenv("DB_DIALECT") == "sqlite" {
+        path := os.Getenv("DB_SQLITE_PATH")
+        if path == "" { path = "./flux.db" }
+        db, err = gorm.Open(sqlite.Open(path), cfg)
+    } else {
+        db, err = gorm.Open(mysql.Open(dsn()), cfg)
+    }
+    if err != nil {
+        return err
+    }
 	sqlDB, err := db.DB()
 	if err != nil {
 		return err

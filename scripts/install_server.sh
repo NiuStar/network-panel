@@ -106,6 +106,13 @@ extract_or_install() {
     echo "Server binary not found after extraction." >&2
     return 1
   fi
+
+  # Check for frontend assets when using archive; warn if missing for plain binary
+  if [[ ! -d "$INSTALL_DIR/public" ]]; then
+    echo "⚠️  Frontend assets not found at $INSTALL_DIR/public"
+    echo "   - If you downloaded a single binary, the web UI won't be available."
+    echo "   - Recommended: use the Docker image or a release tarball that contains 'public/'."
+  fi
 }
 
 build_from_source() {
@@ -123,6 +130,38 @@ build_from_source() {
   fi
   env CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "${ldflags[*]}" -o "$BIN_PATH" "$MAIN_PKG"
   [[ -x "$BIN_PATH" ]]
+
+  # Try to build/copy frontend assets for the web UI
+  mkdir -p "$INSTALL_DIR"
+  if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+    echo "Building frontend assets..."
+    (
+      set -e
+      cd "$ROOT_DIR/vite-frontend"
+      npm install --legacy-peer-deps --no-audit --no-fund
+      npm run build
+    )
+    if [[ -d "$ROOT_DIR/vite-frontend/dist" ]]; then
+      rm -rf "$INSTALL_DIR/public"
+      mkdir -p "$INSTALL_DIR/public"
+      cp -r "$ROOT_DIR/vite-frontend/dist"/* "$INSTALL_DIR/public/"
+      echo "✅ Frontend assets installed to $INSTALL_DIR/public"
+    else
+      echo "⚠️  Frontend build did not produce dist/; UI may be unavailable" >&2
+    fi
+  else
+    # Fallback: copy existing dist if present
+    if [[ -d "$ROOT_DIR/vite-frontend/dist" ]]; then
+      rm -rf "$INSTALL_DIR/public"
+      mkdir -p "$INSTALL_DIR/public"
+      cp -r "$ROOT_DIR/vite-frontend/dist"/* "$INSTALL_DIR/public/"
+      echo "✅ Frontend assets installed to $INSTALL_DIR/public"
+    else
+      echo "⚠️  'node' or 'npm' not found; skipping frontend build." >&2
+      echo "   - The API will run, but the web UI requires assets in $INSTALL_DIR/public" >&2
+      echo "   - Use Docker image or prebuilt release tarball for a ready UI." >&2
+    fi
+  fi
 }
 
 write_env_file() {
@@ -138,6 +177,11 @@ DB_PORT=3306
 DB_NAME=flux_panel
 DB_USER=flux
 DB_PASSWORD=123456
+# Expected agent version for auto-upgrade.
+# Agents connecting with a different version will receive an Upgrade command.
+# Example: AGENT_VERSION=go-agent-1.0.7
+# Leave empty to use server default.
+AGENT_VERSION=
 EOF
 }
 

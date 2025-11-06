@@ -217,19 +217,12 @@ main() {
 
   mkdir -p "$INSTALL_DIR"
 
-  local mode
-  mode=$(choose_source)
-  if [[ "$mode" == "1" ]]; then
-    echo "Downloading prebuilt server binary..."
-    if file=$(download_prebuilt "$arch"); then
-      extract_or_install "$file" || exit 1
-    else
-      echo "Download failed; trying to build from source..."
-      build_from_source || { echo "Build failed" >&2; exit 1; }
-    fi
+  echo "Downloading prebuilt server binary..."
+  if file=$(download_prebuilt "$arch"); then
+     extract_or_install "$file" || exit 1
   else
-    echo "Building from source..."
-    build_from_source || { echo "Build failed" >&2; exit 1; }
+     echo "Download failed; trying to build from source..."
+     build_from_source || { echo "Build failed" >&2; exit 1; }
   fi
 
   write_env_file

@@ -305,19 +305,21 @@ func TunnelDiagnose(c *gin.Context) {
 		"message":     msg,
 	})
 
-	// 入口节点外网连通性
-	avg, loss, ok2, msg2, rid1 := diagnosePingFromNodeCtx(inNode.ID, "1.1.1.1", 3, 1500, map[string]interface{}{"src": "tunnel", "step": "entryPublic", "tunnelId": t.ID})
-	results = append(results, map[string]interface{}{
-		"success":     ok2,
-		"description": "入口节点外网连通性 (ICMP 1.1.1.1)",
-		"nodeName":    inNode.Name,
-		"nodeId":      inNode.ID,
-		"targetIp":    "1.1.1.1",
-		"averageTime": avg,
-		"packetLoss":  loss,
-		"message":     msg2,
-		"reqId":       rid1,
-	})
+    // 入口节点外网连通性：仅端口转发类型检查
+    if t.Type == 1 {
+        avg, loss, ok2, msg2, rid1 := diagnosePingFromNodeCtx(inNode.ID, "1.1.1.1", 3, 1500, map[string]interface{}{"src": "tunnel", "step": "entryPublic", "tunnelId": t.ID})
+        results = append(results, map[string]interface{}{
+            "success":     ok2,
+            "description": "入口节点外网连通性 (ICMP 1.1.1.1)",
+            "nodeName":    inNode.Name,
+            "nodeId":      inNode.ID,
+            "targetIp":    "1.1.1.1",
+            "averageTime": avg,
+            "packetLoss":  loss,
+            "message":     msg2,
+            "reqId":       rid1,
+        })
+    }
 	// 出口节点外网连通性（隧道转发时）
 	if t.Type == 2 && outNode.ID != 0 {
 		avg2, loss2, ok3, msg3, rid2 := diagnosePingFromNodeCtx(outNode.ID, "1.1.1.1", 3, 1500, map[string]interface{}{"src": "tunnel", "step": "exitPublic", "tunnelId": t.ID})
@@ -364,7 +366,10 @@ func TunnelDiagnoseStep(c *gin.Context) {
 		_ = db.DB.First(&outNode, *t.OutNodeID).Error
 	}
 
-	log.Printf("API /tunnel/diagnose-step tunnelId=%d step=%s inNode=%d outNode=%d", p.TunnelID, p.Step, t.InNodeID, ifThen(t.OutNodeID != nil, *t.OutNodeID, int64(0)))
+    // avoid nil deref: compute outNodeId safely
+    outId := int64(0)
+    if t.OutNodeID != nil { outId = *t.OutNodeID }
+    log.Printf("API /tunnel/diagnose-step tunnelId=%d step=%s inNode=%d outNode=%d", p.TunnelID, p.Step, t.InNodeID, outId)
 	var res map[string]interface{}
 	switch p.Step {
 	case "entry":

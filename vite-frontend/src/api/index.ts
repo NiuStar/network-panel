@@ -27,7 +27,7 @@ export const getUserPackageInfo = () => Network.post("/user/package");
 export const createNode = (data: any) => Network.post("/node/create", data);
 export const getNodeList = () => Network.post("/node/list");
 export const updateNode = (data: any) => Network.post("/node/update", data);
-export const deleteNode = (id: number) => Network.post("/node/delete", { id });
+export const deleteNode = (id: number, uninstall?: boolean) => Network.post("/node/delete", { id, uninstall });
 export const getNodeInstallCommand = (id: number) => Network.post("/node/install", { id });
 export const checkNodeStatus = (nodeId?: number) => {
   const params = nodeId ? { nodeId } : {};

@@ -49,6 +49,8 @@ type NodeDto struct {
     PortSta int    `json:"portSta"`
     PortEnd int    `json:"portEnd"`
     PriceCents  *int64 `json:"priceCents"`
+    // New: prefer cycleMonths (1/3/6/12). cycleDays kept for backward-compat (30/90/180/365)
+    CycleMonths *int   `json:"cycleMonths"`
     CycleDays   *int   `json:"cycleDays"`
     StartDateMs *int64 `json:"startDateMs"`
 }
@@ -61,6 +63,7 @@ type NodeUpdateDto struct {
     PortSta int    `json:"portSta"`
     PortEnd int    `json:"portEnd"`
     PriceCents  *int64 `json:"priceCents"`
+    CycleMonths *int   `json:"cycleMonths"`
     CycleDays   *int   `json:"cycleDays"`
     StartDateMs *int64 `json:"startDateMs"`
 }

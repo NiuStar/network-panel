@@ -24,12 +24,16 @@ func ShareNetworkList(c *gin.Context) {
         Status      *int    `json:"status"`
         Version     string  `json:"version"`
         PriceCents  *int64  `json:"priceCents,omitempty"`
-        CycleDays   *int    `json:"cycleDays,omitempty"`
+        CycleMonths *int    `json:"cycleMonths,omitempty"`
         StartDateMs *int64  `json:"startDateMs,omitempty"`
     }
     outs := make([]nodeOut, 0, len(nodes))
     for _, n := range nodes {
-        outs = append(outs, nodeOut{ID: n.ID, Name: n.Name, Status: n.Status, Version: n.Version, PriceCents: n.PriceCents, CycleDays: n.CycleDays, StartDateMs: n.StartDateMs})
+        var cm *int
+        if n.CycleDays != nil {
+            switch *n.CycleDays { case 30: x:=1; cm=&x; case 90: x:=3; cm=&x; case 180: x:=6; cm=&x; case 365: x:=12; cm=&x }
+        }
+        outs = append(outs, nodeOut{ID: n.ID, Name: n.Name, Status: n.Status, Version: n.Version, PriceCents: n.PriceCents, CycleMonths: cm, StartDateMs: n.StartDateMs})
     }
 
     // batch RTT stats in window (reuse logic from NodeNetworkStatsBatch)

@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Button } from "@heroui/button";
 import { Input } from "@heroui/input";
+import { Select, SelectItem } from "@heroui/select";
 import { Textarea } from "@heroui/input";
 import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter } from "@heroui/modal";
 import { Chip } from "@heroui/chip";
@@ -36,7 +37,7 @@ interface Node {
   status: number; // 1: 在线, 0: 离线
   connectionStatus: 'online' | 'offline';
   priceCents?: number;
-  cycleDays?: number;
+  cycleMonths?: number;
   startDateMs?: number;
   systemInfo?: {
     cpuUsage: number;
@@ -72,6 +73,7 @@ export default function NodePage() {
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [nodeToDelete, setNodeToDelete] = useState<Node | null>(null);
+  const [deleteAlsoUninstall, setDeleteAlsoUninstall] = useState(false);
   const [form, setForm] = useState<NodeForm>({
     id: null,
     name: '',
@@ -81,7 +83,7 @@ export default function NodePage() {
     portEnd: 65535
   });
   const [priceCents, setPriceCents] = useState<number | undefined>(undefined);
-  const [cycleDays, setCycleDays] = useState<number | undefined>(undefined);
+  const [cycleMonths, setCycleMonths] = useState<number | undefined>(undefined);
   const [startDateMs, setStartDateMs] = useState<number | undefined>(undefined);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [probeStat, setProbeStat] = useState<Record<number, {avg:number; latest:number|null; target?: {id:number; name?:string; ip?:string}}>>({});
@@ -214,18 +216,68 @@ export default function NodePage() {
     setExitModalOpen(true);
   };
 
+  const addMonths = (ts: number, months: number): number => {
+    const d = new Date(ts);
+    const day = d.getDate();
+    const targetMonth = d.getMonth() + months;
+    const y = d.getFullYear() + Math.floor(targetMonth / 12);
+    const m = ((targetMonth % 12) + 12) % 12;
+    const lastDay = new Date(y, m + 1, 0).getDate();
+    const newDay = Math.min(day, lastDay);
+    const nd = new Date(y, m, newDay, d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds());
+    return nd.getTime();
+  };
+
   const formatRemainDays = (node: Node) => {
-    if (!node.cycleDays || !node.startDateMs) return '';
-    const now = Date.now();
-    const cycleMs = node.cycleDays * 24 * 3600 * 1000;
-    const elapsed = Math.max(0, now - node.startDateMs);
-    const remain = cycleMs - (elapsed % cycleMs);
-    const days = Math.ceil(remain / (24*3600*1000));
+    if (!node.cycleMonths || !node.startDateMs) return '';
+    let months = node.cycleMonths;
+    let exp: number | null = null;
+    if (months > 0) {
+      exp = addMonths(node.startDateMs, months);
+      const now = Date.now();
+      while (exp <= now) exp = addMonths(exp, months);
+    } else {
+      return '';
+    }
+    if (!exp) return '';
+    const days = Math.max(0, Math.ceil((exp - Date.now()) / (24*3600*1000)));
     return `${days} 天`;
   };
 
   const goNetwork = (node: Node) => {
     navigate(`/network/${node.id}`);
+  };
+
+  const periodOptions = [
+    { key: '1', label: '月' },
+    { key: '3', label: '季度' },
+    { key: '6', label: '半年' },
+    { key: '12', label: '年' },
+  ];
+
+  const computeNextExpire = (start?: number, cycle?: number): number | null => {
+    if (!start || !cycle) return null;
+    let months = 0;
+    switch (cycle) {
+      case 30: months = 1; break;
+      case 90: months = 3; break;
+      case 180: months = 6; break;
+      case 365: months = 12; break;
+      default: months = 0; break;
+    }
+    if (months > 0) {
+      let exp = addMonths(start, months);
+      const now = Date.now();
+      while (exp <= now) exp = addMonths(exp, months);
+      return exp;
+    }
+    // fallback by days
+    const cycleMs = cycle * 24 * 3600 * 1000;
+    const now = Date.now();
+    if (now <= start) return start + cycleMs;
+    const elapsed = now - start;
+    const k = Math.ceil(elapsed / cycleMs);
+    return start + k * cycleMs;
   };
 
   // 刷新节点服务状态（仅查询 ss）
@@ -581,7 +633,7 @@ export default function NodePage() {
       portEnd: node.portEnd
     });
     setPriceCents(node.priceCents);
-    setCycleDays(node.cycleDays);
+    setCycleMonths(node.cycleMonths);
     setStartDateMs(node.startDateMs);
     setDialogVisible(true);
   };
@@ -589,6 +641,7 @@ export default function NodePage() {
   // 删除节点
   const handleDelete = (node: Node) => {
     setNodeToDelete(node);
+    setDeleteAlsoUninstall(false);
     setDeleteModalOpen(true);
   };
 
@@ -597,7 +650,7 @@ export default function NodePage() {
     
     setDeleteLoading(true);
     try {
-      const res = await deleteNode(nodeToDelete.id);
+      const res = await deleteNode(nodeToDelete.id, deleteAlsoUninstall);
       if (res.code === 0) {
         toast.success('删除成功');
         setNodeList(prev => prev.filter(n => n.id !== nodeToDelete.id));
@@ -673,7 +726,7 @@ export default function NodePage() {
       };
       delete (submitData as any).ipString;
       if (priceCents != null) submitData.priceCents = priceCents;
-      if (cycleDays != null) submitData.cycleDays = cycleDays;
+      if (cycleMonths != null) submitData.cycleMonths = cycleMonths;
       if (startDateMs != null) submitData.startDateMs = startDateMs;
       
       const apiCall = isEdit ? updateNode : createNode;
@@ -686,7 +739,7 @@ export default function NodePage() {
       };
       if (!isEdit) {
         if (priceCents != null) data.priceCents = priceCents;
-        if (cycleDays != null) data.cycleDays = cycleDays;
+        if (cycleMonths != null) data.cycleMonths = cycleMonths;
         if (startDateMs != null) data.startDateMs = startDateMs;
       }
       
@@ -841,12 +894,12 @@ export default function NodePage() {
                         {probeStat[node.id]?.target?.name ? ` · ${probeStat[node.id]?.target?.name}(${probeStat[node.id]?.target?.ip || ''})` : ''}
                       </span>
                     </div>
-                    {(node.priceCents || node.cycleDays) && (
+                    {(node.priceCents || node.cycleMonths) && (
                       <div className="flex justify-between text-sm">
                         <span className="text-default-600">计费</span>
                         <span className="text-xs">
                           {node.priceCents ? `¥${(node.priceCents/100).toFixed(2)}` : ''}
-                          {node.cycleDays ? ` / ${node.cycleDays}天` : ''}
+                          {node.cycleMonths ? ` / ${node.cycleMonths===1?'月':node.cycleMonths===3?'季度':node.cycleMonths===6?'半年':node.cycleMonths===12?'年':node.cycleMonths+'月'}` : ''}
                           {node.startDateMs ? ` · 剩余${formatRemainDays(node)}` : ''}
                         </span>
                       </div>
@@ -1109,12 +1162,34 @@ export default function NodePage() {
                   <Input label="价格(元)" type="number" placeholder="可选" value={priceCents!=null? (priceCents/100).toString():''} onChange={(e)=>{
                     const v = parseFloat((e.target as any).value); setPriceCents(isNaN(v)? undefined : Math.round(v*100));
                   }} variant="bordered" />
-                  <Input label="周期(天)" type="number" placeholder="可选" value={cycleDays!=null? String(cycleDays):''} onChange={(e)=>{
-                    const v = parseInt((e.target as any).value); setCycleDays(isNaN(v)? undefined : v);
-                  }} variant="bordered" />
+                  <Select 
+                    label="周期"
+                    selectedKeys={cycleMonths? new Set([String(cycleMonths)]): new Set()}
+                    onChange={(e)=>{
+                      const v = parseInt((e.target as any).value);
+                      setCycleMonths(isNaN(v)? undefined : v);
+                    }}
+                    variant="bordered"
+                  >
+                    {periodOptions.map(opt => (
+                      <SelectItem key={opt.key}>{opt.label}</SelectItem>
+                    ))}
+                  </Select>
                   <Input label="开始日期" type="date" value={startDateMs? new Date(startDateMs).toISOString().slice(0,10):''} onChange={(e)=>{
                     const s = (e.target as any).value; setStartDateMs(s? new Date(s+ 'T00:00:00').getTime(): undefined);
                   }} variant="bordered" />
+                </div>
+
+                {/* 到期时间预览（根据周期与开始日期计算），显示“剩余天数” */}
+                <div className="text-xs text-default-600">
+                  {(() => {
+                    const exp = computeNextExpire(startDateMs, cycleMonths);
+                    if (!exp) return '到期时间：-';
+                    const daysLeft = Math.max(0, Math.ceil((exp - Date.now()) / (24*3600*1000)));
+                    const dt = new Date(exp);
+                    const yyyy = dt.getFullYear(); const mm = String(dt.getMonth()+1).padStart(2,'0'); const dd = String(dt.getDate()).padStart(2,'0');
+                    return `到期时间：${yyyy}-${mm}-${dd}（剩余 ${daysLeft} 天）`;
+                  })()}
                 </div>
 
 
@@ -1214,6 +1289,10 @@ export default function NodePage() {
                 <ModalBody>
                   <p>确定要删除节点 <strong>"{nodeToDelete?.name}"</strong> 吗？</p>
                   <p className="text-small text-default-500">此操作不可恢复，请谨慎操作。</p>
+                  <label className="flex items-center gap-2 text-sm mt-2">
+                    <input type="checkbox" checked={deleteAlsoUninstall} onChange={(e)=>setDeleteAlsoUninstall((e.target as any).checked)} />
+                    同步卸载节点上的 Agent（自我卸载）
+                  </label>
                 </ModalBody>
                 <ModalFooter>
                   <Button variant="light" onPress={onClose}>

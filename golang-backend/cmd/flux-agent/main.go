@@ -33,7 +33,7 @@ var (
 
 // versionBase is the agent semantic version (without role prefix).
 // final reported version is: go-agent-<versionBase> or go-agent2-<versionBase>
-var versionBase = "1.0.1"
+var versionBase = "1.0.2"
 var version = "" // computed in main()
 
 func isAgent2Binary() bool {
@@ -168,8 +168,8 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 	go reconcile(addr, secret, scheme)
 	go periodicReconcile(addr, secret, scheme)
 	go periodicProbe(addr, secret, scheme)
-    go periodicSystemInfo(c)
-    go periodicEnsureGost()
+	go periodicSystemInfo(c)
+	go periodicEnsureGost()
 	// after connect, cross-check counterpart agent
 	go func() {
 		// fetch expected versions
@@ -348,6 +348,10 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 			go func() { _ = upgradeAgent1(addr, scheme, "") }()
 		case "UpgradeAgent2":
 			go func() { _ = upgradeAgent2(addr, scheme, "") }()
+		case "UninstallAgent":
+			go func() {
+				_ = uninstallSelf()
+			}()
 		default:
 			// ignore unknown
 		}
@@ -1355,45 +1359,77 @@ func download(url, dest string) error {
 	return err
 }
 
+// --- self uninstall ---
+func uninstallSelf() error {
+	// Determine target binary and service name by role
+	svc := "flux-agent"
+	target := "/etc/gost/flux-agent"
+	if isAgent2Binary() {
+		svc = "flux-agent2"
+		target = "/etc/gost/flux-agent2"
+	}
+	// stop and disable service if possible
+	if _, err := exec.LookPath("systemctl"); err == nil {
+		_ = exec.Command("systemctl", "stop", svc).Run()
+		_ = exec.Command("systemctl", "disable", svc).Run()
+		// remove service file
+		_ = os.Remove("/etc/systemd/system/" + svc + ".service")
+		_ = exec.Command("systemctl", "daemon-reload").Run()
+	} else if _, err := exec.LookPath("service"); err == nil {
+		_ = exec.Command("service", svc, "stop").Run()
+	}
+	// remove target binary and env file
+	_ = os.Remove(target)
+	if svc == "flux-agent" {
+		_ = os.Remove("/etc/default/flux-agent")
+	} else {
+		_ = os.Remove("/etc/default/flux-agent2")
+	}
+	log.Printf("{\"event\":\"agent_uninstalled\",\"service\":%q}", svc)
+	// exit process
+	os.Exit(0)
+	return nil
+}
+
 // --- ensure gost.service stays running ---
 func periodicEnsureGost() {
-    ticker := time.NewTicker(10 * time.Second)
-    defer ticker.Stop()
-    for range ticker.C {
-        active, known := isServiceActive("gost")
-        if !known {
-            // service manager unavailable or service not installed; skip
-            continue
-        }
-        if active {
-            continue
-        }
-        // try restart when inactive
-        if tryRestartService("gost") {
-            log.Printf("{\"event\":\"gost_autorestart\",\"status\":\"restarted\"}")
-        } else {
-            log.Printf("{\"event\":\"gost_autorestart\",\"status\":\"failed\"}")
-        }
-    }
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		active, known := isServiceActive("gost")
+		if !known {
+			// service manager unavailable or service not installed; skip
+			continue
+		}
+		if active {
+			continue
+		}
+		// try restart when inactive
+		if tryRestartService("gost") {
+			log.Printf("{\"event\":\"gost_autorestart\",\"status\":\"restarted\"}")
+		} else {
+			log.Printf("{\"event\":\"gost_autorestart\",\"status\":\"failed\"}")
+		}
+	}
 }
 
 // isServiceActive checks if a service is active via systemctl/service.
 // returns (active, known). known=false if neither manager exists or status unknown.
 func isServiceActive(name string) (bool, bool) {
-    if _, err := exec.LookPath("systemctl"); err == nil {
-        // is-active --quiet exits 0 when active
-        if err := exec.Command("systemctl", "is-active", "--quiet", name).Run(); err == nil {
-            return true, true
-        }
-        // If systemctl can run, we consider it authoritative even if inactive
-        return false, true
-    }
-    if _, err := exec.LookPath("service"); err == nil {
-        // service <name> status returns 0 when running on many distros
-        if err := exec.Command("service", name, "status").Run(); err == nil {
-            return true, true
-        }
-        return false, true
-    }
-    return false, false
+	if _, err := exec.LookPath("systemctl"); err == nil {
+		// is-active --quiet exits 0 when active
+		if err := exec.Command("systemctl", "is-active", "--quiet", name).Run(); err == nil {
+			return true, true
+		}
+		// If systemctl can run, we consider it authoritative even if inactive
+		return false, true
+	}
+	if _, err := exec.LookPath("service"); err == nil {
+		// service <name> status returns 0 when running on many distros
+		if err := exec.Command("service", name, "status").Run(); err == nil {
+			return true, true
+		}
+		return false, true
+	}
+	return false, false
 }

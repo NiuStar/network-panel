@@ -331,6 +331,12 @@ export default function TunnelPage() {
     };
 
     try {
+      // 0) 入口到 1.1.1.1（ICMP）仅端口转发执行
+      if (tunnel.type === 1) {
+        const r1 = await diagnoseTunnelStep(tunnel.id, 'entry');
+        if (r1.code === 0) append(r1.data); else append({ success: false, description: '入口外网连通性 (ICMP 1.1.1.1)', nodeName: '-', nodeId: '-', targetIp: '1.1.1.1', message: r1.msg || '失败' });
+      }
+
       // 1) 入口到出口（ICMP）仅隧道转发
       if (tunnel.type === 2) {
         const r2 = await diagnoseTunnelStep(tunnel.id, 'entryExit');

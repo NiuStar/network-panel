@@ -19,6 +19,7 @@ export default function NetworkPage() {
   const navigate = useNavigate();
   const nodeId = Number(params.id);
   const [range, setRange] = useState('1h');
+  const [listKey, setListKey] = useState(0);
   const [data, setData] = useState<any>({ results: [], targets: {}, disconnects: [], sla: 0 });
   const [nodes, setNodes] = useState<any[]>([]);
   const [batch, setBatch] = useState<any>({});
@@ -28,6 +29,14 @@ export default function NetworkPage() {
   const [loading, setLoading] = useState(false);
   const chartRef = useRef<HTMLDivElement>(null);
   const chartInstanceRef = useRef<any>(null);
+
+  // Ensure chart is disposed when leaving detail view
+  useEffect(() => {
+    if (!params.id && chartInstanceRef.current) {
+      try { chartInstanceRef.current.dispose(); } catch {}
+      chartInstanceRef.current = null;
+    }
+  }, [params.id]);
 
   const load = async () => {
     setLoading(true);
@@ -55,6 +64,7 @@ export default function NetworkPage() {
     } catch { toast.error('网络错误'); } finally { setLoading(false); }
   };
   useEffect(() => { load(); }, [params.id, range]);
+  useEffect(() => { if (!params.id) setListKey((k)=>k+1); }, [params.id]);
 
   // fetch node name for detail page
   useEffect(() => {
@@ -83,9 +93,11 @@ export default function NetworkPage() {
     const render = async () => {
       if (!chartRef.current) return;
       const echarts = await import('echarts');
-      if (!chartInstanceRef.current) {
-        chartInstanceRef.current = echarts.init(chartRef.current);
+      if (chartInstanceRef.current) {
+        try { chartInstanceRef.current.dispose(); } catch {}
+        chartInstanceRef.current = null;
       }
+      chartInstanceRef.current = echarts.init(chartRef.current);
       const series: any[] = [];
       Object.keys(grouped).forEach((tid) => {
         const arr = grouped[tid];
@@ -124,7 +136,13 @@ export default function NetworkPage() {
     };
     const handleResize = () => { try { chartInstanceRef.current?.resize(); } catch {} };
     render();
-    return () => { window.removeEventListener('resize', handleResize); };
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      if (chartInstanceRef.current) {
+        try { chartInstanceRef.current.dispose(); } catch {}
+        chartInstanceRef.current = null;
+      }
+    };
   }, [grouped, data.targets]);
 
   return (
@@ -140,16 +158,22 @@ export default function NetworkPage() {
         )}
       </div>
 
-      <div className="flex gap-2">
+      <div className="flex gap-2 items-center">
         {ranges.map(r => (
           <Button key={r.key} size="sm" variant={range===r.key? 'solid':'flat'} color={range===r.key? 'primary':'default'} onPress={()=>setRange(r.key)}>
             {r.label}
           </Button>
         ))}
+        {!params.id && (
+          <Button size="sm" variant="flat" onPress={async ()=>{
+            const url = (window.location?.origin || '') + '/share/network';
+            try { await navigator.clipboard.writeText(url); toast.success('分享链接已复制'); } catch { toast.error('复制失败：'+url); }
+          }}>分享</Button>
+        )}
       </div>
 
       {params.id ? (
-      <Card>
+      <Card key={listKey}>
         <CardHeader className="justify-between">
           <div className="font-semibold">Ping 统计（按目标）</div>
           <Button size="sm" variant="flat" onPress={load} isLoading={loading}>刷新</Button>
@@ -178,11 +202,18 @@ export default function NetworkPage() {
               const fmtTraffic = (bytes:number) => {
                 if (!bytes) return '0 B'; const k=1024; const u=['B','KB','MB','GB','TB']; const i=Math.floor(Math.log(bytes)/Math.log(k)); return `${(bytes/Math.pow(k,i)).toFixed(2)} ${u[i]}`;
               };
+              const addMonths = (ts:number, months:number) => {
+                const d = new Date(ts); const day=d.getDate(); const target=d.getMonth()+months; const y=d.getFullYear()+Math.floor(target/12); const m=((target%12)+12)%12; const last=new Date(y,m+1,0).getDate(); const nd=new Date(y,m,Math.min(day,last), d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds()); return nd.getTime();
+              };
+              const toMonths = (cd?: number) => { if (!cd) return undefined; switch (cd) { case 30: return 1; case 90: return 3; case 180: return 6; case 365: return 12; default: return undefined; } };
               const remainDays = () => {
-                const cd = cycleOverride[n.id] || n.cycleDays;
-                if (!cd || !n.startDateMs) return '';
-                const now = Date.now(); const cycleMs = cd*24*3600*1000; const elapsed=Math.max(0, now - n.startDateMs); const remain=cycleMs - (elapsed % cycleMs);
-                const days = Math.ceil(remain/(24*3600*1000)); return `${days} 天`;
+                const cm = cycleOverride[n.id] || n.cycleMonths || toMonths(n.cycleDays);
+                if (!cm || !n.startDateMs) return '';
+                let months = cm;
+                let exp: number;
+                exp = addMonths(n.startDateMs, months); const now=Date.now(); while (exp<=now) exp=addMonths(exp, months);
+                const days = Math.max(0, Math.ceil((exp - Date.now())/(24*3600*1000)));
+                return `${days} 天`;
               };
               return (
                 <div key={n.id} className="p-3 rounded border border-divider hover:shadow-sm transition cursor-pointer" onClick={()=>navigate(`/network/${n.id}`)}>
@@ -216,21 +247,21 @@ export default function NetworkPage() {
                       <div className="font-mono">{online && sys? fmtTraffic(sys.bytes_rx||0): '-'}</div>
                     </div>
                   </div>
-                  {(n.priceCents || n.cycleDays) && (
+                  {(n.priceCents || n.cycleMonths || n.cycleDays) && (
                     <div className="mt-2 text-xs text-default-600">
-                      计费：{n.priceCents? `¥${(n.priceCents/100).toFixed(2)}`: ''}{(cycleOverride[n.id]||n.cycleDays)? ` / ${(cycleOverride[n.id]||n.cycleDays)}天`: ''}{n.startDateMs? ` · 剩余${remainDays()}`: ''}
+                      计费：{n.priceCents? `¥${(n.priceCents/100).toFixed(2)}`: ''}{(cycleOverride[n.id]||n.cycleMonths||toMonths(n.cycleDays))? ` / ${(() => { const cm = (cycleOverride[n.id]||n.cycleMonths||toMonths(n.cycleDays)); return cm===1?'月':cm===3?'季度':cm===6?'半年':cm===12?'年': (cm? cm+'月':'');} )()}`: ''}{n.startDateMs? ` · 剩余${remainDays()}`: ''}
                       <div className="mt-1 flex items-center gap-2">
                         <span>续费周期</span>
                         <select className="text-xs border rounded px-1 py-0.5"
-                          value={String(cycleOverride[n.id] || n.cycleDays || '')}
+                          value={String(cycleOverride[n.id] || n.cycleMonths || toMonths(n.cycleDays) || '')}
                           onClick={(e)=>e.stopPropagation()}
                           onChange={(e)=>{ const v = Number(e.target.value); setCycleOverride(prev=>({...prev, [n.id]: v||undefined as any})); }}
                         >
                           <option value="">默认</option>
-                          <option value="30">月(30天)</option>
-                          <option value="90">季度(90天)</option>
-                          <option value="180">半年(180天)</option>
-                          <option value="365">年(365天)</option>
+                          <option value="1">月</option>
+                          <option value="3">季度</option>
+                          <option value="6">半年</option>
+                          <option value="12">年</option>
                         </select>
                       </div>
                     </div>

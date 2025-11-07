@@ -168,39 +168,51 @@ install_install_sh() {
 }
 
 install_flux_agents() {
-  # Ensure a minimal set of flux-agent binaries are available for nodes to download via /flux-agent/:file
-  # Targets: linux-amd64, linux-arm64, linux-armv7
+  # Ensure a minimal set of flux-agent binaries are available via /flux-agent/:file
+  # Preferred source order: local repo copies -> GitHub Releases (latest)
   local outdir="$INSTALL_DIR/public/flux-agent"
   mkdir -p "$outdir"
 
-  # If building from source tree, prefer local copies
   local localdir="$ROOT_DIR/golang-backend/public/flux-agent"
   local need=("flux-agent-linux-amd64" "flux-agent-linux-arm64" "flux-agent-linux-armv7")
-  local copied=0
+  local have_any=0
+
+  # 1) Try local copies first
   if [[ -d "$localdir" ]]; then
     for f in "${need[@]}"; do
       if [[ -f "$localdir/$f" ]]; then
         install -m 0755 "$localdir/$f" "$outdir/$f"
-        copied=1
+        have_any=1
+        log "✅ copied local $f"
       fi
     done
   fi
 
-  # If any missing, try GitHub raw fallback
-  local base="https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/golang-backend/public/flux-agent"
+  # 2) Fetch missing from GitHub Releases latest
+  local base="https://github.com/NiuStar/network-panel/releases/latest/download"
   if [[ -n "$PROXY_PREFIX" ]]; then base="${PROXY_PREFIX}${base}"; fi
-  local fetched=0
   for f in "${need[@]}"; do
     if [[ ! -f "$outdir/$f" ]]; then
-      if curl -fSL --retry 3 --retry-delay 1 "$base/$f" -o "$outdir/$f"; then
-        chmod +x "$outdir/$f" && fetched=1
+      local url="$base/$f"
+      log "Downloading flux-agent: $f"
+      # Capture HTTP code for better error messages
+      local http_code
+      http_code=$(curl -fSL --retry 3 --retry-delay 1 --write-out '%{http_code}' --output "$outdir/$f" "$url" 2>/dev/null || true)
+      if [[ -s "$outdir/$f" && ( "$http_code" == "200" || "$http_code" == "302" || "$http_code" == "000" ) ]]; then
+        chmod +x "$outdir/$f"
+        have_any=1
+        log "✅ downloaded $f to $outdir/$f"
+      else
+        rm -f "$outdir/$f" 2>/dev/null || true
+        log "❌ failed to download $f from $url (HTTP ${http_code:-unknown})"
       fi
     fi
   done
-  if (( copied == 1 || fetched == 1 )); then
-    log "✅ flux-agent binaries installed to $outdir"
+
+  if (( have_any == 1 )); then
+    log "✅ flux-agent binaries ready in $outdir"
   else
-    log "⚠️  Could not obtain flux-agent binaries; /flux-agent endpoint will be unavailable for nodes until provided."
+    log "⚠️  No flux-agent binaries available; /flux-agent endpoint will be unavailable for nodes until provided."
   fi
 }
 

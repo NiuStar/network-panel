@@ -167,6 +167,43 @@ install_install_sh() {
   return 1
 }
 
+install_flux_agents() {
+  # Ensure a minimal set of flux-agent binaries are available for nodes to download via /flux-agent/:file
+  # Targets: linux-amd64, linux-arm64, linux-armv7
+  local outdir="$INSTALL_DIR/public/flux-agent"
+  mkdir -p "$outdir"
+
+  # If building from source tree, prefer local copies
+  local localdir="$ROOT_DIR/golang-backend/public/flux-agent"
+  local need=("flux-agent-linux-amd64" "flux-agent-linux-arm64" "flux-agent-linux-armv7")
+  local copied=0
+  if [[ -d "$localdir" ]]; then
+    for f in "${need[@]}"; do
+      if [[ -f "$localdir/$f" ]]; then
+        install -m 0755 "$localdir/$f" "$outdir/$f"
+        copied=1
+      fi
+    done
+  fi
+
+  # If any missing, try GitHub raw fallback
+  local base="https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/golang-backend/public/flux-agent"
+  if [[ -n "$PROXY_PREFIX" ]]; then base="${PROXY_PREFIX}${base}"; fi
+  local fetched=0
+  for f in "${need[@]}"; do
+    if [[ ! -f "$outdir/$f" ]]; then
+      if curl -fSL --retry 3 --retry-delay 1 "$base/$f" -o "$outdir/$f"; then
+        chmod +x "$outdir/$f" && fetched=1
+      fi
+    fi
+  done
+  if (( copied == 1 || fetched == 1 )); then
+    log "✅ flux-agent binaries installed to $outdir"
+  else
+    log "⚠️  Could not obtain flux-agent binaries; /flux-agent endpoint will be unavailable for nodes until provided."
+  fi
+}
+
 build_from_source() {
   if ! command -v go >/dev/null 2>&1; then
     log "Go toolchain not installed; cannot build from source."
@@ -218,6 +255,8 @@ build_from_source() {
   fi
   # Always install install.sh alongside WorkingDirectory for /install.sh serving
   install_install_sh || true
+  # Provide flux-agent binaries for node auto-upgrade/download
+  install_flux_agents || true
 }
 
 write_env_file() {
@@ -287,6 +326,8 @@ main() {
 
   # Ensure install.sh present for node bootstrap
   install_install_sh || true
+  # Ensure flux-agent binaries are available
+  install_flux_agents || true
 
   write_env_file
   # Also create a project-local .env with sane defaults

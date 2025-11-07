@@ -237,6 +237,7 @@ install_flux_agent() {
   local tmpfile
   local AGENT_FILE="$INSTALL_DIR/flux-agent"
   tmpfile=$(mktemp -p /tmp flux-agent.XXXX || echo "/tmp/flux-agent.tmp")
+  echo "http://$SERVER_ADDR/flux-agent/$file"
   if curl -fSL --retry 3 --retry-delay 1 "http://$SERVER_ADDR/flux-agent/$file" -o "$tmpfile"; then
     install -m 0755 "$tmpfile" "$AGENT_FILE" && rm -f "$tmpfile"
   else

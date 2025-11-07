@@ -1,7 +1,7 @@
 # network-panel 组网面板（叮当猫组网面板）
 
 ## 更新记录
-- 2025-11-12 增加探针分享功能，地址为：```http://ip:port/app/share/network```
+- 2025-11-07 增加探针分享功能，地址为：```http://ip:port/app/share/network```
 - 2025-11-06 迁移页新增“真·进度条”，实时显示表级进度  \
              增加了SQLLite支持，需设置DB_DIALECT环境变量为sqlite，默认为mysql  \
              Agent 自升级功能上线

@@ -8,8 +8,7 @@ import (
 	"network-panel/golang-backend/internal/app/model"
 	"network-panel/golang-backend/internal/app/util"
 
-    "gorm.io/driver/mysql"
-    sqlite "github.com/glebarez/sqlite"
+	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -75,7 +74,7 @@ func Init() error {
 		if path == "" {
 			path = "./flux.db"
 		}
-		db, err = gorm.Open(sqlite.Open(path), cfg)
+		db, err = openSQLiteGorm(path, cfg)
 	} else {
 		db, err = gorm.Open(mysql.Open(dsn()), cfg)
 	}

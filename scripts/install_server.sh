@@ -252,6 +252,44 @@ install_flux_agents() {
   fi
 }
 
+# --- Clean install dir (preserve SQLite DB only) ---
+read_env_val() {
+  # read_env_val <file> <VAR> -> print last matching value without quotes
+  local f="$1"; local k="$2"; local v
+  [[ -f "$f" ]] || { return 1; }
+  v=$(grep -E "^${k}=" "$f" 2>/dev/null | tail -n1 | sed -E "s/^${k}=\"?([^\"]*)\"?.*$/\1/")
+  if [[ -n "$v" ]]; then printf '%s\n' "$v"; return 0; fi
+  return 1
+}
+
+clean_install_dir_preserve_sqlite() {
+  mkdir -p "$INSTALL_DIR"
+  local dialect="" dbpath=""
+  # Prefer system env file, then local .env
+  dialect=$(read_env_val "$ENV_FILE" DB_DIALECT || true)
+  if [[ -z "$dialect" ]]; then
+    dialect=$(read_env_val "$DOT_ENV_FILE" DB_DIALECT || true)
+  fi
+  if [[ "$dialect" == "sqlite" ]]; then
+    dbpath=$(read_env_val "$ENV_FILE" DB_SQLITE_PATH || true)
+    if [[ -z "$dbpath" ]]; then
+      dbpath=$(read_env_val "$DOT_ENV_FILE" DB_SQLITE_PATH || true)
+    fi
+    # default fallback
+    if [[ -z "$dbpath" ]]; then dbpath="${INSTALL_DIR}/panel.db"; fi
+  fi
+
+  if [[ -n "$dbpath" && -f "$dbpath" ]]; then
+    log "Cleaning $INSTALL_DIR (preserve sqlite DB: $dbpath)"
+    # Delete everything except the DB file
+    # Use samefile to exclude exact file
+    find "$INSTALL_DIR" -mindepth 1 ! -samefile "$dbpath" -exec rm -rf {} + 2>/dev/null || true
+  else
+    log "Cleaning $INSTALL_DIR (no sqlite DB to preserve)"
+    rm -rf "${INSTALL_DIR}/"* 2>/dev/null || true
+  fi
+}
+
 build_from_source() {
   if ! command -v go >/dev/null 2>&1; then
     log "Go toolchain not installed; cannot build from source."
@@ -362,6 +400,8 @@ main() {
   arch=$(prompt_arch)
 
   mkdir -p "$INSTALL_DIR"
+  # Clean install dir before re-install (preserve sqlite DB if configured)
+  clean_install_dir_preserve_sqlite
 
   log "Downloading prebuilt server binary..."
   local file

@@ -47,6 +47,63 @@
 - 典型链路与配置：见下文“隧道转发配置（JSON）”
 
 ---
+## 从哆啦A梦面板迁移
+
+支持两种方式将“哆啦A梦面板”的数据迁移到本面板：
+
+- 方式一（指向原库）：复用哆啦A梦的 MySQL 数据库，直接把本面板的数据库配置改为哆啦A梦的数据库连接信息。
+- 方式二（数据拷贝）：使用面板内置“数据迁移”功能，填写哆啦A梦数据库信息，自动迁移数据到当前面板所用数据库（SQLite 或 MySQL）。
+
+— 方式一：复用哆啦A梦数据库（直接改配置）
+- 适合想零拷贝、快速切换到新面板的场景。
+- 前置：已掌握哆啦A梦库的连接参数（Host/Port/User/Password/Database）。
+- 步骤：
+  1) 确认使用 MySQL 模式：确保未设置或清空 `DB_DIALECT`（为空即用 MySQL，默认也是 MySQL）。
+  2) 设置以下变量为哆啦A梦数据库：`DB_HOST`、`DB_PORT`、`DB_NAME`、`DB_USER`、`DB_PASSWORD`。
+  3) 重启面板服务。
+
+  示例（Docker Compose）
+  - 修改 `docker-compose-v4_mysql.yml:30` 或 `network-panel/docker-compose.yaml:30` 中的环境变量：
+    - `DB_HOST=你的MySQL地址`
+    - `DB_PORT=3306`
+    - `DB_NAME=哆啦A梦的数据库名`
+    - `DB_USER=用户名`
+    - `DB_PASSWORD=密码`
+  - 启动/重启：`docker compose -f docker-compose-v4_mysql.yml up -d`
+
+  示例（本机/二进制/systemd）
+  - 环境文件：`/etc/default/network-panel` 或项目根目录 `.env`
+  - 写入（示例）：
+    - `DB_HOST=127.0.0.1`
+    - `DB_PORT=3306`
+    - `DB_NAME=flux_panel`
+    - `DB_USER=flux`
+    - `DB_PASSWORD=123456`
+    - 确保未设置或清空 `DB_DIALECT`
+  - 重启：`systemctl restart network-panel`
+
+  验证
+  - 登录新面板，应直接看到原有用户/节点/隧道/转发等数据。
+  - 若账号权限受限，请为该 MySQL 账号授予相应表的读写权限。
+
+— 方式二：使用面板内置迁移（自动拷贝）
+- 适合想将数据迁移到全新库（如 SQLite 或新建 MySQL）的场景。
+- 思路：新面板按照你的目标数据库运行；进入“数据迁移”页面，填入哆啦A梦库信息，系统会逐表拷贝并显示实时进度。
+- 步骤：
+  1) 选择目标库并启动面板：
+     - SQLite：设置 `DB_DIALECT=sqlite`，可选 `DB_SQLITE_PATH`；重启生效。
+     - MySQL：清空 `DB_DIALECT`，设置 `DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD`；重启生效。
+  2) 打开后台“数据迁移”页面。
+  3) 填入哆啦A梦库的 Host、Port(默认3306)、User、Password、Database。
+  4) 点“测试连接”，确认源库各表记录数。
+  5) 点“开始迁移”：前端显示总进度与逐表插入/源计数；完成后提示“迁移完成”，失败则展示错误原因。
+  6) 迁移后建议重新安装/升级 Agent，使节点配置在各节点落盘并生效。
+
+  说明
+  - 已适配的核心表：`user`、`node`、`tunnel`、`forward`、`user_tunnel`、`speed_limit`、`vite_config`、`statistics_flow`。
+  - 大数据量请耐心等待；中断后可通过状态接口再次查看进度。
+
+---
 ## 数据迁移（带进度）
 
 - 入口：面板后台 “数据迁移” 页面。

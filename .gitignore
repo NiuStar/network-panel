@@ -262,3 +262,4 @@ device.id
 publish.sh
 golang-backend/public/
 publish_beta.sh
+.gocache

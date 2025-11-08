@@ -7,7 +7,7 @@ import { Input } from "@heroui/input";
 import { toast } from 'react-hot-toast';
 
 import { Logo } from '@/components/icons';
-import { updatePassword } from '@/api';
+import { updatePassword, getVersionInfo, getLatestVersionInfo, upgradeToLatest } from '@/api';
 import { safeLogout } from '@/utils/logout';
 import { siteConfig } from '@/config/site';
 
@@ -45,6 +45,10 @@ export default function AdminLayout({
     newPassword: '',
     confirmPassword: ''
   });
+  // 升级提示状态
+  const [serverVersion, setServerVersion] = useState<string>("");
+  const [latestTag, setLatestTag] = useState<string>("");
+  const [upgradeBusy, setUpgradeBusy] = useState(false);
 
   // 菜单项配置
   const menuItems: MenuItem[] = [
@@ -180,6 +184,28 @@ export default function AdminLayout({
       window.removeEventListener('resize', checkMobile);
     };
   }, []);
+
+  // 检查版本，决定是否显示升级按钮
+  useEffect(() => {
+    getVersionInfo().then((res:any)=>{
+      if (res.code===0 && res.data){ setServerVersion(res.data.server || ""); }
+    }).catch(()=>{});
+    getLatestVersionInfo().then((res:any)=>{
+      if (res.code===0 && res.data){ setLatestTag(res.data.tag || ""); }
+    }).catch(()=>{});
+  }, []);
+
+  const normalizeVer = (v:string) => (v||"").replace(/^server-/,'').replace(/^v/, '');
+  const showUpgrade = !!serverVersion && !!latestTag && normalizeVer(serverVersion) !== normalizeVer(latestTag);
+
+  const doUpgrade = async () => {
+    setUpgradeBusy(true);
+    try {
+      const r:any = await upgradeToLatest();
+      if (r.code===0){ toast.success(`资源已更新到 ${latestTag}，请刷新页面`); }
+      else { toast.error(r.msg||'更新失败'); }
+    } catch(e){ toast.error('更新失败'); } finally { setUpgradeBusy(false); }
+  };
 
   // 退出登录
   const handleLogout = () => {
@@ -373,6 +399,11 @@ export default function AdminLayout({
           </div>
 
           <div className="flex items-center gap-3">
+            {showUpgrade && (
+              <Button color="warning" size="sm" isLoading={upgradeBusy} onPress={doUpgrade}>
+                升级到 {latestTag}
+              </Button>
+            )}
             {/* 用户菜单 */}
              <Dropdown placement="bottom-end">
                <DropdownTrigger>

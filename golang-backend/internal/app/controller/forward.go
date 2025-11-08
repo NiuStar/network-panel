@@ -95,28 +95,22 @@ func ForwardCreate(c *gin.Context) {
 			"name":     name,
 			"addr":     fmt.Sprintf(":%d", *f.OutPort),
 			"listener": map[string]any{"type": "grpc"},
-			"handler":  map[string]any{"type": "relay", "auth": map[string]any{"username": user, "password": pass}, "chain": "chain_" + name},
+			// 出口不再配置 chain，仅作为 relay 服务端
+			"handler":  map[string]any{"type": "relay", "auth": map[string]any{"username": user, "password": pass}},
 			"metadata": map[string]any{"managedBy": "network-panel"},
 		}
-		// server-side chain to forward to real exit remotes
-		nodes := []any{}
-		for _, raw := range strings.Split(f.RemoteAddr, ",") {
-			addr := strings.TrimSpace(raw)
-			if addr == "" {
-				continue
-			}
-			nodes = append(nodes, map[string]any{"name": "target", "addr": addr})
-		}
-		outSvc["_chains"] = []any{map[string]any{"name": "chain_" + name, "metadata": map[string]any{"managedBy": "network-panel"}, "hops": []any{map[string]any{"name": "hop_" + name, "nodes": nodes}}}}
 		_ = sendWSCommand(outNodeIDOr0(tun), "AddService", []map[string]any{outSvc})
 
         outIP := getOutNodeIP(tun)
         exitAddr := safeHostPort(outIP, *f.OutPort)
 
-        // Multi-level path support for tunnel-forward: inNode -> mid(relay grpc) -> ... -> exit(relay grpc)
+        // Multi-level path support for tunnel-forward:
+        // - exit: relay over gRPC (server)
+        // - mids: plain TCP forward (listen on port, forward to next hop addr:port)
+        // - entry: HTTP handler with chain(connector=relay, dialer=grpc) targeting FIRST MID addr:port
         path := getTunnelPathNodes(tun.ID)
         if len(path) > 0 {
-            // Pre-allocate grpc ports on mids (avoid conflicts using agent query)
+            // Pre-allocate TCP ports on mids (avoid conflicts using agent query)
             midPorts := make([]int, len(path))
             for i := range path {
                 // prefer use inPort as baseline, within node port range if needed
@@ -128,57 +122,45 @@ func ForwardCreate(c *gin.Context) {
                 midPorts[i] = findFreePortOnNode(path[i], f.InPort, minP, maxP)
                 if midPorts[i] == 0 { midPorts[i] = f.InPort }
             }
-            // Deploy relay grpc on each mid, chaining to next hop (relay over grpc)
+            // Deploy simple TCP forward on each mid to the next hop
             for i := 0; i < len(path); i++ {
                 nid := path[i]
                 thisPort := midPorts[i]
-                nextAddr := ""
+                var target string
                 if i < len(path)-1 {
-                    // next mid relay address
-                var nx model.Node
+                    var nx model.Node
                     if err := dbpkg.DB.First(&nx, path[i+1]).Error; err != nil { continue }
-                    nextAddr = safeHostPort(preferIPv4(nx), midPorts[i+1])
+                    target = safeHostPort(preferIPv4(nx), midPorts[i+1])
                 } else {
-                    // last mid points to exit relay address
-                    nextAddr = exitAddr
+                    // last mid forwards to exit relay (gRPC) address directly
+                    target = exitAddr
                 }
-                // relay server on mid with chain to next relay
-                chainName := fmt.Sprintf("chain_%s_mid_%d", name, i)
-                svc := map[string]any{
-                    "name":     name,
-                    "addr":     fmt.Sprintf(":%d", thisPort),
-                    "listener": map[string]any{"type": "grpc"},
-                    "handler":  map[string]any{"type": "relay", "auth": map[string]any{"username": user, "password": pass}, "chain": chainName},
-                    "metadata": map[string]any{"managedBy": "network-panel"},
-                }
-                node := map[string]any{
-                    "name":      fmt.Sprintf("node_mid_%d_%s", i, name),
-                    "addr":      nextAddr,
-                    "connector": map[string]any{"type": "relay", "auth": map[string]any{"username": user, "password": pass}},
-                    "dialer":    map[string]any{"type": "grpc"},
-                }
-                svc["_chains"] = []any{map[string]any{"name": chainName, "metadata": map[string]any{"managedBy": "network-panel"}, "hops": []any{map[string]any{"name": chainName + "_hop", "nodes": []any{node}}}}}
+                midName := fmt.Sprintf("%s_mid_%d", name, i)
+                svc := buildServiceConfig(midName, thisPort, target, nil)
                 _ = sendWSCommand(nid, "AddService", []map[string]any{svc})
             }
-            // In node: chain to first mid relay
+            // Entry node: forward handler + chain to first mid address using dialer=grpc（负载将被各中间节点逐跳TCP转发）
             var first model.Node
             if err := dbpkg.DB.First(&first, path[0]).Error; err == nil {
                 inSvc := map[string]any{
                     "name":     name,
                     "addr":     fmt.Sprintf(":%d", f.InPort),
                     "listener": map[string]any{"type": "tcp"},
-                    "handler":  map[string]any{"type": "http", "chain": "chain_" + name},
+                    "handler":  map[string]any{"type": "forward", "chain": "chain_" + name},
                     "metadata": map[string]any{"managedBy": "network-panel"},
                 }
                 chainName := "chain_" + name
                 hopName := "hop_" + name
                 node := map[string]any{
                     "name":      "node-" + name,
+                    // Important: dial to FIRST MID address; bytes are gRPC frames that will be forwarded hop-by-hop to exit
                     "addr":      safeHostPort(preferIPv4(first), midPorts[0]),
                     "connector": map[string]any{"type": "relay", "auth": map[string]any{"username": user, "password": pass}},
                     "dialer":    map[string]any{"type": "grpc"},
                 }
                 inSvc["_chains"] = []any{map[string]any{"name": chainName, "metadata": map[string]any{"managedBy": "network-panel"}, "hops": []any{map[string]any{"name": hopName, "nodes": []any{node}}}}}
+                // forwarder 目标为远程地址（取第一项）
+                inSvc["forwarder"] = map[string]any{"nodes": []map[string]any{{"name": "target", "addr": firstTargetHost(f.RemoteAddr)}}}
                 _ = sendWSCommand(tun.InNodeID, "AddService", []map[string]any{inSvc})
             }
         } else {
@@ -187,7 +169,7 @@ func ForwardCreate(c *gin.Context) {
                 "name":     name,
                 "addr":     fmt.Sprintf(":%d", f.InPort),
                 "listener": map[string]any{"type": "tcp"},
-                "handler":  map[string]any{"type": "http", "chain": "chain_" + name},
+                "handler":  map[string]any{"type": "forward", "chain": "chain_" + name},
                 "metadata": map[string]any{"managedBy": "network-panel"},
             }
             chainName := "chain_" + name
@@ -199,8 +181,19 @@ func ForwardCreate(c *gin.Context) {
                 "dialer":    map[string]any{"type": "grpc"},
             }
             inSvc["_chains"] = []any{map[string]any{"name": chainName, "metadata": map[string]any{"managedBy": "network-panel"}, "hops": []any{map[string]any{"name": hopName, "nodes": []any{node}}}}}
+            // forwarder 目标为远程地址（取第一项）
+            inSvc["forwarder"] = map[string]any{"nodes": []map[string]any{{"name": "target", "addr": firstTargetHost(f.RemoteAddr)}}}
             _ = sendWSCommand(tun.InNodeID, "AddService", []map[string]any{inSvc})
+            // restart in & out to ensure effect
+            _ = sendWSCommand(tun.InNodeID, "RestartGost", map[string]any{"reason":"forward_create"})
+            _ = sendWSCommand(outNodeIDOr0(tun), "RestartGost", map[string]any{"reason":"forward_create"})
         }
+        // restart gost on involved nodes to ensure services take effect
+        nodesToRestart := make(map[int64]struct{})
+        nodesToRestart[tun.InNodeID] = struct{}{}
+        if len(path) > 0 { for _, nid := range path { nodesToRestart[nid] = struct{}{} } }
+        nodesToRestart[outNodeIDOr0(tun)] = struct{}{}
+        for nid := range nodesToRestart { if nid > 0 { _ = sendWSCommand(nid, "RestartGost", map[string]any{"reason":"forward_create"}) } }
     } else {
         // port-forward: support multi-level path
         path := getTunnelPathNodes(tun.ID)
@@ -208,6 +201,7 @@ func ForwardCreate(c *gin.Context) {
             // single hop: in-node listens on inPort and forwards to remoteAddr
             svc := buildServiceConfig(name, f.InPort, f.RemoteAddr, preferIface(f.InterfaceName, tun.InterfaceName))
             _ = sendWSCommand(tun.InNodeID, "AddService", []map[string]any{svc})
+            _ = sendWSCommand(tun.InNodeID, "RestartGost", map[string]any{"reason":"forward_create"})
         } else {
             // chain: [inNode -> mid1 -> mid2 -> ... -> last], each listens on same inPort and forwards to next hop (last forwards to final remote)
             hops := append([]int64{tun.InNodeID}, path...)
@@ -229,6 +223,10 @@ func ForwardCreate(c *gin.Context) {
                 svc := buildServiceConfig(name, f.InPort, target, preferIface(f.InterfaceName, tun.InterfaceName))
                 _ = sendWSCommand(nodeID, "AddService", []map[string]any{svc})
             }
+            // restart gost on all hops
+            nodesToRestart := make(map[int64]struct{})
+            for _, nid := range append([]int64{tun.InNodeID}, path...) { nodesToRestart[nid] = struct{}{} }
+            for nid := range nodesToRestart { if nid > 0 { _ = sendWSCommand(nid, "RestartGost", map[string]any{"reason":"forward_create"}) } }
         }
     }
     c.JSON(http.StatusOK, response.OkNoData())
@@ -287,9 +285,9 @@ func ForwardUpdate(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("端口转发更新失败"))
 		return
 	}
-	// push update
-	name := buildServiceName(f.ID, f.UserID, f.TunnelID)
-	if tun.Type == 2 {
+    // push update
+    name := buildServiceName(f.ID, f.UserID, f.TunnelID)
+    if tun.Type == 2 {
 		// ensure outPort exists as TLS tunnel port
 		if f.OutPort == nil {
 			if op := firstFreePortOut(tun, f.ID); op != 0 {
@@ -308,23 +306,34 @@ func ForwardUpdate(c *gin.Context) {
 			"handler":  map[string]any{"type": "rtcp"},
 			"metadata": map[string]any{"managedBy": "network-panel"},
 		}
-		_ = sendWSCommand(outNodeIDOr0(tun), "AddService", []map[string]any{outSvc})
+        _ = sendWSCommand(outNodeIDOr0(tun), "AddService", []map[string]any{outSvc})
 
-		// update in-node entry service with chain(dialer=tls) and forwarder target=remote
-		outIP := getOutNodeIP(tun)
-		exitAddr := safeHostPort(outIP, *f.OutPort)
-		inSvc := buildServiceConfig(name, f.InPort, f.RemoteAddr, preferIface(f.InterfaceName, tun.InterfaceName))
-		chainName := "chain_" + name
-		hopName := "hop_" + name
-		inSvc["handler"].(map[string]any)["chain"] = chainName
-		node := map[string]any{"name": "exit-tls", "addr": exitAddr, "dialer": map[string]any{"type": "tls"}}
-		inSvc["_chains"] = []any{map[string]any{"name": chainName, "hops": []any{map[string]any{"name": hopName, "nodes": []any{node}}}}}
-		_ = sendWSCommand(tun.InNodeID, "UpdateService", []map[string]any{inSvc})
-	} else {
-		svc := buildServiceConfig(name, f.InPort, f.RemoteAddr, preferIface(f.InterfaceName, tun.InterfaceName))
-		_ = sendWSCommand(tun.InNodeID, "UpdateService", []map[string]any{svc})
-	}
-	c.JSON(http.StatusOK, response.OkMsg("端口转发更新成功"))
+        // update in-node entry service with chain(dialer=tls) and forwarder target=exitAddr
+        outIP := getOutNodeIP(tun)
+        exitAddr := safeHostPort(outIP, *f.OutPort)
+        // 入口 forwarder 统一指向远程地址（取第一项）
+        inSvc := buildServiceConfig(name, f.InPort, firstTargetHost(f.RemoteAddr), preferIface(f.InterfaceName, tun.InterfaceName))
+        chainName := "chain_" + name
+        hopName := "hop_" + name
+        // ensure handler is forward and attach chain
+        if h, ok := inSvc["handler"].(map[string]any); ok {
+            h["type"] = "forward"
+            h["chain"] = chainName
+        } else {
+            inSvc["handler"] = map[string]any{"type":"forward","chain":chainName}
+        }
+        node := map[string]any{"name": "exit-tls", "addr": exitAddr, "dialer": map[string]any{"type": "tls"}}
+        inSvc["_chains"] = []any{map[string]any{"name": chainName, "hops": []any{map[string]any{"name": hopName, "nodes": []any{node}}}}}
+        _ = sendWSCommand(tun.InNodeID, "UpdateService", []map[string]any{inSvc})
+        // 强制重启入口与出口节点的 gost，确保更新立即生效
+        _ = sendWSCommand(tun.InNodeID, "RestartGost", map[string]any{"reason":"forward_update"})
+        _ = sendWSCommand(outNodeIDOr0(tun), "RestartGost", map[string]any{"reason":"forward_update"})
+    } else {
+        svc := buildServiceConfig(name, f.InPort, f.RemoteAddr, preferIface(f.InterfaceName, tun.InterfaceName))
+        _ = sendWSCommand(tun.InNodeID, "UpdateService", []map[string]any{svc})
+        _ = sendWSCommand(tun.InNodeID, "RestartGost", map[string]any{"reason":"forward_update"})
+    }
+    c.JSON(http.StatusOK, response.OkMsg("端口转发更新成功"))
 }
 
 // POST /api/v1/forward/delete
@@ -341,13 +350,26 @@ func ForwardDelete(c *gin.Context) {
 	_ = dbpkg.DB.First(&f, p.ID).Error
 	var tun model.Tunnel
 	_ = dbpkg.DB.First(&tun, f.TunnelID).Error
-	name := buildServiceName(f.ID, f.UserID, f.TunnelID)
-	if tun.Type == 2 && f.OutPort != nil {
-		_ = sendWSCommand(tun.InNodeID, "DeleteService", map[string]any{"services": []string{name}})
-		_ = sendWSCommand(outNodeIDOr0(tun), "DeleteService", map[string]any{"services": []string{name}})
-	} else {
-		_ = sendWSCommand(tun.InNodeID, "DeleteService", map[string]any{"services": []string{name}})
-	}
+    name := buildServiceName(f.ID, f.UserID, f.TunnelID)
+    if tun.Type == 2 && f.OutPort != nil {
+        // 删除入口与出口上的主服务
+        _ = sendWSCommand(tun.InNodeID, "DeleteService", map[string]any{"services": []string{name}})
+        _ = sendWSCommand(outNodeIDOr0(tun), "DeleteService", map[string]any{"services": []string{name}})
+        // 删除多级路径的中间节点 mid 服务（name_mid_i）
+        path := getTunnelPathNodes(tun.ID)
+        for i := 0; i < len(path); i++ {
+            midName := fmt.Sprintf("%s_mid_%d", name, i)
+            _ = sendWSCommand(path[i], "DeleteService", map[string]any{"services": []string{midName}})
+        }
+    } else {
+        // 端口转发：删除入口上的服务
+        _ = sendWSCommand(tun.InNodeID, "DeleteService", map[string]any{"services": []string{name}})
+        // 若端口转发也采用了多级路径（各 hop 使用相同 name），尝试在中间节点删除同名服务
+        path := getTunnelPathNodes(tun.ID)
+        for _, nid := range path {
+            _ = sendWSCommand(nid, "DeleteService", map[string]any{"services": []string{name}})
+        }
+    }
 	if err := dbpkg.DB.Delete(&model.Forward{}, p.ID).Error; err != nil {
 		c.JSON(http.StatusOK, response.ErrMsg("端口转发删除失败"))
 		return

@@ -33,7 +33,7 @@ var (
 
 // versionBase is the agent semantic version (without role prefix).
 // final reported version is: go-agent-<versionBase> or go-agent2-<versionBase>
-var versionBase = "1.0.4"
+var versionBase = "1.0.4.1"
 var version = "" // computed in main()
 
 func isAgent2Binary() bool {

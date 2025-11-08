@@ -120,6 +120,8 @@ export const getNodeNetworkStats = (nodeId: number, range: string) => Network.po
 export const getNodeNetworkStatsBatch = (range: string) => Network.post("/node/network-stats-batch", { range });
 // 版本信息
 export const getVersionInfo = () => Network.get("/version");
+export const getLatestVersionInfo = () => Network.get("/version/latest");
+export const upgradeToLatest = (proxyPrefix?: string) => Network.post("/version/upgrade", { proxyPrefix });
 // 节点接口(IP)列表（agent上报）
 export const getNodeInterfaces = (nodeId: number) => Network.post("/node/interfaces", { nodeId });
 // 节点系统信息（时间序列）

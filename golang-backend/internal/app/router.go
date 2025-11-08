@@ -148,6 +148,8 @@ func RegisterRoutes(r *gin.Engine) {
 
 	// version
 	api.GET("/version", controller.Version)
+	api.GET("/version/latest", controller.VersionLatest)
+	api.POST("/version/upgrade", middleware.RequireRole(), controller.VersionUpgrade)
 
 	// public share (read-only views)
 	share := api.Group("/share")

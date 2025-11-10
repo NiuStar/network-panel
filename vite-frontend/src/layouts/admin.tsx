@@ -9,7 +9,7 @@ import { toast } from 'react-hot-toast';
 import { Logo } from '@/components/icons';
 import { updatePassword, getVersionInfo, getLatestVersionInfo, upgradeToLatest } from '@/api';
 import { safeLogout } from '@/utils/logout';
-import { siteConfig } from '@/config/site';
+import { siteConfig, getCachedConfig } from '@/config/site';
 
 interface MenuItem {
   path: string;
@@ -49,6 +49,9 @@ export default function AdminLayout({
   const [serverVersion, setServerVersion] = useState<string>("");
   const [latestTag, setLatestTag] = useState<string>("");
   const [upgradeBusy, setUpgradeBusy] = useState(false);
+  // 菜单显示开关（来自网站配置）
+  const [showProbe, setShowProbe] = useState(false);
+  const [showNetworkMenu, setShowNetworkMenu] = useState(false);
 
   // 菜单项配置
   const menuItems: MenuItem[] = [
@@ -186,6 +189,16 @@ export default function AdminLayout({
     setUsername(name);
     setIsAdmin(adminFlag);
 
+    // 读取网站配置：是否显示“探针目标/网络”菜单（默认隐藏）
+    (async()=>{
+      try{
+        const sp = await getCachedConfig('show_probe');
+        const sn = await getCachedConfig('show_network');
+        setShowProbe(sp === 'true');
+        setShowNetworkMenu(sn === 'true');
+      }catch{}
+    })();
+
     // 响应式检查
     checkMobile();
     window.addEventListener('resize', checkMobile);
@@ -303,9 +316,11 @@ export default function AdminLayout({
   };
 
   // 过滤菜单项（根据权限）
-  const filteredMenuItems = menuItems.filter(item => 
-    !item.adminOnly || isAdmin
-  );
+  const filteredMenuItems = menuItems.filter(item => {
+    if (item.path === '/probe' && !showProbe) return false;
+    if (item.path === '/network' && !showNetworkMenu) return false;
+    return !item.adminOnly || isAdmin;
+  });
 
   return (
           <div className={`flex ${isMobile ? 'min-h-screen' : 'h-screen'} bg-gray-100 dark:bg-black`}>
@@ -529,4 +544,4 @@ export default function AdminLayout({
       </Modal>
     </div>
   );
-} 
+}

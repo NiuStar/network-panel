@@ -89,10 +89,7 @@ interface ForwardForm {
   remoteAddr: string;
   interfaceName?: string;
   strategy: string;
-  // optional SS tunnel params for tunnel-forward
-  ssPort?: number | null;
-  ssPassword?: string;
-  ssMethod?: string;
+  // SS 参数移除，统一在节点信息“出口服务”里设置
 }
 
 interface AddressItem {
@@ -198,6 +195,7 @@ export default function ForwardPage() {
     forwardName?: string;
   }>>([]);
   const [opsOpen, setOpsOpen] = useState(false);
+  const [opReqId, setOpReqId] = useState<string>('');
   
   // 表单状态
   const [form, setForm] = useState<ForwardForm>({
@@ -207,9 +205,7 @@ export default function ForwardPage() {
     remoteAddr: '',
     interfaceName: '',
     strategy: 'fifo',
-    ssPort: null,
-    ssPassword: '',
-    ssMethod: 'AEAD_CHACHA20_POLY1305'
+    
   });
   
   // 表单验证错误
@@ -635,9 +631,7 @@ export default function ForwardPage() {
           remoteAddr: processedRemoteAddr,
           interfaceName: form.interfaceName,
           strategy: addressCount > 1 ? form.strategy : 'fifo',
-          ssPort: form.ssPort || undefined,
-          ssPassword: form.ssPassword || undefined,
-          ssMethod: form.ssMethod || undefined,
+          
         };
         res = await updateForward(updateData);
       } else {
@@ -649,15 +643,27 @@ export default function ForwardPage() {
           remoteAddr: processedRemoteAddr,
           interfaceName: form.interfaceName,
           strategy: addressCount > 1 ? form.strategy : 'fifo',
-          ssPort: form.ssPort || undefined,
-          ssPassword: form.ssPassword || undefined,
-          ssMethod: form.ssMethod || undefined,
+          
         };
         res = await createForward(createData);
       }
       
       if (res.code === 0) {
         toast.success(isEdit ? '修改成功' : '创建成功');
+        try{
+          const rid = (res.data && (res.data as any).requestId) ? String((res.data as any).requestId) : '';
+          if (rid){
+            setOpReqId(rid);
+            setOpsOpen(true);
+            // 提示带“查看日志”按钮
+            toast.custom((t)=> (
+              <div className="px-4 py-3 bg-content1 rounded shadow border border-default-200 flex items-center gap-3">
+                <span>{isEdit ? '修改成功' : '创建成功'}</span>
+                <button className="text-primary underline" onClick={()=>{ setOpsOpen(true); toast.dismiss(t.id); }}>查看日志</button>
+              </div>
+            ), { duration: 5000 });
+          }
+        }catch{}
         // 保存监听IP映射（仅隧道转发）
         try{
           const tid = (selectedTunnel && (selectedTunnel as any).type===2) ? (selectedTunnel.id) : 0;
@@ -1512,7 +1518,7 @@ export default function ForwardPage() {
         
           </div>
         </div>
-        <OpsLogModal isOpen={opsOpen} onOpenChange={setOpsOpen} />
+        <OpsLogModal isOpen={opsOpen} onOpenChange={setOpsOpen} requestId={opReqId||undefined} />
         {/* 根据显示模式渲染不同内容 */}
         {viewMode === 'grouped' ? (
           /* 按用户和隧道分组的转发列表 */
@@ -1784,33 +1790,7 @@ export default function ForwardPage() {
                       </Select>
                     )}
 
-                    <Divider />
-                    <h3 className="text-base font-semibold">隧道(SS)参数（仅隧道转发生效）</h3>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      <Input
-                        label="SS 端口"
-                        type="number"
-                        placeholder="例如 10086"
-                        value={form.ssPort ? String(form.ssPort) : ''}
-                        onChange={(e) => setForm(prev => ({ ...prev, ssPort: e.target.value ? Number(e.target.value) : null }))}
-                        variant="bordered"
-                      />
-                      <Input
-                        label="SS 密码"
-                        placeholder="不少于6位"
-                        value={form.ssPassword || ''}
-                        onChange={(e) => setForm(prev => ({ ...prev, ssPassword: e.target.value }))}
-                        variant="bordered"
-                      />
-                      <Input
-                        label="SS 方法"
-                        placeholder="AEAD_CHACHA20_POLY1305"
-                        value={form.ssMethod || ''}
-                        onChange={(e) => setForm(prev => ({ ...prev, ssMethod: e.target.value }))}
-                        variant="bordered"
-                        description="默认 AEAD_CHACHA20_POLY1305"
-                      />
-                    </div>
+                    {/* 隧道(SS)参数移除：请在“节点信息 → 出口服务”里设置 */}
                   </div>
                 </ModalBody>
                 <ModalFooter>

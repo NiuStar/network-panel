@@ -15,6 +15,7 @@ import { Divider } from "@heroui/divider";
 import { queryNodeServices, getNodeNetworkStatsBatch, getVersionInfo } from "@/api";
 import toast from 'react-hot-toast';
 import axios from 'axios';
+import { getCachedConfig } from '@/config/site';
 
 
 import { 
@@ -88,6 +89,8 @@ export default function NodePage() {
   const [startDateMs, setStartDateMs] = useState<number | undefined>(undefined);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [probeStat, setProbeStat] = useState<Record<number, {avg:number; latest:number|null; target?: {id:number; name?:string; ip?:string}}>>({});
+  const [showNetwork, setShowNetwork] = useState(false);
+  useEffect(()=>{ (async()=>{ try{ const v = await getCachedConfig('show_network'); setShowNetwork(v==='true'); }catch{} })(); },[]);
 
   // 出口服务设置
   const [exitModalOpen, setExitModalOpen] = useState(false);
@@ -149,18 +152,20 @@ export default function NodePage() {
           systemInfo: null,
           copyLoading: false
         })));
-        // 批量拉取最近1小时探针概览
-        try {
-          const r = await getNodeNetworkStatsBatch('1h');
-          if (r.code === 0 && r.data) {
-            const mapped: any = {};
-            Object.keys(r.data).forEach((nid) => {
-              const item = r.data[nid];
-              mapped[Number(nid)] = { avg: item.avg ?? 0, latest: item.latest ?? null, target: item.latestTarget };
-            });
-            setProbeStat(mapped);
-          }
-        } catch {}
+        // 批量拉取最近1小时探针概览（按配置可隐藏）
+        if (showNetwork) {
+          try {
+            const r = await getNodeNetworkStatsBatch('1h');
+            if (r.code === 0 && r.data) {
+              const mapped: any = {};
+              Object.keys(r.data).forEach((nid) => {
+                const item = r.data[nid];
+                mapped[Number(nid)] = { avg: item.avg ?? 0, latest: item.latest ?? null, target: item.latestTarget };
+              });
+              setProbeStat(mapped);
+            }
+          } catch {}
+        }
       } else {
         toast.error(res.msg || '加载节点列表失败');
       }
@@ -892,14 +897,16 @@ export default function NodePage() {
                       <span className="text-default-600">端口</span>
                       <span className="text-xs">{node.portSta}-{node.portEnd}</span>
                     </div>
-                    <div className="flex justify-between text-sm">
-                      <span className="text-default-600">网络</span>
-                      <span className="text-xs">
-                        {probeStat[node.id]?.latest!=null ? `${probeStat[node.id]?.latest} ms` : '-'}
-                        {probeStat[node.id]?.avg? ` · 平均 ${probeStat[node.id]?.avg} ms` : ''}
-                        {probeStat[node.id]?.target?.name ? ` · ${probeStat[node.id]?.target?.name}(${probeStat[node.id]?.target?.ip || ''})` : ''}
-                      </span>
-                    </div>
+                    {showNetwork && (
+                      <div className="flex justify-between text-sm">
+                        <span className="text-default-600">网络</span>
+                        <span className="text-xs">
+                          {probeStat[node.id]?.latest!=null ? `${probeStat[node.id]?.latest} ms` : '-'}
+                          {probeStat[node.id]?.avg? ` · 平均 ${probeStat[node.id]?.avg} ms` : ''}
+                          {probeStat[node.id]?.target?.name ? ` · ${probeStat[node.id]?.target?.name}(${probeStat[node.id]?.target?.ip || ''})` : ''}
+                        </span>
+                      </div>
+                    )}
                     {(node.priceCents || node.cycleMonths) && (
                       <div className="flex justify-between text-sm">
                         <span className="text-default-600">计费</span>

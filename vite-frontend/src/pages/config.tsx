@@ -52,6 +52,25 @@ const CONFIG_ITEMS: ConfigItem[] = [
     type: 'input'
   },
   {
+    key: 'easytier_install_timeout_sec',
+    label: 'EasyTier 安装超时(秒)',
+    placeholder: '默认 420 (7 分钟)，慢网络可适当调大',
+    description: '控制后端在等待节点执行安装脚本的最长时间，同时传递给 Agent 的 timeoutSec，避免误判超时导致重复安装',
+    type: 'input'
+  },
+  {
+    key: 'show_probe',
+    label: '显示探针菜单',
+    description: '默认关闭，开启后在左侧菜单显示“探针目标”页',
+    type: 'switch'
+  },
+  {
+    key: 'show_network',
+    label: '显示“网络”菜单与节点网络概览',
+    description: '默认关闭，开启后显示“网络”菜单并在节点卡片上显示网络延迟/探针信息',
+    type: 'switch'
+  },
+  {
     key: 'app_name',
     label: '应用名称',
     placeholder: '请输入应用名称',
@@ -105,7 +124,7 @@ const CONFIG_ITEMS: ConfigItem[] = [
 const getInitialConfigs = (): Record<string, string> => {
   if (typeof window === 'undefined') return {};
   
-  const configKeys = ['app_name', 'captcha_enabled', 'captcha_type', 'ip'];
+  const configKeys = ['app_name', 'captcha_enabled', 'captcha_type', 'ip', 'easytier_install_timeout_sec', 'show_probe', 'show_network'];
   const initialConfigs: Record<string, string> = {};
   
   try {

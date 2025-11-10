@@ -94,6 +94,7 @@ export default function TunnelPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [diagnosisModalOpen, setDiagnosisModalOpen] = useState(false);
+  const [diagReqId, setDiagReqId] = useState<string>('');
   const [isEdit, setIsEdit] = useState(false);
   const [submitLoading, setSubmitLoading] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
@@ -387,6 +388,7 @@ export default function TunnelPage() {
     setCurrentDiagnosisTunnel(tunnel);
     setDiagnosisModalOpen(true);
     setDiagnosisLoading(true);
+    setDiagReqId('');
     setDiagnosisResult({
       tunnelName: tunnel.name,
       tunnelType: tunnel.type === 1 ? '端口转发' : '隧道转发',
@@ -429,7 +431,16 @@ export default function TunnelPage() {
       // 3) iperf3 反向带宽测试（仅隧道转发）
       if (tunnel.type === 2) {
         const r4 = await diagnoseTunnelStep(tunnel.id, 'iperf3');
-        if (r4.code === 0) append(r4.data); else append({ success: false, description: 'iperf3 反向带宽测试', nodeName: '-', nodeId: '-', targetIp: '-', message: r4.msg || '未支持或失败' });
+        if (r4.code === 0) {
+          append(r4.data);
+          const did = (r4.data && (r4.data as any).diagId) ? String((r4.data as any).diagId) : '';
+          if (did) setDiagReqId(did);
+        } else {
+          // 若后端在失败时也返回了 diagId，则也记录以便聚合查看本次日志
+          const did = (r4.data && (r4.data as any).diagId) ? String((r4.data as any).diagId) : '';
+          if (did) setDiagReqId(did);
+          append({ success: false, description: 'iperf3 反向带宽测试', nodeName: '-', nodeId: '-', targetIp: '-', message: r4.msg || '未支持或失败', ...(did? { diagId: did }: {}) });
+        }
       }
     } catch (e) {
       toast.error('诊断失败');
@@ -538,7 +549,7 @@ export default function TunnelPage() {
      
         </div>
 
-        <OpsLogModal isOpen={opsOpen} onOpenChange={setOpsOpen} />
+        <OpsLogModal isOpen={opsOpen} onOpenChange={setOpsOpen} requestId={diagReqId||undefined} />
         {/* 隧道卡片网格 */}
         {tunnels.length > 0 ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-2 2xl:grid-cols-3 gap-4">
@@ -770,29 +781,7 @@ export default function TunnelPage() {
                       <SelectItem key="2">隧道转发</SelectItem>
                     </Select>
 
-                    {form.type === 2 && (
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <Input 
-                          label="出口端口(SS)" 
-                          type="number" 
-                          placeholder="例如 10086" 
-                          value={exitPort ? String(exitPort) : ''} 
-                          onChange={(e) => setExitPort(Number((e.target as any).value))} 
-                        />
-                        <Input 
-                          label="出口密码(SS)" 
-                          placeholder="不少于6位" 
-                          value={exitPassword} 
-                          onChange={(e) => setExitPassword((e.target as any).value)} 
-                        />
-                        <Input 
-                          label="加密方法" 
-                          value={exitMethod} 
-                          onChange={(e) => setExitMethod((e.target as any).value)} 
-                          description="默认 AEAD_CHACHA20_POLY1305" 
-                        />
-                      </div>
-                    )}
+                    {/* 隧道(SS)参数已移除：统一在“节点信息 → 出口服务”配置 */}
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <Select
@@ -1313,6 +1302,9 @@ export default function TunnelPage() {
                                     {result.reqId && (
                                       <div className="text-small text-default-400">reqId: <code className="font-mono">{result.reqId}</code></div>
                                     )}
+                                    {(result as any).diagId && (
+                                      <div className="text-small text-default-400">diagId: <code className="font-mono">{(result as any).diagId}</code></div>
+                                    )}
                                   </div>
                                 ) : (
                                   <div className="space-y-3">
@@ -1345,6 +1337,9 @@ export default function TunnelPage() {
                                     </div>
                                     {result.reqId && (
                                       <div className="text-small text-default-400">reqId: <code className="font-mono">{result.reqId}</code></div>
+                                    )}
+                                    {(result as any).diagId && (
+                                      <div className="text-small text-default-400">diagId: <code className="font-mono">{(result as any).diagId}</code></div>
                                     )}
                                   </div>
                                 )
@@ -1384,6 +1379,9 @@ export default function TunnelPage() {
                 <ModalFooter>
                   <Button variant="light" onPress={onClose}>
                     关闭
+                  </Button>
+                  <Button variant="flat" onPress={()=> setOpsOpen(true)}>
+                    诊断日志
                   </Button>
                   {currentDiagnosisTunnel && (
                     <Button 

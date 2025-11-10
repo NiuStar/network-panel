@@ -1,18 +1,19 @@
 package controller
 
 import (
-    "fmt"
-    "net/http"
-    "time"
-    "strings"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
 
-    "network-panel/golang-backend/internal/app/dto"
-    "network-panel/golang-backend/internal/app/model"
-    "network-panel/golang-backend/internal/app/response"
-    "network-panel/golang-backend/internal/db"
+	"network-panel/golang-backend/internal/app/dto"
+	"network-panel/golang-backend/internal/app/model"
+	"network-panel/golang-backend/internal/app/response"
+	"network-panel/golang-backend/internal/db"
 
-    "github.com/gin-gonic/gin"
-    "log"
+	"github.com/gin-gonic/gin"
+	"log"
 )
 
 // POST /api/v1/tunnel/create
@@ -275,36 +276,38 @@ func TunnelDiagnose(c *gin.Context) {
 			"message":     ifThen(outNode.Status != nil && *outNode.Status == 1, "节点在线", "节点离线或未配置"),
 		})
 	}
-    // 多级隧道：逐跳 ICMP（入口->每个中间->出口）
-    if t.Type == 2 {
-        path := getTunnelPathNodes(t.ID)
-        if len(path) == 0 {
-            jlog(map[string]any{"event":"iperf3_no_path","tunnelId": t.ID})
-        }
-        // build pairs
-        hops := make([]int64, 0, 2+len(path))
-        hops = append(hops, t.InNodeID)
-        hops = append(hops, path...)
-        if t.OutNodeID != nil { hops = append(hops, *t.OutNodeID) }
-        for i := 0; i+1 < len(hops); i++ {
-            var srcN, dstN model.Node
-            _ = db.DB.First(&srcN, hops[i]).Error
-            _ = db.DB.First(&dstN, hops[i+1]).Error
-            targetIP := dstN.ServerIP
-            avg0, loss0, ok0, msg0, rid0 := diagnosePingFromNodeCtx(srcN.ID, targetIP, 3, 1500, map[string]interface{}{"src": "tunnel", "step": "path", "tunnelId": t.ID, "hopIndex": i})
-            results = append(results, map[string]interface{}{
-                "success":     ok0,
-                "description": "逐跳连通性 (ICMP)",
-                "nodeName":    srcN.Name,
-                "nodeId":      srcN.ID,
-                "targetIp":    targetIP,
-                "averageTime": avg0,
-                "packetLoss":  loss0,
-                "message":     msg0,
-                "reqId":       rid0,
-            })
-        }
-    }
+	// 多级隧道：逐跳 ICMP（入口->每个中间->出口）
+	if t.Type == 2 {
+		path := getTunnelPathNodes(t.ID)
+		if len(path) == 0 {
+			jlog(map[string]any{"event": "iperf3_no_path", "tunnelId": t.ID})
+		}
+		// build pairs
+		hops := make([]int64, 0, 2+len(path))
+		hops = append(hops, t.InNodeID)
+		hops = append(hops, path...)
+		if t.OutNodeID != nil {
+			hops = append(hops, *t.OutNodeID)
+		}
+		for i := 0; i+1 < len(hops); i++ {
+			var srcN, dstN model.Node
+			_ = db.DB.First(&srcN, hops[i]).Error
+			_ = db.DB.First(&dstN, hops[i+1]).Error
+			targetIP := dstN.ServerIP
+			avg0, loss0, ok0, msg0, rid0 := diagnosePingFromNodeCtx(srcN.ID, targetIP, 3, 1500, map[string]interface{}{"src": "tunnel", "step": "path", "tunnelId": t.ID, "hopIndex": i})
+			results = append(results, map[string]interface{}{
+				"success":     ok0,
+				"description": "逐跳连通性 (ICMP)",
+				"nodeName":    srcN.Name,
+				"nodeId":      srcN.ID,
+				"targetIp":    targetIP,
+				"averageTime": avg0,
+				"packetLoss":  loss0,
+				"message":     msg0,
+				"reqId":       rid0,
+			})
+		}
+	}
 	// 基础配置校验
 	cfgOK := true
 	msg := "配置正常"
@@ -321,21 +324,21 @@ func TunnelDiagnose(c *gin.Context) {
 		"message":     msg,
 	})
 
-    // 入口节点外网连通性：仅端口转发类型检查
-    if t.Type == 1 {
-        avg, loss, ok2, msg2, rid1 := diagnosePingFromNodeCtx(inNode.ID, "1.1.1.1", 3, 1500, map[string]interface{}{"src": "tunnel", "step": "entryPublic", "tunnelId": t.ID})
-        results = append(results, map[string]interface{}{
-            "success":     ok2,
-            "description": "入口节点外网连通性 (ICMP 1.1.1.1)",
-            "nodeName":    inNode.Name,
-            "nodeId":      inNode.ID,
-            "targetIp":    "1.1.1.1",
-            "averageTime": avg,
-            "packetLoss":  loss,
-            "message":     msg2,
-            "reqId":       rid1,
-        })
-    }
+	// 入口节点外网连通性：仅端口转发类型检查
+	if t.Type == 1 {
+		avg, loss, ok2, msg2, rid1 := diagnosePingFromNodeCtx(inNode.ID, "1.1.1.1", 3, 1500, map[string]interface{}{"src": "tunnel", "step": "entryPublic", "tunnelId": t.ID})
+		results = append(results, map[string]interface{}{
+			"success":     ok2,
+			"description": "入口节点外网连通性 (ICMP 1.1.1.1)",
+			"nodeName":    inNode.Name,
+			"nodeId":      inNode.ID,
+			"targetIp":    "1.1.1.1",
+			"averageTime": avg,
+			"packetLoss":  loss,
+			"message":     msg2,
+			"reqId":       rid1,
+		})
+	}
 	// 出口节点外网连通性（隧道转发时）
 	if t.Type == 2 && outNode.ID != 0 {
 		avg2, loss2, ok3, msg3, rid2 := diagnosePingFromNodeCtx(outNode.ID, "1.1.1.1", 3, 1500, map[string]interface{}{"src": "tunnel", "step": "exitPublic", "tunnelId": t.ID})
@@ -382,10 +385,12 @@ func TunnelDiagnoseStep(c *gin.Context) {
 		_ = db.DB.First(&outNode, *t.OutNodeID).Error
 	}
 
-    // avoid nil deref: compute outNodeId safely
-    outId := int64(0)
-    if t.OutNodeID != nil { outId = *t.OutNodeID }
-    log.Printf("API /tunnel/diagnose-step tunnelId=%d step=%s inNode=%d outNode=%d", p.TunnelID, p.Step, t.InNodeID, outId)
+	// avoid nil deref: compute outNodeId safely
+	outId := int64(0)
+	if t.OutNodeID != nil {
+		outId = *t.OutNodeID
+	}
+	log.Printf("API /tunnel/diagnose-step tunnelId=%d step=%s inNode=%d outNode=%d", p.TunnelID, p.Step, t.InNodeID, outId)
 	var res map[string]interface{}
 	switch p.Step {
 	case "entry":
@@ -394,41 +399,45 @@ func TunnelDiagnoseStep(c *gin.Context) {
 			"success": ok, "description": "入口节点外网连通性 (ICMP 1.1.1.1)", "nodeName": inNode.Name, "nodeId": inNode.ID,
 			"targetIp": "1.1.1.1", "averageTime": avg, "packetLoss": loss, "message": msg,
 		}
-    case "entryExit":
-        // 选择出口IP：若显式配置了 OutIP 则使用；否则优先选择 IPv4
-        exitIP := ptrString(t.OutIP)
-        if exitIP == "" { exitIP = preferIPv4(outNode) }
-        avg, loss, ok, msg := diagnosePingFromNode(inNode.ID, exitIP, 3, 1500)
-        res = map[string]interface{}{
-            "success": ok, "description": "入口到出口连通性 (ICMP)", "nodeName": inNode.Name, "nodeId": inNode.ID,
-            "targetIp": exitIP, "averageTime": avg, "packetLoss": loss, "message": msg,
-        }
-    case "path":
-        if t.Type != 2 {
-            c.JSON(http.StatusOK, response.ErrMsg("非隧道转发不支持路径检查"))
-            return
-        }
-        path := getTunnelPathNodes(t.ID)
-        hops := make([]int64, 0, 2+len(path))
-        hops = append(hops, t.InNodeID)
-        hops = append(hops, path...)
-        if t.OutNodeID != nil { hops = append(hops, *t.OutNodeID) }
-        items := make([]map[string]any, 0, len(hops)-1)
-        for i := 0; i+1 < len(hops); i++ {
-            var srcN, dstN model.Node
-            _ = db.DB.First(&srcN, hops[i]).Error
-            _ = db.DB.First(&dstN, hops[i+1]).Error
-            target := dstN.ServerIP
-            avg, loss, ok, msg := diagnosePingFromNode(srcN.ID, target, 3, 1500)
-            items = append(items, map[string]any{
-                "success": ok, "description": "逐跳连通性 (ICMP)", "nodeName": srcN.Name, "nodeId": srcN.ID,
-                "targetIp": target, "averageTime": avg, "packetLoss": loss, "message": msg,
-            })
-        }
-        // 返回打包的结果数组
-        c.JSON(http.StatusOK, response.Ok(map[string]any{"results": items}))
-        return
-    case "exitPublic":
+	case "entryExit":
+		// 选择出口IP：若显式配置了 OutIP 则使用；否则优先选择 IPv4
+		exitIP := ptrString(t.OutIP)
+		if exitIP == "" {
+			exitIP = preferIPv4(outNode)
+		}
+		avg, loss, ok, msg := diagnosePingFromNode(inNode.ID, exitIP, 3, 1500)
+		res = map[string]interface{}{
+			"success": ok, "description": "入口到出口连通性 (ICMP)", "nodeName": inNode.Name, "nodeId": inNode.ID,
+			"targetIp": exitIP, "averageTime": avg, "packetLoss": loss, "message": msg,
+		}
+	case "path":
+		if t.Type != 2 {
+			c.JSON(http.StatusOK, response.ErrMsg("非隧道转发不支持路径检查"))
+			return
+		}
+		path := getTunnelPathNodes(t.ID)
+		hops := make([]int64, 0, 2+len(path))
+		hops = append(hops, t.InNodeID)
+		hops = append(hops, path...)
+		if t.OutNodeID != nil {
+			hops = append(hops, *t.OutNodeID)
+		}
+		items := make([]map[string]any, 0, len(hops)-1)
+		for i := 0; i+1 < len(hops); i++ {
+			var srcN, dstN model.Node
+			_ = db.DB.First(&srcN, hops[i]).Error
+			_ = db.DB.First(&dstN, hops[i+1]).Error
+			target := dstN.ServerIP
+			avg, loss, ok, msg := diagnosePingFromNode(srcN.ID, target, 3, 1500)
+			items = append(items, map[string]any{
+				"success": ok, "description": "逐跳连通性 (ICMP)", "nodeName": srcN.Name, "nodeId": srcN.ID,
+				"targetIp": target, "averageTime": avg, "packetLoss": loss, "message": msg,
+			})
+		}
+		// 返回打包的结果数组
+		c.JSON(http.StatusOK, response.Ok(map[string]any{"results": items}))
+		return
+	case "exitPublic":
 		if outNode.ID == 0 {
 			c.JSON(http.StatusOK, response.ErrMsg("无出口节点"))
 			return
@@ -438,148 +447,332 @@ func TunnelDiagnoseStep(c *gin.Context) {
 			"success": ok, "description": "出口节点外网连通性 (ICMP 1.1.1.1)", "nodeName": outNode.Name, "nodeId": outNode.ID,
 			"targetIp": "1.1.1.1", "averageTime": avg, "packetLoss": loss, "message": msg,
 		}
-    case "iperf3":
-        // 仅隧道转发才进行 iperf3 测速：出口节点启动服务，入口节点作为客户端 -R 连接出口
-        if t.Type != 2 || outNode.ID == 0 {
-            c.JSON(http.StatusOK, response.ErrMsg("仅隧道转发支持iperf3"))
-            return
-        }
-        exitIP := orString(ptrString(t.OutIP), outNode.ServerIP)
-        // 1) 出口节点启动 iperf3 server（在节点端口范围内挑选可用端口）
-        // 读取出口节点端口范围并选择空闲端口
-        minP, maxP := 10000, 65535
-        if outNode.PortSta > 0 { minP = outNode.PortSta }
-        if outNode.PortEnd > 0 { maxP = outNode.PortEnd }
-        prefer := outNode.PortSta
-        if prefer <= 0 { prefer = minP }
-        wantedSrvPort := findFreePortOnNode(outNode.ID, prefer, minP, maxP)
-        if wantedSrvPort == 0 { wantedSrvPort = minP }
-        srvReq := map[string]interface{}{"requestId": RandUUID(), "mode": "iperf3", "server": true, "port": wantedSrvPort, "ctx": map[string]any{"src": "tunnel", "step": "iperf3_server", "tunnelId": t.ID}}
-        _ = sendWSCommand(outNode.ID, "Diagnose", srvReq)
-        srvRes, ok := RequestDiagnose(outNode.ID, srvReq, 8*time.Second)
+	case "iperf3":
+		// 仅隧道转发才进行 iperf3 测速：出口节点启动服务，入口节点作为客户端 -R 连接出口
+		if t.Type != 2 || outNode.ID == 0 {
+			c.JSON(http.StatusOK, response.ErrMsg("仅隧道转发支持iperf3"))
+			return
+		}
+		// prefer exit bind (监听IP) if provided; fallback to tunnel.OutIP then node.ServerIP
+		exitBind := ""
+		if t.OutNodeID != nil {
+			bm := getTunnelBindMap(t.ID)
+			exitBind = bm[*t.OutNodeID]
+		}
+		exitIP := exitBind
+		if exitIP == "" {
+			exitIP = orString(ptrString(t.OutIP), outNode.ServerIP)
+		}
+		// 1) 出口节点启动 iperf3 server：若上一跳的出站IP与出口的监听IP均为 overlay(10.126.126.*)，则不受端口范围限制（仅需>=1000且未占用）
+		// 先判断 overlay 邻接
+		tmpPath := getTunnelPathNodes(t.ID)
+		var prevID int64
+		if len(tmpPath) > 0 {
+			prevID = tmpPath[len(tmpPath)-1]
+		} else {
+			prevID = inNode.ID
+		}
+		prevOut := getTunnelIfaceMap(t.ID)[prevID]
+		exitInProbe := ""
+		if t.OutNodeID != nil {
+			exitInProbe = getTunnelBindMap(t.ID)[*t.OutNodeID]
+		}
+		overlayExit := strings.HasPrefix(prevOut, "10.126.126.") && strings.HasPrefix(exitInProbe, "10.126.126.")
+
+		// 读取出口节点端口范围（非 overlay 情况使用）
+		minP, maxP := 10000, 65535
+		if outNode.PortSta > 0 {
+			minP = outNode.PortSta
+		}
+		if outNode.PortEnd > 0 {
+			maxP = outNode.PortEnd
+		}
+		prefer := outNode.PortSta
+		if prefer <= 0 {
+			prefer = minP
+		}
+		var wantedSrvPort int
+		if overlayExit {
+			// overlay: 固定范围 10000-65535，取最小可用
+			wantedSrvPort = findFreePortOnNodeAny(outNode.ID, 10000, 10000)
+			if wantedSrvPort == 0 { wantedSrvPort = 10000 }
+		} else {
+			wantedSrvPort = findFreePortOnNode(outNode.ID, prefer, minP, maxP)
+			if wantedSrvPort == 0 {
+				wantedSrvPort = minP
+			}
+		}
+		diagID := RandUUID()
+		srvReq := map[string]interface{}{"requestId": RandUUID(), "mode": "iperf3", "server": true, "port": wantedSrvPort, "ctx": map[string]any{"src": "tunnel", "step": "iperf3_server", "tunnelId": t.ID, "diagId": diagID}}
+		_ = sendWSCommand(outNode.ID, "Diagnose", srvReq)
+		srvRes, ok := RequestDiagnose(outNode.ID, srvReq, 8*time.Second)
         if !ok {
-            c.JSON(http.StatusOK, response.ErrMsg("出口节点未响应iperf3服务启动"))
+            _ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: outNode.ID, Cmd: "DiagIperf3ServerStart-recv", RequestID: diagID, Success: 0, Message: "未响应"}).Error
+            resFail := map[string]any{"success": false, "description": "iperf3 反向带宽测试", "nodeName": inNode.Name, "nodeId": inNode.ID, "message": "出口节点未响应iperf3服务启动", "diagId": diagID}
+            c.JSON(http.StatusOK, response.Ok(resFail))
             return
         }
-        srvPort := 0
-        if data, _ := srvRes["data"].(map[string]interface{}); data != nil {
-            if p2, ok2 := data["port"].(float64); ok2 {
-                srvPort = int(p2)
-            }
-        }
-        // 如果 agent 未回端口或端口越界，则回退到我们挑选的 wantedSrvPort
-        if srvPort <= 0 || srvPort < minP || srvPort > maxP {
-            srvPort = wantedSrvPort
-        }
+		srvPort := 0
+		if data, _ := srvRes["data"].(map[string]interface{}); data != nil {
+			if p2, ok2 := data["port"].(float64); ok2 {
+				srvPort = int(p2)
+			}
+			if b, err := json.Marshal(data); err == nil {
+				s := string(b)
+				_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: outNode.ID, Cmd: "DiagIperf3ServerStart-recv", RequestID: diagID, Success: 1, Message: "server started", Stdout: &s}).Error
+			}
+		}
+		// 校验返回端口：overlay 情况仅需 >=1000；否则需在范围内
+		if overlayExit {
+			if srvPort < 1000 {
+				srvPort = wantedSrvPort
+			}
+		} else {
+			if srvPort <= 0 || srvPort < minP || srvPort > maxP {
+				srvPort = wantedSrvPort
+			}
+		}
         if srvPort == 0 {
-            c.JSON(http.StatusOK, response.ErrMsg("iperf3服务未返回端口"))
+            resFail := map[string]any{"success": false, "description": "iperf3 反向带宽测试", "nodeName": inNode.Name, "nodeId": inNode.ID, "message": "iperf3服务未返回端口", "diagId": diagID}
+            c.JSON(http.StatusOK, response.Ok(resFail))
             return
         }
-        // 2) 沿路径临时搭建端口直转链路（入口 → 中间... → 最后 → 出口的 iperf3 端口）
-        path := getTunnelPathNodes(t.ID)
-        ifaceMap := getTunnelIfaceMap(t.ID)
-        fNodes := make([]int64, 0, 1+len(path))
-        fNodes = append(fNodes, inNode.ID)
-        fNodes = append(fNodes, path...)
-        // 为每个节点分配临时端口
-        tmpPorts := make([]int, len(fNodes))
-        rid := RandUUID()
-        tmpNames := make([]string, len(fNodes))
-        jlog(map[string]any{"event":"iperf3_path_nodes","tunnelId": t.ID, "nodes": fNodes, "ports": tmpPorts})
-        for i, nid := range fNodes {
-            var n model.Node
-            _ = db.DB.First(&n, nid).Error
-            minP, maxP := 10000, 65535
-            if n.PortSta > 0 { minP = n.PortSta }
-            if n.PortEnd > 0 { maxP = n.PortEnd }
-            prefer := n.PortSta
-            if prefer <= 0 { prefer = minP }
-            tmpPorts[i] = findFreePortOnNode(nid, prefer, minP, maxP)
-            if tmpPorts[i] == 0 { tmpPorts[i] = minP }
-            tmpNames[i] = fmt.Sprintf("tmp_iperf3_%d_%s_%d", t.ID, rid, i)
-            jlog(map[string]any{"event":"iperf3_tmp_port_pick","tunnelId": t.ID, "nodeId": nid, "name": tmpNames[i], "port": tmpPorts[i]})
-        }
-        // 部署临时直转服务链
-        for i := 0; i < len(fNodes); i++ {
-            nid := fNodes[i]
-            var target string
-            if i < len(fNodes)-1 {
-                var nx model.Node
-                if db.DB.First(&nx, fNodes[i+1]).Error != nil { continue }
-                targetIP := preferIPv4(nx)
-                target = safeHostPort(targetIP, tmpPorts[i+1])
-            } else {
-                target = safeHostPort(exitIP, srvPort)
-            }
-            var iface *string
-            if ip, ok := ifaceMap[nid]; ok && ip != "" { tmp := ip; iface = &tmp }
-            svc := buildServiceConfig(tmpNames[i], tmpPorts[i], target, iface)
-            _ = sendWSCommand(nid, "AddService", []map[string]any{svc})
-            jlog(map[string]any{"event":"iperf3_tmp_add","tunnelId": t.ID, "nodeId": nid, "name": tmpNames[i], "listen": tmpPorts[i], "target": target})
-        }
-        // 下发 RestartGost 以确保临时配置立即生效
-        for i := 0; i < len(fNodes); i++ {
-            _ = sendWSCommand(fNodes[i], "RestartGost", map[string]any{"reason": "iperf3_tmp"})
-        }
-        // 主动轮询各节点临时服务是否生效（最多 8 秒）
-        readyAll := true
-        for i := 0; i < len(fNodes); i++ {
-            if !waitServiceOnNode(fNodes[i], tmpNames[i], tmpPorts[i], 8*time.Second) {
-                readyAll = false
-                jlog(map[string]any{"event":"iperf3_tmp_wait_timeout","tunnelId": t.ID, "nodeId": fNodes[i], "name": tmpNames[i], "port": tmpPorts[i]})
-            }
-        }
-        // 额外：逐跳 TCP 连通性验证（上一跳直连下一跳端口，最多重试3次）
-        if readyAll {
-            for i := 0; i+1 < len(fNodes); i++ {
-                var nx model.Node
-                _ = db.DB.First(&nx, fNodes[i+1]).Error
-                host := preferIPv4(nx)
-                okc := false
-                for r := 0; r < 3 && !okc; r++ {
-                    _, _, okc, _ = diagnoseFromNode(fNodes[i], host, tmpPorts[i+1], 1, 1200)
-                    if !okc { time.Sleep(250 * time.Millisecond) }
-                }
-                if !okc {
-                    readyAll = false
-                    jlog(map[string]any{"event":"iperf3_tmp_tcp_fail","tunnelId": t.ID, "from": fNodes[i], "to": host, "port": tmpPorts[i+1]})
-                    break
-                }
-            }
-        }
+		// 2) 沿路径临时搭建端口直转链路（入口 → 中间... → 最后 → 出口的 iperf3 端口）
+		path := getTunnelPathNodes(t.ID)
+		ifaceMap := getTunnelIfaceMap(t.ID)
+		bindMap := getTunnelBindMap(t.ID)
+		fNodes := make([]int64, 0, 1+len(path))
+		fNodes = append(fNodes, inNode.ID)
+		fNodes = append(fNodes, path...)
+		// 为每个节点分配临时端口
+		tmpPorts := make([]int, len(fNodes))
+		rid := RandUUID()
+		tmpNames := make([]string, len(fNodes))
+		jlog(map[string]any{"event": "iperf3_path_nodes", "tunnelId": t.ID, "nodes": fNodes, "ports": tmpPorts})
+		for i, nid := range fNodes {
+			var n model.Node
+			_ = db.DB.First(&n, nid).Error
+			// overlay 优化：若上一跳出口IP与本跳入口IP均为 10.126.126.*，放宽端口范围限制，仅需 >=1000 且未占用
+			prefer := n.PortSta
+			if prefer <= 0 {
+				prefer = 10000
+			}
+			if i > 0 {
+				prevOut := ifaceMap[fNodes[i-1]]
+				thisIn := bindMap[nid]
+				if strings.HasPrefix(prevOut, "10.126.126.") && strings.HasPrefix(thisIn, "10.126.126.") {
+					p := findFreePortOnNodeAny(nid, 10000, 10000)
+					if p != 0 { tmpPorts[i] = p } else { tmpPorts[i] = 10000 }
+				} else {
+					minP, maxP := 10000, 65535
+					if n.PortSta > 0 {
+						minP = n.PortSta
+					}
+					if n.PortEnd > 0 {
+						maxP = n.PortEnd
+					}
+					if prefer < minP {
+						prefer = minP
+					}
+					tmpPorts[i] = findFreePortOnNode(nid, prefer, minP, maxP)
+					if tmpPorts[i] == 0 {
+						tmpPorts[i] = minP
+					}
+				}
+			} else {
+				// 第一个(入口临时)端口：若入口出站IP与下一跳入口IP(首个中间或出口)均为 overlay，则放宽；否则按节点范围
+				prevOut := ifaceMap[nid]
+				var nextIn string
+				if len(fNodes) > 1 {
+					nextIn = bindMap[fNodes[1]]
+				} else if t.OutNodeID != nil {
+					nextIn = bindMap[*t.OutNodeID]
+				}
+				if strings.HasPrefix(prevOut, "10.126.126.") && strings.HasPrefix(nextIn, "10.126.126.") {
+					p := findFreePortOnNodeAny(nid, 10000, 10000)
+					if p != 0 { tmpPorts[i] = p } else { tmpPorts[i] = 10000 }
+				} else {
+					minP, maxP := 10000, 65535
+					if n.PortSta > 0 {
+						minP = n.PortSta
+					}
+					if n.PortEnd > 0 {
+						maxP = n.PortEnd
+					}
+					if prefer < minP {
+						prefer = minP
+					}
+					tmpPorts[i] = findFreePortOnNode(nid, prefer, minP, maxP)
+					if tmpPorts[i] == 0 {
+						tmpPorts[i] = minP
+					}
+				}
+			}
+			tmpNames[i] = fmt.Sprintf("tmp_iperf3_%d_%s_%d", t.ID, rid, i)
+			jlog(map[string]any{"event": "iperf3_tmp_port_pick", "tunnelId": t.ID, "nodeId": nid, "name": tmpNames[i], "port": tmpPorts[i]})
+		}
+		// 部署临时直转服务链
+		for i := 0; i < len(fNodes); i++ {
+			nid := fNodes[i]
+			var target string
+			if i < len(fNodes)-1 {
+				var nx model.Node
+				if db.DB.First(&nx, fNodes[i+1]).Error != nil {
+					continue
+				}
+				// 连接下一跳时优先使用下一跳的绑定(入口)IP
+				targetIP := bindMap[fNodes[i+1]]
+				if targetIP == "" {
+					targetIP = preferIPv4(nx)
+				}
+				target = safeHostPort(targetIP, tmpPorts[i+1])
+			} else {
+				target = safeHostPort(exitIP, srvPort)
+			}
+			var iface *string
+			if ip, ok := ifaceMap[nid]; ok && ip != "" {
+				tmp := ip
+				iface = &tmp
+			}
+		svc := buildServiceConfig(tmpNames[i], tmpPorts[i], target, iface)
+		// 为入口节点的临时服务强制绑定到 127.0.0.1，避免 IPv6-only 监听导致 127.0.0.1 无法连接
+		if nid == inNode.ID {
+			svc["addr"] = safeHostPort("127.0.0.1", tmpPorts[i])
+		}
+			_ = sendWSCommand(nid, "AddService", []map[string]any{svc})
+			jlog(map[string]any{"event": "iperf3_tmp_add", "tunnelId": t.ID, "nodeId": nid, "name": tmpNames[i], "listen": tmpPorts[i], "target": target})
+			// 记录到操作日志（每个节点gost临时通道配置）
+			if b, err := json.Marshal(svc); err == nil {
+				s := string(b)
+				_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nid, Cmd: "DiagTmpServiceAdd", Success: 1, Message: fmt.Sprintf("gost临时通道配置 name=%s", tmpNames[i]), Stdout: &s}).Error
+			}
+		}
+		// 下发 RestartGost 以确保临时配置立即生效
+		for i := 0; i < len(fNodes); i++ {
+			_ = sendWSCommand(fNodes[i], "RestartGost", map[string]any{"reason": "iperf3_tmp"})
+			_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: fNodes[i], Cmd: "DiagTmpRestartGost", RequestID: diagID, Success: 1, Message: "restart gost for tmp"}).Error
+		}
+		// 主动轮询各节点临时服务是否生效（最多 8 秒）
+		readyAll := true
+		for i := 0; i < len(fNodes); i++ {
+			if !waitServiceOnNode(fNodes[i], tmpNames[i], tmpPorts[i], 8*time.Second) {
+				readyAll = false
+				jlog(map[string]any{"event": "iperf3_tmp_wait_timeout", "tunnelId": t.ID, "nodeId": fNodes[i], "name": tmpNames[i], "port": tmpPorts[i]})
+				_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: fNodes[i], Cmd: "DiagTmpWait", RequestID: diagID, Success: 0, Message: fmt.Sprintf("等待临时服务超时 name=%s port=%d", tmpNames[i], tmpPorts[i])}).Error
+			} else {
+				_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: fNodes[i], Cmd: "DiagTmpWait", RequestID: diagID, Success: 1, Message: fmt.Sprintf("临时服务就绪 name=%s port=%d", tmpNames[i], tmpPorts[i])}).Error
+			}
+		}
+		// 额外：逐跳 TCP 连通性验证（上一跳直连下一跳端口，最多重试3次）
+		if readyAll {
+			for i := 0; i+1 < len(fNodes); i++ {
+				var nx model.Node
+				_ = db.DB.First(&nx, fNodes[i+1]).Error
+				host := preferIPv4(nx)
+				okc := false
+				for r := 0; r < 3 && !okc; r++ {
+					_, _, okc, _ = diagnoseFromNode(fNodes[i], host, tmpPorts[i+1], 1, 1200)
+					if !okc {
+						time.Sleep(250 * time.Millisecond)
+					}
+				}
+				if !okc {
+					readyAll = false
+					jlog(map[string]any{"event": "iperf3_tmp_tcp_fail", "tunnelId": t.ID, "from": fNodes[i], "to": host, "port": tmpPorts[i+1]})
+					break
+				}
+			}
+		}
         if !readyAll {
-            jlog(map[string]any{"event":"iperf3_tmp_ready_partial","tunnelId": t.ID})
-            c.JSON(http.StatusOK, response.ErrMsg("临时通道未完全就绪，已中止 iperf3 测试"))
+            jlog(map[string]any{"event": "iperf3_tmp_ready_partial", "tunnelId": t.ID})
+            // 清理临时服务
+            for i := 0; i < len(fNodes); i++ {
+                _ = sendWSCommand(fNodes[i], "DeleteService", map[string]any{"services": []string{tmpNames[i]}})
+                _ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: fNodes[i], Cmd: "DiagTmpServiceDel", RequestID: diagID, Success: 1, Message: fmt.Sprintf("删除gost临时通道配置 name=%s", tmpNames[i])}).Error
+            }
+            resFail := map[string]any{"success": false, "description": "iperf3 反向带宽测试", "nodeName": inNode.Name, "nodeId": inNode.ID, "message": "临时通道未完全就绪，已中止 iperf3 测试", "diagId": diagID}
+            c.JSON(http.StatusOK, response.Ok(resFail))
             return
         }
-        // 3) 入口作为 iperf3 客户端，连接本机临时入口端口
-        cliReq := map[string]interface{}{"requestId": RandUUID(), "mode": "iperf3", "client": true, "host": "127.0.0.1", "port": tmpPorts[0], "duration": 5, "reverse": true, "ctx": map[string]any{"src": "tunnel", "step": "iperf3_client_path", "tunnelId": t.ID}}
-        _ = sendWSCommand(inNode.ID, "Diagnose", cliReq)
-        cliRes, ok := RequestDiagnose(inNode.ID, cliReq, 20*time.Second)
+        // 3) 入口作为 iperf3 客户端，连接本机临时入口端口（先做一次直连出口TCP预检）
+        // 预检：从入口直接 TCP 连出口 iperf3 端口，失败则中止
+        avg0, loss0, ok0, msg0, _ := diagnoseFromNodeCtx(inNode.ID, exitIP, srvPort, 1, 1500, map[string]interface{}{"src": "tunnel", "step": "iperf3_tcp_probe", "tunnelId": t.ID})
+        _ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: inNode.ID, Cmd: "DiagIperf3TcpProbe", RequestID: diagID, Success: ifThen(ok0, 1, 0), Message: fmt.Sprintf("TCP %s avg=%vms loss=%v%% msg=%s", ifThen(ok0, "ok", "fail"), avg0, loss0, msg0)}).Error
+        if !ok0 {
+			// 清理临时服务
+			for i := 0; i < len(fNodes); i++ {
+				_ = sendWSCommand(fNodes[i], "DeleteService", map[string]any{"services": []string{tmpNames[i]}})
+				_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: fNodes[i], Cmd: "DiagTmpServiceDel", RequestID: diagID, Success: 1, Message: fmt.Sprintf("删除gost临时通道配置 name=%s", tmpNames[i])}).Error
+			}
+            resFail := map[string]any{"success": false, "description": "iperf3 反向带宽测试", "nodeName": inNode.Name, "nodeId": inNode.ID, "message": "入口直连出口端口不可达，已中止iperf3测试", "diagId": diagID}
+            c.JSON(http.StatusOK, response.Ok(resFail))
+            return
+        }
+        // 预检：入口从 127.0.0.1 连本地临时入口端口
+        avg1, loss1, ok1, msg1, _ := diagnoseFromNodeCtx(inNode.ID, "127.0.0.1", tmpPorts[0], 1, 1500, map[string]interface{}{"src": "tunnel", "step": "iperf3_local_probe", "tunnelId": t.ID})
+        _ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: inNode.ID, Cmd: "DiagIperf3LocalProbe", RequestID: diagID, Success: ifThen(ok1, 1, 0), Message: fmt.Sprintf("LOCAL %s avg=%vms loss=%v%% msg=%s", ifThen(ok1, "ok", "fail"), avg1, loss1, msg1)}).Error
+        if !ok1 {
+            for i := 0; i < len(fNodes); i++ {
+                _ = sendWSCommand(fNodes[i], "DeleteService", map[string]any{"services": []string{tmpNames[i]}})
+                _ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: fNodes[i], Cmd: "DiagTmpServiceDel", RequestID: diagID, Success: 1, Message: fmt.Sprintf("删除gost临时通道配置 name=%s", tmpNames[i])}).Error
+            }
+            resFail := map[string]any{"success": false, "description": "iperf3 反向带宽测试", "nodeName": inNode.Name, "nodeId": inNode.ID, "message": "入口本地临时端口不可达，已中止iperf3测试", "diagId": diagID}
+            c.JSON(http.StatusOK, response.Ok(resFail))
+            return
+        }
+        // 小延迟，确保链路稳定
+        time.Sleep(300 * time.Millisecond)
+        // 入口 iperf3 客户端
+        cliReq := map[string]interface{}{"requestId": RandUUID(), "mode": "iperf3", "client": true, "host": "127.0.0.1", "port": tmpPorts[0], "duration": 5, "reverse": true, "ctx": map[string]any{"src": "tunnel", "step": "iperf3_client_path", "tunnelId": t.ID, "diagId": diagID}}
+		_ = sendWSCommand(inNode.ID, "Diagnose", cliReq)
+		cliRes, ok := RequestDiagnose(inNode.ID, cliReq, 20*time.Second)
         if !ok {
-            c.JSON(http.StatusOK, response.ErrMsg("入口节点未响应iperf3客户端"))
+            _ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: inNode.ID, Cmd: "DiagIperf3Client-recv", RequestID: diagID, Success: 0, Message: "客户端未响应"}).Error
+            resFail := map[string]any{"success": false, "description": "iperf3 反向带宽测试", "nodeName": inNode.Name, "nodeId": inNode.ID, "message": "入口节点未响应iperf3客户端", "diagId": diagID}
+            c.JSON(http.StatusOK, response.Ok(resFail))
             return
         }
-        data, _ := cliRes["data"].(map[string]interface{})
-        success := false
-        msgI := ""
-        bw := 0.0
-        if data != nil {
-            if v, ok2 := data["success"].(bool); ok2 {
-                success = v
-            }
-            if m, ok2 := data["message"].(string); ok2 {
-                msgI = m
-            }
-            if b, ok2 := data["bandwidthMbps"].(float64); ok2 {
-                bw = b
-            }
-        }
-        // 暂不清理临时服务，便于排查中间节点通道部署问题（后续可恢复清理）
-        res = map[string]interface{}{
-            "success": success, "description": "iperf3 反向带宽测试", "nodeName": inNode.Name, "nodeId": inNode.ID,
-            "targetIp": exitIP, "targetPort": srvPort, "message": msgI, "bandwidthMbps": bw,
-        }
+		data, _ := cliRes["data"].(map[string]interface{})
+		success := false
+		msgI := ""
+		bw := 0.0
+		if data != nil {
+			if v, ok2 := data["success"].(bool); ok2 {
+				success = v
+			}
+			if m, ok2 := data["message"].(string); ok2 {
+				msgI = m
+			}
+			if b, ok2 := data["bandwidthMbps"].(float64); ok2 {
+				bw = b
+			}
+			if b2, err := json.Marshal(data); err == nil {
+				s := string(b2)
+				_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: inNode.ID, Cmd: "DiagIperf3Client-recv", RequestID: diagID, Success: ifThen(success, 1, 0), Message: msgI, Stdout: &s}).Error
+			}
+		}
+		// 诊断完成后清理临时服务
+		for i := 0; i < len(fNodes); i++ {
+			_ = sendWSCommand(fNodes[i], "DeleteService", map[string]any{"services": []string{tmpNames[i]}})
+			_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: fNodes[i], Cmd: "DiagTmpServiceDel", RequestID: diagID, Success: 1, Message: fmt.Sprintf("删除gost临时通道配置 name=%s", tmpNames[i])}).Error
+		}
+		// 结束后尝试关闭出口 iperf3 服务（best-effort）
+		kill := map[string]any{"requestId": RandUUID(), "timeoutSec": 10, "content": fmt.Sprintf("#!/bin/sh\nset +e\npkill -f 'iperf3.*-s.*-p %d' >/dev/null 2>&1 || true\nexit 0\n", srvPort)}
+		if res, ok := RequestOp(outNode.ID, "RunScript", kill, 12*time.Second); ok {
+			msg := "ok"
+			if d, _ := res["data"].(map[string]any); d != nil {
+				if m, _ := d["message"].(string); m != "" {
+					msg = m
+				}
+			}
+			_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: outNode.ID, Cmd: "DiagIperf3ServerStop", RequestID: diagID, Success: 1, Message: msg}).Error
+		} else {
+			_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: outNode.ID, Cmd: "DiagIperf3ServerStop", RequestID: diagID, Success: 0, Message: "未响应"}).Error
+		}
+		res = map[string]interface{}{
+			"success": success, "description": "iperf3 反向带宽测试", "nodeName": inNode.Name, "nodeId": inNode.ID,
+			"targetIp": exitIP, "targetPort": srvPort, "message": msgI, "bandwidthMbps": bw, "diagId": diagID,
+		}
 	default:
 		c.JSON(http.StatusOK, response.ErrMsg("未知诊断步骤"))
 		return
@@ -590,48 +783,54 @@ func TunnelDiagnoseStep(c *gin.Context) {
 // waitServiceOnNode polls QueryServices via WS to check if a temporary service is present.
 // It matches by service name or by listening port.
 func waitServiceOnNode(nodeID int64, name string, port int, timeout time.Duration) bool {
-    deadline := time.Now().Add(timeout)
-    for time.Now().Before(deadline) {
-        svcs := queryNodeServicesRaw(nodeID)
-        // match by name or port
-        for _, s := range svcs {
-            listening := false
-            if b, ok := s["listening"].(bool); ok { listening = b }
-            if n, ok := s["name"].(string); ok && n == name && listening {
-                return true
-            }
-            if v, ok := s["addr"].(string); ok {
-                if parsePort(v) == port && listening { return true }
-            }
-            if lst, ok := s["listener"].(map[string]any); ok {
-                if v, ok2 := lst["addr"].(string); ok2 {
-                    if parsePort(v) == port && listening { return true }
-                }
-            }
-        }
-        time.Sleep(200 * time.Millisecond)
-    }
-    return false
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		svcs := queryNodeServicesRaw(nodeID)
+		// match by name or port
+		for _, s := range svcs {
+			listening := false
+			if b, ok := s["listening"].(bool); ok {
+				listening = b
+			}
+			if n, ok := s["name"].(string); ok && n == name && listening {
+				return true
+			}
+			if v, ok := s["addr"].(string); ok {
+				if parsePort(v) == port && listening {
+					return true
+				}
+			}
+			if lst, ok := s["listener"].(map[string]any); ok {
+				if v, ok2 := lst["addr"].(string); ok2 {
+					if parsePort(v) == port && listening {
+						return true
+					}
+				}
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return false
 }
 
 // preferIPv4 chooses an IPv4 address from Node fields if available; otherwise returns ServerIP
 func preferIPv4(n model.Node) string {
-    // Node.IP may contain comma-separated list
-    if n.IP != "" {
-        parts := strings.Split(n.IP, ",")
-        for _, p := range parts {
-            p = strings.TrimSpace(p)
-            if p != "" && !strings.Contains(p, ":") { // IPv4
-                return p
-            }
-        }
-    }
-    // fallback: if ServerIP is IPv4
-    if n.ServerIP != "" && !strings.Contains(n.ServerIP, ":") {
-        return n.ServerIP
-    }
-    // last resort: ServerIP itself (IPv6 acceptable when both ends support it)
-    return n.ServerIP
+	// Node.IP may contain comma-separated list
+	if n.IP != "" {
+		parts := strings.Split(n.IP, ",")
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" && !strings.Contains(p, ":") { // IPv4
+				return p
+			}
+		}
+	}
+	// fallback: if ServerIP is IPv4
+	if n.ServerIP != "" && !strings.Contains(n.ServerIP, ":") {
+		return n.ServerIP
+	}
+	// last resort: ServerIP itself (IPv6 acceptable when both ends support it)
+	return n.ServerIP
 }
 
 func ifThen[T any](cond bool, a T, b T) T {

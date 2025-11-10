@@ -3,6 +3,9 @@ package controller
 import (
     "encoding/json"
     "net/http"
+    "strings"
+    "fmt"
+    "time"
 
     "github.com/gin-gonic/gin"
     "network-panel/golang-backend/internal/app/model"
@@ -19,16 +22,46 @@ func NodeInterfaces(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
 		return
 	}
+    // collect base list from runtime interfaces
+    ipsSet := map[string]struct{}{}
+    var out []string
     var r model.NodeRuntime
-    if err := dbpkg.DB.First(&r, "node_id = ?", p.NodeID).Error; err != nil || r.Interfaces == nil {
-        c.JSON(http.StatusOK, response.Ok(map[string]any{"ips": []string{}}))
-        return
+    if err := dbpkg.DB.First(&r, "node_id = ?", p.NodeID).Error; err == nil && r.Interfaces != nil {
+        var arr []string
+        _ = json.Unmarshal([]byte(*r.Interfaces), &arr)
+        for _, ip := range arr {
+            ip = strings.TrimSpace(ip)
+            if ip == "" { continue }
+            if _, ok := ipsSet[ip]; !ok { ipsSet[ip] = struct{}{}; out = append(out, ip) }
+        }
     }
-    // r.Interfaces stores a JSON array string; decode to []string for frontend
-    var arr []string
-    if err := json.Unmarshal([]byte(*r.Interfaces), &arr); err != nil {
-        c.JSON(http.StatusOK, response.Ok(map[string]any{"ips": []string{}}))
-        return
+    // include node configured IP / ServerIP
+    var n model.Node
+    if err := dbpkg.DB.First(&n, p.NodeID).Error; err == nil {
+        for _, ip := range []string{n.IP, n.ServerIP} {
+            ip = strings.TrimSpace(ip)
+            if ip != "" { if _, ok := ipsSet[ip]; !ok { ipsSet[ip] = struct{}{}; out = append(out, ip) } }
+        }
     }
-    c.JSON(http.StatusOK, response.Ok(map[string]any{"ips": arr}))
+    // enrich with public IPs using agent (best-effort)
+    req := map[string]interface{}{
+        "requestId": fmt.Sprintf("%d", time.Now().UnixNano()),
+        "timeoutSec": 8,
+        "content": "#!/bin/sh\nset +e\nIP4=$(curl -4 -fsS ip.sb 2>/dev/null || wget -4 -qO- ip.sb 2>/dev/null); IP6=$(curl -6 -fsS ip.sb 2>/dev/null || wget -6 -qO- ip.sb 2>/dev/null); echo IP4=$IP4; echo IP6=$IP6; exit 0\n",
+    }
+    if res, ok := RequestOp(p.NodeID, "RunScript", req, 9*time.Second); ok {
+        if data, _ := res["data"].(map[string]interface{}); data != nil {
+            if so, _ := data["stdout"].(string); so != "" {
+                lines := strings.Split(so, "\n")
+                for _, ln := range lines {
+                    ln = strings.TrimSpace(ln)
+                    if strings.HasPrefix(ln, "IP4=") || strings.HasPrefix(ln, "IP6=") {
+                        val := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(ln, "IP4="), "IP6="))
+                        if val != "" { if _, ok := ipsSet[val]; !ok { ipsSet[val] = struct{}{}; out = append(out, val) } }
+                    }
+                }
+            }
+        }
+    }
+    c.JSON(http.StatusOK, response.Ok(map[string]any{"ips": out}))
 }

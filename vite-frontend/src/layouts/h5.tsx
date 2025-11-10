@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 
 import { Logo } from '@/components/icons';
-import { siteConfig } from '@/config/site';
+import { siteConfig, getCachedConfig } from '@/config/site';
 
 interface TabItem {
   path: string;
@@ -21,6 +21,7 @@ export default function H5Layout({
   const navigate = useNavigate();
   const location = useLocation();
   const [isAdmin, setIsAdmin] = useState(false);
+  const [showProbe, setShowProbe] = useState(false);
 
   // Tabbar配置
   const tabItems: TabItem[] = [
@@ -96,6 +97,9 @@ export default function H5Layout({
     
 
     setIsAdmin(adminFlag);
+    (async()=>{
+      try{ const sp = await getCachedConfig('show_probe'); setShowProbe(sp==='true'); }catch{}
+    })();
   }, []);
 
   // Tab点击处理
@@ -104,9 +108,10 @@ export default function H5Layout({
   };
 
   // 过滤tab项（根据权限）
-  const filteredTabItems = tabItems.filter(item => 
-    !item.adminOnly || isAdmin
-  );
+  const filteredTabItems = tabItems.filter(item => {
+    if (item.path==='/probe' && !showProbe) return false;
+    return !item.adminOnly || isAdmin;
+  });
 
   // 路由切换时回到页面顶部，避免上一页的滚动位置遗留
   useEffect(() => {

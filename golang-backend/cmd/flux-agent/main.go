@@ -33,7 +33,7 @@ var (
 
 // versionBase is the agent semantic version (without role prefix).
 // final reported version is: go-agent-<versionBase> or go-agent2-<versionBase>
-var versionBase = "1.0.5"
+var versionBase = "1.0.6"
 var version = "" // computed in main()
 
 func isAgent2Binary() bool {
@@ -746,9 +746,13 @@ func handleDiagnose(c *websocket.Conn, d *DiagnoseData) {
 				d.Duration = 5
 			}
 			// allow reverse mode via payload Reverse flag
-			bw := runIperf3Client(d.Host, d.Port, d.Duration, d.Reverse)
+			bw, msg := runIperf3ClientVerbose(d.Host, d.Port, d.Duration, d.Reverse)
 			ok := bw > 0
-			resp = map[string]any{"success": ok, "bandwidthMbps": bw, "ctx": d.Ctx}
+			m := map[string]any{"success": ok, "bandwidthMbps": bw, "ctx": d.Ctx}
+			if msg != "" {
+				m["message"] = msg
+			}
+			resp = m
 		} else {
 			resp = map[string]any{"success": false, "message": "unknown iperf3 mode", "ctx": d.Ctx}
 		}
@@ -1168,6 +1172,49 @@ func runIperf3Client(host string, port, duration int, reverse bool) float64 {
 		return 0
 	}
 	return bps / 1e6
+}
+
+// runIperf3ClientVerbose returns bw and a compact message (error/output snippet) for logging
+func runIperf3ClientVerbose(host string, port, duration int, reverse bool) (float64, string) {
+	if host == "" || port <= 0 {
+		return 0, "invalid host/port"
+	}
+	args := []string{"-J", "-c", host, "-p", fmt.Sprintf("%d", port), "-t", fmt.Sprintf("%d", duration)}
+	if reverse {
+		args = append(args, "-R")
+	}
+	out, err := exec.Command("iperf3", args...).CombinedOutput()
+	if err != nil {
+		msg := string(out)
+		if len(msg) > 240 {
+			msg = msg[:240]
+		}
+		if msg == "" {
+			msg = err.Error()
+		}
+		return 0, msg
+	}
+	var m map[string]any
+	if json.Unmarshal(out, &m) != nil {
+		msg := string(out)
+		if len(msg) > 240 {
+			msg = msg[:240]
+		}
+		return 0, msg
+	}
+	end, _ := m["end"].(map[string]any)
+	rec, _ := end["sum_received"].(map[string]any)
+	if rec == nil {
+		rec, _ = end["sum_sent"].(map[string]any)
+	}
+	if rec == nil {
+		return 0, "no sum section"
+	}
+	bps, _ := rec["bits_per_second"].(float64)
+	if bps <= 0 {
+		return 0, "zero bps"
+	}
+	return bps / 1e6, "ok"
 }
 
 // ---- Probe targets poll & report ----

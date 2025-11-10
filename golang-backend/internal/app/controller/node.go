@@ -4,6 +4,7 @@ import (
     "net/http"
     "time"
     "fmt"
+    "strings"
 
 	"github.com/gin-gonic/gin"
 	"network-panel/golang-backend/internal/app/dto"
@@ -198,9 +199,30 @@ func NodeInstallCmd(c *gin.Context) {
 
 // POST /api/v1/node/ops {nodeId, limit}
 func NodeOps(c *gin.Context) {
-    var p struct{ NodeID int64 `json:"nodeId"`; Limit int `json:"limit"` }
+    var p struct{ NodeID int64 `json:"nodeId"`; Limit int `json:"limit"`; RequestID string `json:"requestId"` }
     if err := c.ShouldBindJSON(&p); err != nil { c.JSON(http.StatusOK, response.ErrMsg("参数错误")); return }
-    if p.Limit <= 0 || p.Limit > 200 { p.Limit = 50 }
+    if p.Limit <= 0 || p.Limit > 1000 { p.Limit = 200 }
+    // If requestId provided, return all logs for this diagnosis across nodes (ignore nodeId), and include nodeName
+    if strings.TrimSpace(p.RequestID) != "" {
+        type item struct {
+            model.NodeOpLog
+            NodeName string `json:"nodeName"`
+        }
+        var list []model.NodeOpLog
+        dbpkg.DB.Where("request_id = ?", p.RequestID).Order("time_ms asc").Limit(p.Limit).Find(&list)
+        // build nodeId -> name map
+        var nodes []model.Node
+        dbpkg.DB.Find(&nodes)
+        names := map[int64]string{}
+        for _, n := range nodes { names[n.ID] = n.Name }
+        out := make([]item, 0, len(list))
+        for _, it := range list {
+            out = append(out, item{NodeOpLog: it, NodeName: names[it.NodeID]})
+        }
+        c.JSON(http.StatusOK, response.Ok(map[string]any{"ops": out}))
+        return
+    }
+    // else fallback: by node or recent
     var list []model.NodeOpLog
     if p.NodeID > 0 {
         dbpkg.DB.Where("node_id = ?", p.NodeID).Order("time_ms desc").Limit(p.Limit).Find(&list)

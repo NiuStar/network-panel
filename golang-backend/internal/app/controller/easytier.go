@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -32,11 +33,48 @@ type etMaster struct {
 	Port   int    `json:"port"`
 }
 type etNode struct {
-	NodeID     int64  `json:"nodeId"`
-	IP         string `json:"ip"`
-	Port       int    `json:"port"`
-	PeerNodeID *int64 `json:"peerNodeId,omitempty"`
-	IPv4       string `json:"ipv4"`
+	NodeID     int64   `json:"nodeId"`
+	IP         string  `json:"ip"`
+	Port       int     `json:"port"`
+	PeerNodeID *int64  `json:"peerNodeId,omitempty"`
+	IPv4       string  `json:"ipv4"`
+	PeerIP     *string `json:"peerIp,omitempty"`
+}
+
+// guard to avoid duplicate EasyTier install scripts being sent concurrently
+// key: nodeID; value true while an install is in-flight
+var (
+	etInstallMu  sync.Mutex
+	etInstalling = map[int64]bool{}
+)
+
+func beginEtInstall(nodeID int64) bool {
+	etInstallMu.Lock()
+	defer etInstallMu.Unlock()
+	if etInstalling[nodeID] {
+		return false
+	}
+	etInstalling[nodeID] = true
+	return true
+}
+
+func endEtInstall(nodeID int64) {
+	etInstallMu.Lock()
+	delete(etInstalling, nodeID)
+	etInstallMu.Unlock()
+}
+
+func waitEtInstallFinish(nodeID int64, max time.Duration) {
+	deadline := time.Now().Add(max)
+	for time.Now().Before(deadline) {
+		etInstallMu.Lock()
+		busy := etInstalling[nodeID]
+		etInstallMu.Unlock()
+		if !busy {
+			return
+		}
+		time.Sleep(1 * time.Second)
+	}
 }
 
 func EasyTierStatus(c *gin.Context) {
@@ -119,6 +157,9 @@ func EasyTierListNodes(c *gin.Context) {
 			it["port"] = j.Port
 			it["peerNodeId"] = j.PeerNodeID
 			it["ipv4"] = j.IPv4
+			if j.PeerIP != nil {
+				it["peerIp"] = *j.PeerIP
+			}
 		}
 		out = append(out, it)
 	}
@@ -127,10 +168,11 @@ func EasyTierListNodes(c *gin.Context) {
 
 func EasyTierJoin(c *gin.Context) {
 	var p struct {
-		NodeID     int64  `json:"nodeId"`
-		IP         string `json:"ip"`
-		Port       int    `json:"port"`
-		PeerNodeID *int64 `json:"peerNodeId"`
+		NodeID     int64   `json:"nodeId"`
+		IP         string  `json:"ip"`
+		Port       int     `json:"port"`
+		PeerNodeID *int64  `json:"peerNodeId"`
+		PeerIP     *string `json:"peerIp"`
 	}
 	if err := c.ShouldBindJSON(&p); err != nil {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
@@ -157,7 +199,7 @@ func EasyTierJoin(c *gin.Context) {
 		_ = json.Unmarshal([]byte(v), &nodes)
 	}
 	// use node id as the last segment (template carries prefix)
-	ipv4 := fmt.Sprintf("%d", p.NodeID+1)
+	ipv4 := fmt.Sprintf("%d", p.NodeID)
 	// normalize/validate port
 	var n model.Node
 	_ = dbpkg.DB.First(&n, p.NodeID).Error
@@ -184,49 +226,61 @@ func EasyTierJoin(c *gin.Context) {
 			nodes[i].IP = p.IP
 			nodes[i].Port = port
 			nodes[i].PeerNodeID = p.PeerNodeID
+			if p.PeerIP != nil && *p.PeerIP != "" {
+				nodes[i].PeerIP = p.PeerIP
+			}
 			found = true
 			break
 		}
 	}
 	if !found {
-		nodes = append(nodes, etNode{NodeID: p.NodeID, IP: p.IP, Port: port, PeerNodeID: p.PeerNodeID, IPv4: ipv4})
+		nodes = append(nodes, etNode{NodeID: p.NodeID, IP: p.IP, Port: port, PeerNodeID: p.PeerNodeID, IPv4: ipv4, PeerIP: p.PeerIP})
 	}
 	b, _ := json.Marshal(nodes)
 	setCfg(etNodesKey, string(b))
-	// trigger agent install & config write (best-effort)
-	// Run install script via generic RunScript
-	// synchronous wait for script
-	script := readFileDefault("easytier/install.sh")
-	var payload = map[string]any{"requestId": RandUUID(), "timeoutSec": 300}
-	// compute server base url
-	host := getCfg("ip")
-	if host != "" && !strings.HasPrefix(host, "http") {
-		host = "http://" + host
-	}
-	if host == "" {
-		host = "/"
-	}
-	if strings.HasSuffix(host, "/") {
-		host = strings.TrimSuffix(host, "/")
-	}
-	if script == "" {
-		payload["url"] = host + "/easytier/install.sh"
+	// trigger agent install & config write (idempotent)
+	// prevent duplicate installs and use a longer server-side timeout
+	// a) Install script
+	installTO := getCfgInt("easytier_install_timeout_sec", 420) // default 7min
+	if beginEtInstall(p.NodeID) {
+		defer endEtInstall(p.NodeID)
+		script := readFileDefault("easytier/install.sh")
+		var payload = map[string]any{"requestId": RandUUID(), "timeoutSec": installTO}
+		// compute server base url
+		host := getCfg("ip")
+		if host != "" && !strings.HasPrefix(host, "http") {
+			host = "http://" + host
+		}
+		if host == "" {
+			host = "/"
+		}
+		if strings.HasSuffix(host, "/") {
+			host = strings.TrimSuffix(host, "/")
+		}
+		if script == "" {
+			payload["url"] = host + "/easytier/install.sh"
+		} else {
+			payload["content"] = strings.ReplaceAll(script, "{SERVER}", host)
+		}
+		if !requestWithRetry(p.NodeID, "RunScript", payload, time.Duration(installTO)*time.Second, 0) {
+			c.JSON(http.StatusOK, response.ErrMsg("安装脚本未响应"))
+			return
+		}
 	} else {
-		payload["content"] = strings.ReplaceAll(script, "{SERVER}", host)
+		// Another install is in progress; wait for it to finish to avoid upstream overwriting our config
+		waitEtInstallFinish(p.NodeID, time.Duration(installTO)*time.Second)
 	}
-	if !requestWithRetry(p.NodeID, "RunScript", payload, 60*time.Second, 2) {
-		c.JSON(http.StatusOK, response.ErrMsg("安装脚本未响应"))
-		return
-	}
-	// render and send default.conf
+	// render and send default.conf (write to both common paths)
 	conf := renderEasyTierConf(p.NodeID)
 	if !requestWithRetry(p.NodeID, "WriteFile", map[string]any{"requestId": RandUUID(), "path": "/opt/easytier/config/default.conf", "content": conf}, 15*time.Second, 2) {
 		c.JSON(http.StatusOK, response.ErrMsg("写配置失败"))
 		return
 	}
+	_ = requestWithRetry(p.NodeID, "WriteFile", map[string]any{"requestId": RandUUID(), "path": "/opt/easytier/config/default/default.conf", "content": conf}, 10*time.Second, 1)
+	// restart instance service first, then generic
+	_ = requestWithRetry(p.NodeID, "RestartService", map[string]any{"requestId": RandUUID(), "name": "easytier@default"}, 15*time.Second, 1)
 	if !requestWithRetry(p.NodeID, "RestartService", map[string]any{"requestId": RandUUID(), "name": "easytier"}, 20*time.Second, 2) {
-		c.JSON(http.StatusOK, response.ErrMsg("重启服务失败"))
-		return
+		// ignore error; instance service may be the active one
 	}
 	c.JSON(http.StatusOK, response.OkMsg("加入已下发"))
 }
@@ -273,16 +327,31 @@ func ensureMasterJoined(nodeID int64, ip string, port int) {
 	} else {
 		payload["content"] = strings.ReplaceAll(script, "{SERVER}", host)
 	}
-	_ = requestWithRetry(nodeID, "RunScript", payload, 60*time.Second, 2)
+	// avoid duplicate installs for master as well
+	installTO := getCfgInt("easytier_install_timeout_sec", 420)
+	if beginEtInstall(nodeID) {
+		defer endEtInstall(nodeID)
+		_ = requestWithRetry(nodeID, "RunScript", payload, time.Duration(installTO)*time.Second, 0)
+	} else {
+		waitEtInstallFinish(nodeID, time.Duration(installTO)*time.Second)
+	}
 	conf := renderEasyTierConf(nodeID)
 	_ = requestWithRetry(nodeID, "WriteFile", map[string]any{"requestId": RandUUID(), "path": "/opt/easytier/config/default.conf", "content": conf}, 15*time.Second, 2)
-	_ = requestWithRetry(nodeID, "RestartService", map[string]any{"requestId": RandUUID(), "name": "easytier"}, 20*time.Second, 2)
+	_ = requestWithRetry(nodeID, "WriteFile", map[string]any{"requestId": RandUUID(), "path": "/opt/easytier/config/default/default.conf", "content": conf}, 10*time.Second, 1)
+	_ = requestWithRetry(nodeID, "RestartService", map[string]any{"requestId": RandUUID(), "name": "easytier@default"}, 15*time.Second, 1)
+	_ = requestWithRetry(nodeID, "RestartService", map[string]any{"requestId": RandUUID(), "name": "easytier"}, 20*time.Second, 1)
 }
 
 // ipInNodeInterfaces checks if given ip belongs to node interfaces snapshot
 func ipInNodeInterfaces(nodeID int64, ip string) bool {
 	if ip == "" {
 		return false
+	}
+	// Accept when matches node's configured ServerIP or IP
+	var n model.Node
+	_ = dbpkg.DB.First(&n, nodeID).Error
+	if ip == n.ServerIP || ip == n.IP {
+		return true
 	}
 	var r model.NodeRuntime
 	if err := dbpkg.DB.First(&r, "node_id = ?", nodeID).Error; err != nil || r.Interfaces == nil {
@@ -367,7 +436,7 @@ func renderEasyTierConf(nodeID int64) string {
 			break
 		}
 	}
-	// peer lookup: 默认使用自身对外 IP+端口；若配置了对端则覆盖
+	// peer lookup: 默认使用自身对外 IP+端口；若配置了对端则覆盖；若指定了 PeerIP 则优先生效
 	peerIP := self.IP
 	peerPort := self.Port
 	if self.PeerNodeID != nil {
@@ -378,6 +447,9 @@ func renderEasyTierConf(nodeID int64) string {
 				break
 			}
 		}
+	}
+	if self.PeerIP != nil && *self.PeerIP != "" {
+		peerIP = *self.PeerIP
 	}
 	// bracket IPv6 for URL safety
 	if strings.Contains(peerIP, ":") && !(strings.HasPrefix(peerIP, "[") && strings.HasSuffix(peerIP, "]")) {
@@ -516,8 +588,9 @@ func EasyTierProxy(c *gin.Context) {
 // POST /api/v1/easytier/change-peer {nodeId, peerNodeId}
 func EasyTierChangePeer(c *gin.Context) {
 	var p struct {
-		NodeID     int64 `json:"nodeId" binding:"required"`
-		PeerNodeID int64 `json:"peerNodeId" binding:"required"`
+		NodeID     int64   `json:"nodeId" binding:"required"`
+		PeerNodeID int64   `json:"peerNodeId" binding:"required"`
+		PeerIP     *string `json:"peerIp"`
 	}
 	if err := c.ShouldBindJSON(&p); err != nil {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
@@ -530,6 +603,9 @@ func EasyTierChangePeer(c *gin.Context) {
 	for i := range nodes {
 		if nodes[i].NodeID == p.NodeID {
 			nodes[i].PeerNodeID = &p.PeerNodeID
+			if p.PeerIP != nil && *p.PeerIP != "" {
+				nodes[i].PeerIP = p.PeerIP
+			}
 		}
 	}
 	b, _ := json.Marshal(nodes)
@@ -537,7 +613,9 @@ func EasyTierChangePeer(c *gin.Context) {
 	// rewrite config on target node and restart
 	conf := renderEasyTierConf(p.NodeID)
 	RequestOp(p.NodeID, "WriteFile", map[string]any{"requestId": RandUUID(), "path": "/opt/easytier/config/default.conf", "content": conf}, 15*time.Second)
-	RequestOp(p.NodeID, "RestartService", map[string]any{"requestId": RandUUID(), "name": "easytier"}, 20*time.Second)
+	RequestOp(p.NodeID, "WriteFile", map[string]any{"requestId": RandUUID(), "path": "/opt/easytier/config/default/default.conf", "content": conf}, 10*time.Second)
+	RequestOp(p.NodeID, "RestartService", map[string]any{"requestId": RandUUID(), "name": "easytier@default"}, 15*time.Second)
+	RequestOp(p.NodeID, "RestartService", map[string]any{"requestId": RandUUID(), "name": "easytier"}, 15*time.Second)
 	c.JSON(http.StatusOK, response.OkMsg("已变更"))
 }
 
@@ -587,7 +665,9 @@ func EasyTierAutoAssign(c *gin.Context) {
 	for _, n := range nodes {
 		conf := renderEasyTierConf(n.NodeID)
 		_ = requestWithRetry(n.NodeID, "WriteFile", map[string]any{"requestId": RandUUID(), "path": "/opt/easytier/config/default.conf", "content": conf}, 15*time.Second, 2)
-		_ = requestWithRetry(n.NodeID, "RestartService", map[string]any{"requestId": RandUUID(), "name": "easytier"}, 20*time.Second, 2)
+		_ = requestWithRetry(n.NodeID, "WriteFile", map[string]any{"requestId": RandUUID(), "path": "/opt/easytier/config/default/default.conf", "content": conf}, 10*time.Second, 1)
+		_ = requestWithRetry(n.NodeID, "RestartService", map[string]any{"requestId": RandUUID(), "name": "easytier@default"}, 15*time.Second, 1)
+		_ = requestWithRetry(n.NodeID, "RestartService", map[string]any{"requestId": RandUUID(), "name": "easytier"}, 20*time.Second, 1)
 	}
 	c.JSON(http.StatusOK, response.OkMsg("已分配"))
 }
@@ -621,4 +701,16 @@ func setCfg(name, value string) {
 	} else {
 		_ = dbpkg.DB.Create(&model.ViteConfig{Name: name, Value: value, Time: now}).Error
 	}
+}
+
+// helper: read numeric vite_config with default fallback
+func getCfgInt(name string, def int) int {
+	v := strings.TrimSpace(getCfg(name))
+	if v == "" {
+		return def
+	}
+	if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		return n
+	}
+	return def
 }

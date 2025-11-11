@@ -42,6 +42,8 @@ curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/ma
   && sudo bash install_server.sh
 ```
 
+支持install、uninstall、daupte三种命令
+
 2）按提示选择：
 - 是否使用下载代理前缀（可为空）
 - CPU 架构（默认自动识别）

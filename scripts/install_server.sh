@@ -252,6 +252,78 @@ install_flux_agents() {
   fi
 }
 
+install_easytier() {
+  log "install_easytier"
+  # 确保下载 easytier 必需的文件到 /easytier/:file 目录
+  # 强制创建目标目录
+  local outdir="$INSTALL_DIR/easytier"
+  mkdir -p "$outdir"  # 强制创建目标目录
+  log "install_easytier 到 $outdir"
+
+  # 确保目标目录已创建
+  if [[ ! -d "$outdir" ]]; then
+    log "⚠️ 创建目标目录失败: $outdir"
+    return 1
+  fi
+
+  local localdir="$ROOT_DIR/easytier"
+  local need=("default.conf" "install.sh")
+  local have_any=0
+
+  # 1) 首先尝试本地复制
+  if [[ -d "$localdir" ]]; then
+    for f in "${need[@]}"; do
+      if [[ -f "$localdir/$f" ]]; then
+        install -m 0755 "$localdir/$f" "$outdir/$f"
+        have_any=1
+        log "✅ 本地复制 $f"
+      else
+        log "⚠️ 本地找不到 $f，尝试从 GitHub 下载"
+      fi
+    done
+  fi
+
+  # 下载文件的辅助函数
+  try_dl() {
+    # try_dl <url> <dest>
+    local url="$1"; local dest="$2"; local code
+    code=$(curl -fSL --retry 2 --retry-delay 1 --write-out '%{http_code}' --output "$dest" "$url" 2>/dev/null || true)
+    if [[ -s "$dest" && ( "$code" == "200" || "$code" == "302" || "$code" == "000" ) ]]; then
+      chmod +x "$dest" 2>/dev/null || true
+      printf 'OK %s\n' "$code"
+      return 0
+    fi
+    rm -f "$dest" 2>/dev/null || true
+    printf 'ERR %s\n' "${code:-unknown}"
+    return 1
+  }
+
+  # 2) 从 GitHub 仓库直接下载文件
+  local base_url="https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/easytier"
+  if [[ -n "$PROXY_PREFIX" ]]; then
+    base_url="${PROXY_PREFIX}${base_url}"
+  fi
+
+  for f in "${need[@]}"; do
+    if [[ -f "$outdir/$f" ]]; then continue; fi
+    log "下载 easytier: $f"
+    local url="${base_url}/${f}"
+    local dest="$outdir/$f"
+    
+    res=$(try_dl "$url" "$dest") || log "❌ 从 $url 下载失败 ($(printf '%s' "$res" | awk '{print $2}'))"
+    if [[ "$res" == OK* ]]; then
+      have_any=1
+      log "✅ 从 GitHub 仓库下载 $f"
+    fi
+  done
+
+  if (( have_any == 1 )); then
+    log "✅ easytier 文件准备就绪，位于 $outdir"
+  else
+    log "⚠️  没有找到 easytier 文件；/easytier 端点在节点上将无法使用，直到文件提供完毕。"
+  fi
+}
+
 # --- Clean install dir (preserve SQLite DB only) ---
 read_env_val() {
   # read_env_val <file> <VAR> -> print last matching value without quotes
@@ -343,6 +415,7 @@ build_from_source() {
   install_install_sh || true
   # Provide flux-agent binaries for node auto-upgrade/download
   install_flux_agents || true
+  install_easytier || true
 }
 
 write_env_file() {
@@ -416,6 +489,7 @@ main() {
   install_install_sh || true
   # Ensure flux-agent binaries are available
   install_flux_agents || true
+  install_easytier || true
 
   write_env_file
   # Also create a project-local .env with sane defaults

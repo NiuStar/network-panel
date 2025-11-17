@@ -97,9 +97,21 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
   bash "$SERVER_BUILD"
 fi
 
-echo "==> Creating git tag $TAG"
-git -C "$ROOT_DIR" tag -a "$TAG" -m "Release $TAG"
-git -C "$ROOT_DIR" push origin "$TAG"
+echo "==> Ensuring git tag $TAG exists"
+
+# 先确保本地有 tag
+if git -C "$ROOT_DIR" rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+  echo "Tag $TAG already exists locally, skip creating."
+else
+  git -C "$ROOT_DIR" tag -a "$TAG" -m "Release $TAG"
+fi
+
+# 再确保远端 origin 上也有
+if git -C "$ROOT_DIR" ls-remote --tags origin "$TAG" | grep -q "$TAG"; then
+  echo "Tag $TAG already exists on origin, skip pushing."
+else
+  git -C "$ROOT_DIR" push origin "$TAG"
+fi
 
 if [[ "$DO_RELEASE" -eq 0 ]]; then
   echo "Skipping GitHub release as requested (--no-release)."
@@ -182,15 +194,41 @@ else
   fi
 fi
 
-if [[ ${#assets[@]} -gt 0 ]]; then
-  for f in "${assets[@]}"; do
-    name=$(basename "$f")
-    echo "Uploading asset: $name"
-    curl -sS -X POST \
+upload_asset() {
+  local file="$1"
+  local name
+  name="$(basename "$file")"
+
+  local max_tries=3
+  local attempt=1
+
+  while (( attempt <= max_tries )); do
+    echo "Uploading asset: $name (attempt ${attempt}/${max_tries})"
+
+    # 放在 if 条件里，失败时不会触发 set -e 直接退出
+    if curl -sS -X POST \
       -H "Authorization: token $GHTOKEN" \
       -H "Content-Type: application/octet-stream" \
-      --data-binary @"$f" \
+      --data-binary @"$file" \
       "https://uploads.github.com/repos/${owner}/${repo}/releases/${rel_id}/assets?name=${name}" >/dev/null
+    then
+      echo "✓ Uploaded: $name"
+      return 0
+    fi
+
+    echo "⚠️  Upload failed for $name, retrying..." >&2
+    attempt=$((attempt + 1))
+    sleep 3
+  done
+
+  echo "❌ Failed to upload $name after ${max_tries} tries, skip." >&2
+  return 1
+}
+
+
+if [[ ${#assets[@]} -gt 0 ]]; then
+  for f in "${assets[@]}"; do
+    upload_asset "$f" || continue
   done
 fi
 

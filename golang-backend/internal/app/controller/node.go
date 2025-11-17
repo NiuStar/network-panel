@@ -6,11 +6,12 @@ import (
     "fmt"
     "strings"
 
-	"github.com/gin-gonic/gin"
-	"network-panel/golang-backend/internal/app/dto"
-	"network-panel/golang-backend/internal/app/model"
-	"network-panel/golang-backend/internal/app/response"
-	dbpkg "network-panel/golang-backend/internal/db"
+    "github.com/gin-gonic/gin"
+    "network-panel/golang-backend/internal/app/dto"
+    "network-panel/golang-backend/internal/app/model"
+    "network-panel/golang-backend/internal/app/response"
+    dbpkg "network-panel/golang-backend/internal/db"
+    "strconv"
 )
 
 // POST /api/v1/node/create
@@ -48,6 +49,18 @@ func NodeCreate(c *gin.Context) {
 func NodeList(c *gin.Context) {
     var nodes []model.Node
     dbpkg.DB.Find(&nodes)
+    // build last-seen map from node_sysinfo (latest sample per node)
+    type rec struct{ NodeID int64; TimeMs int64 }
+    var recs []rec
+    _ = dbpkg.DB.Raw("select node_id, max(time_ms) as time_ms from node_sys_info group by node_id").Scan(&recs)
+    lastSeen := map[int64]int64{}
+    for _, r := range recs { lastSeen[r.NodeID] = r.TimeMs }
+    now := time.Now().UnixMilli()
+    // consider offline if no sysinfo within threshold
+    thresholdMs := int64(30 * 1000) // 30s
+    if v := c.Request.URL.Query().Get("offline_threshold_ms"); v != "" {
+        if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 { thresholdMs = n }
+    }
     // map to output adding cycleMonths for clarity; keep other fields
     outs := make([]map[string]any, 0, len(nodes))
     for _, n := range nodes {
@@ -69,6 +82,12 @@ func NodeList(c *gin.Context) {
             // health flags
             "gostApi":     ifThen(ok && hf.GostAPI, 1, 0),
             "gostRunning": ifThen(ok && hf.GostRunning, 1, 0),
+        }
+        // override status by last-seen if stale
+        if ts, ok2 := lastSeen[n.ID]; ok2 {
+            if now-ts > thresholdMs {
+                m["status"] = 0
+            }
         }
         // derive cycleMonths from stored cycleDays
         if n.CycleDays != nil {

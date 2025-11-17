@@ -14,7 +14,6 @@ import OpsLogModal from '@/components/OpsLogModal';
 import { Divider } from "@heroui/divider";
 import { queryNodeServices, getNodeNetworkStatsBatch, getVersionInfo } from "@/api";
 import toast from 'react-hot-toast';
-import axios from 'axios';
 import { getCachedConfig } from '@/config/site';
 
 
@@ -366,9 +365,10 @@ export default function NodePage() {
       closeWebSocket();
     }
     
-    // 构建WebSocket URL，使用axios的baseURL
-    const baseUrl = axios.defaults.baseURL || (import.meta.env.VITE_API_BASE ? `${import.meta.env.VITE_API_BASE}/api/v1/` : '/api/v1/');
-    const wsUrl = baseUrl.replace(/^http/, 'ws').replace(/\/api\/v1\/$/, '') + `/system-info?type=0&secret=${localStorage.getItem('token')}`;
+    // 构建 WebSocket URL：固定基于浏览器当前 origin，避免 baseURL 末尾斜杠/环境差异导致的不稳定
+    const loc = window.location;
+    const wsScheme = loc.protocol === 'https:' ? 'wss' : 'ws';
+    const wsUrl = `${wsScheme}://${loc.host}/system-info?type=0`;
     setWsUrlShown(wsUrl);
     
     try {
@@ -867,7 +867,7 @@ export default function NodePage() {
               {wsStatus==='connected' ? 'WS 已连接' : wsStatus==='connecting' ? 'WS 连接中…' : 'WS 未连接（自动重试）'}
             </span>
           </div>
-          <div className="hidden md:block text-xs text-default-500 truncate max-w-[420px]" title={wsUrlShown}>WS: {wsUrlShown || '-'}</div>
+          <div className="hidden md:block text-xs text-default-500 truncate max-w-[420px]" title={wsUrlShown}> {wsUrlShown || '-'}</div>
           <div className="text-xs text-default-500">后端: {serverVersion||'-'} · Agent: {agentVersion||'-'}</div>
         </div>
 

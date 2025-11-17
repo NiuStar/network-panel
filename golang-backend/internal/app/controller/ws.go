@@ -30,15 +30,41 @@ var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { retu
 
 // nodeConns stores active node websocket connections by node ID (support multiple conns per node)
 type nodeConn struct {
-	c   *websocket.Conn
-	ver string
+    c   *websocket.Conn
+    ver string
+}
+
+// adminClient wraps an admin websocket connection with a write mutex
+// to ensure gorilla/websocket single-writer requirement.
+type adminClient struct {
+    c  *websocket.Conn
+    mu sync.Mutex
+}
+
+// safeWriteMessage writes a text message to admin client with locking and deadline.
+func (a *adminClient) safeWriteMessage(b []byte) error {
+    a.mu.Lock()
+    defer a.mu.Unlock()
+    // Best-effort write deadline to avoid lingering stuck writes
+    _ = a.c.SetWriteDeadline(time.Now().Add(5 * time.Second))
+    return a.c.WriteMessage(websocket.TextMessage, b)
+}
+
+// safePing sends a websocket Ping control frame with locking and deadline.
+func (a *adminClient) safePing() error {
+    a.mu.Lock()
+    defer a.mu.Unlock()
+    _ = a.c.SetWriteDeadline(time.Now().Add(5 * time.Second))
+    // per gorilla/websocket, WriteControl is safe with deadlines
+    return a.c.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(5*time.Second))
 }
 
 var (
     nodeConnMu  sync.RWMutex
     nodeConns   = map[int64][]*nodeConn{}
     adminMu     sync.RWMutex
-    adminConns  = map[*websocket.Conn]struct{}{}
+    // adminConns holds dashboard websocket clients with per-conn write lock
+    adminConns  = map[*adminClient]struct{}{}
     diagMu      sync.Mutex
     diagWaiters = map[string]chan map[string]interface{}{}
     opMu       sync.Mutex
@@ -64,17 +90,40 @@ func SystemInfoWS(c *gin.Context) {
 
     // Admin monitor channel
     if nodeType == "0" {
+        cli := &adminClient{c: conn}
         adminMu.Lock()
-        adminConns[conn] = struct{}{}
+        adminConns[cli] = struct{}{}
         adminMu.Unlock()
+        // Tighten idle detection with read deadline extended by Pong
+        deadlineSec := 120
+        _ = conn.SetReadDeadline(time.Now().Add(time.Duration(deadlineSec) * time.Second))
+        conn.SetPongHandler(func(string) error {
+            _ = conn.SetReadDeadline(time.Now().Add(time.Duration(deadlineSec) * time.Second))
+            return nil
+        })
+        // Periodic server-initiated Ping to keep intermediaries alive
+        go func(ac *adminClient) {
+            ticker := time.NewTicker(30 * time.Second)
+            defer ticker.Stop()
+            for range ticker.C {
+                if err := ac.safePing(); err != nil {
+                    // drop and close; read-loop will exit as well
+                    adminMu.Lock()
+                    delete(adminConns, ac)
+                    adminMu.Unlock()
+                    _ = ac.c.Close()
+                    return
+                }
+            }
+        }(cli)
         // send initial snapshot: node online statuses + last sysinfo samples
-        go func(c *websocket.Conn){
+        go func(ac *adminClient){
             // send current statuses
             var nodes []model.Node
             dbpkg.DB.Find(&nodes)
             for _, n := range nodes {
                 b, _ := json.Marshal(map[string]interface{}{"id": n.ID, "type": "status", "data": ifThenBool(n.Status!=nil && *n.Status==1, 1, 0)})
-                _ = c.WriteMessage(websocket.TextMessage, b)
+                _ = ac.safeWriteMessage(b)
                 // last sysinfo
                 var s model.NodeSysInfo
                 if err := dbpkg.DB.Where("node_id = ?", n.ID).Order("time_ms desc").First(&s).Error; err == nil && s.NodeID > 0 {
@@ -86,15 +135,15 @@ func SystemInfoWS(c *gin.Context) {
                         "memory_usage": s.Mem,
                     }
                     b2, _ := json.Marshal(map[string]interface{}{"id": n.ID, "type": "info", "data": payload})
-                    _ = c.WriteMessage(websocket.TextMessage, b2)
+                    _ = ac.safeWriteMessage(b2)
                 }
             }
-        }(conn)
+        }(cli)
         // keep read loop to detect close
         for {
             if _, _, err := conn.ReadMessage(); err != nil {
                 adminMu.Lock()
-                delete(adminConns, conn)
+                delete(adminConns, cli)
                 adminMu.Unlock()
                 conn.Close()
                 return
@@ -492,12 +541,27 @@ func RequestOp(nodeID int64, cmd string, data map[string]interface{}, timeout ti
 
 // broadcastToAdmins sends a JSON message to all admin monitor connections.
 func broadcastToAdmins(v interface{}) {
-	b, _ := json.Marshal(v)
-	adminMu.RLock()
-	for c := range adminConns {
-		_ = c.WriteMessage(websocket.TextMessage, b)
-	}
-	adminMu.RUnlock()
+    b, _ := json.Marshal(v)
+    // copy snapshot of clients under read lock
+    adminMu.RLock()
+    clients := make([]*adminClient, 0, len(adminConns))
+    for c := range adminConns { clients = append(clients, c) }
+    adminMu.RUnlock()
+    // write sequentially; drop broken ones
+    var toDrop []*adminClient
+    for _, ac := range clients {
+        if err := ac.safeWriteMessage(b); err != nil {
+            toDrop = append(toDrop, ac)
+        }
+    }
+    if len(toDrop) > 0 {
+        adminMu.Lock()
+        for _, ac := range toDrop {
+            delete(adminConns, ac)
+            _ = ac.c.Close()
+        }
+        adminMu.Unlock()
+    }
 }
 
 // parseNodeSystemInfo handles plain or AES-wrapped system info from node and converts keys.

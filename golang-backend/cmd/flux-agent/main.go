@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -17,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -24,18 +26,24 @@ import (
 	"time"
 
 	"debug/elf"
+
+	"sync/atomic"
+
 	"github.com/gorilla/websocket"
 )
 
 var (
 	newline = []byte{'\n'}
 	space   = []byte{' '}
+	opLogCh = make(chan map[string]any, 128)
 )
 
 // versionBase is the agent semantic version (without role prefix).
 // final reported version is: go-agent-<versionBase> or go-agent2-<versionBase>
-var versionBase = "1.0.7.1"
-var version = "" // computed in main()
+var versionBase = " 1.0.8"
+var version = ""      // computed in main()
+var apiBootDone int32 // 0=not attempted, 1=attempted
+var apiUse int32      // 1=Web API usable
 
 func isAgent2Binary() bool {
 	base := filepath.Base(os.Args[0])
@@ -150,6 +158,8 @@ func main() {
 	}
 	u.RawQuery = q.Encode()
 
+	// 不再自动启用 Web API，仅做报告（前端可手动触发启用）。
+
 	for {
 		if err := runOnce(u.String(), addr, secret, scheme); err != nil {
 			log.Printf("{\"event\":\"agent_error\",\"error\":%q}", err.Error())
@@ -158,25 +168,71 @@ func main() {
 	}
 }
 
+// dialWSWithFamily dials websocket with IP family preference: "4", "6", or "auto" (default).
+func dialWSWithFamily(d *websocket.Dialer, wsURL string, family string) (*websocket.Conn, *http.Response, error) {
+	fam := strings.TrimSpace(strings.ToLower(family))
+	if fam == "4" || fam == "ipv4" {
+		// force IPv4
+		dialer := *d
+		nd := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+		dialer.NetDialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+			return nd.DialContext(ctx, "tcp4", address)
+		}
+		return dialer.Dial(wsURL, nil)
+	}
+	if fam == "6" || fam == "ipv6" {
+		// force IPv6
+		dialer := *d
+		nd := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+		dialer.NetDialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+			return nd.DialContext(ctx, "tcp6", address)
+		}
+		return dialer.Dial(wsURL, nil)
+	}
+	// auto: prefer IPv4 then IPv6
+	if c, r, err := dialWSWithFamily(d, wsURL, "4"); err == nil {
+		return c, r, nil
+	}
+	return dialWSWithFamily(d, wsURL, "6")
+}
+
 func runOnce(wsURL, addr, secret, scheme string) error {
 	log.Printf("{\"event\":\"connecting\",\"url\":%q}", wsURL)
 	d := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+	// TCP keepalive & proxy follow defaults via NetDialContext inside dialWSWithFamily
 	if strings.HasPrefix(wsURL, "wss://") {
 		d.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
-	c, _, err := d.Dial(wsURL, nil)
+	// IP family preference via env WS_IP_FAMILY: "4", "6", or "auto"
+	fam := getenv("WS_IP_FAMILY", "auto")
+	c, _, err := dialWSWithFamily(&d, wsURL, fam)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
 	log.Printf("{\"event\":\"connected\"}")
 
-	// on connect reconcile & periodic reconcile
-	go reconcile(addr, secret, scheme)
-	go periodicReconcile(addr, secret, scheme)
+	// 不在重连时自动启用/重启 GOST，仅保持心跳与命令通道
+
+	// do not run agent-initiated reconcile; only act on explicit server commands
 	go periodicProbe(addr, secret, scheme)
 	go periodicSystemInfo(c)
-	go periodicEnsureGost()
+	// OpLog forwarder: send queued op logs to server as {type:"OpLog", step, message, data}
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case m := <-opLogCh:
+				if m == nil {
+					continue
+				}
+				m["type"] = "OpLog"
+				_ = c.WriteJSON(m)
+			case <-done:
+				return
+			}
+		}
+	}()
 	// after connect, cross-check counterpart agent
 	go func() {
 		// fetch expected versions
@@ -196,11 +252,27 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 
 	// read loop
 	c.SetReadLimit(1 << 20)
-	c.SetReadDeadline(time.Now().Add(60 * time.Second))
-	c.SetPongHandler(func(string) error { c.SetReadDeadline(time.Now().Add(60 * time.Second)); return nil })
+	// tighter ping/pong to reduce idle disconnects
+	deadlineSec := 45
+	if v := getenv("WS_DEADLINE_SEC", ""); v != "" {
+		if n, _ := strconv.Atoi(v); n > 0 {
+			deadlineSec = n
+		}
+	}
+	c.SetReadDeadline(time.Now().Add(time.Duration(deadlineSec) * time.Second))
+	c.SetPongHandler(func(string) error {
+		c.SetReadDeadline(time.Now().Add(time.Duration(deadlineSec) * time.Second))
+		return nil
+	})
 
 	go func() {
-		ticker := time.NewTicker(30 * time.Second)
+		pingSec := 15
+		if v := getenv("WS_PING_SEC", ""); v != "" {
+			if n, _ := strconv.Atoi(v); n > 0 {
+				pingSec = n
+			}
+		}
+		ticker := time.NewTicker(time.Duration(pingSec) * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
 			_ = c.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(5*time.Second))
@@ -211,6 +283,7 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 
 		_, msg, err := c.ReadMessage()
 		if err != nil {
+			close(done)
 			return err
 		}
 		msg = bytes.TrimSpace(bytes.Replace(msg, newline, space, -1))
@@ -288,6 +361,7 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 			}
 			if err := addOrUpdateServices(services, false); err != nil {
 				log.Printf("{\"event\":\"svc_cmd_apply_err\",\"type\":%q,\"error\":%q}", m.Type, err.Error())
+				emitOpLog("gost_api_err", "apply AddService failed", map[string]any{"error": err.Error()})
 			} else {
 				log.Printf("{\"event\":\"svc_cmd_applied\",\"type\":%q,\"count\":%d}", m.Type, len(services))
 			}
@@ -299,6 +373,7 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 			}
 			if err := addOrUpdateServices(services, true); err != nil {
 				log.Printf("{\"event\":\"svc_cmd_apply_err\",\"type\":%q,\"error\":%q}", m.Type, err.Error())
+				emitOpLog("gost_api_err", "apply UpdateService failed", map[string]any{"error": err.Error()})
 			} else {
 				log.Printf("{\"event\":\"svc_cmd_applied\",\"type\":%q,\"count\":%d}", m.Type, len(services))
 			}
@@ -356,6 +431,38 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 				resp := map[string]any{"type": "SuggestPortsResult", "requestId": req.RequestID, "data": map[string]any{"ports": ports}}
 				_ = c.WriteJSON(resp)
 			}()
+		case "ProbePort":
+			var req struct {
+				RequestID string `json:"requestId"`
+				Port      int    `json:"port"`
+			}
+			_ = json.Unmarshal(m.Data, &req)
+			go func() {
+				listening := portListening(req.Port)
+				resp := map[string]any{"type": "ProbePortResult", "requestId": req.RequestID, "data": map[string]any{"port": req.Port, "listening": listening}}
+				_ = c.WriteJSON(resp)
+			}()
+		case "EnableGostAPI":
+			// 手动启用 GOST 顶层 API 并重启服务
+			emitOpLog("gost_api", "enable start", map[string]any{"message": "write top-level api and restart gost"})
+			if err := ensureGostAPITopLevel(); err != nil {
+				emitOpLog("gost_api_err", "enable failed (write)", map[string]any{"error": err.Error()})
+				log.Printf("{\"event\":\"enable_api_failed\",\"error\":%q}", err.Error())
+				continue
+			}
+			if err := restartGostService(); err != nil {
+				emitOpLog("gost_api_err", "enable failed (restart)", map[string]any{"error": err.Error()})
+				continue
+			}
+			time.Sleep(1200 * time.Millisecond)
+			ok := apiAvailable()
+			emitOpLog("gost_api", "enable done", map[string]any{"available": ok})
+			log.Printf("{\"event\":\"enable_api_done\",\"ok\":%v}", ok)
+			// update cached usable state
+			if ok {
+				atomic.StoreInt32(&apiUse, 1)
+			}
+			continue
 		case "UpgradeAgent":
 			// optional payload: {to: "go-agent-1.x.y"}
 			go func() { _ = selfUpgrade(addr, scheme) }()
@@ -426,6 +533,26 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 			// ignore unknown
 		}
 	}
+}
+
+// apiEnsureIfUnavailable tries to enable Web API if not currently available (single attempt per call).
+func apiEnsureIfUnavailable() bool {
+	if apiAvailable() {
+		atomic.StoreInt32(&apiUse, 1)
+		return true
+	}
+	if err := ensureGostAPITopLevel(); err != nil {
+		return false
+	}
+	if !tryRestartService("gost") {
+		return false
+	}
+	time.Sleep(1500 * time.Millisecond)
+	ok := apiAvailable()
+	if ok {
+		atomic.StoreInt32(&apiUse, 1)
+	}
+	return ok
 }
 
 // ---- Periodic system info reporting over WS ----
@@ -564,6 +691,10 @@ func periodicSystemInfo(c *websocket.Conn) {
 		payload["BytesTransmitted"] = int64(tx)
 		payload["CPUUsage"] = cpuUsagePercent()
 		payload["MemoryUsage"] = memUsagePercent()
+		// basic health: gost service & web api
+		payload["GostAPI"] = apiAvailable()
+		payload["GostRunning"] = gostRunning()
+		payload["GostAPIConfigured"] = apiConfigured()
 		if len(ifaces) > 0 {
 			payload["Interfaces"] = ifaces
 		}
@@ -574,6 +705,25 @@ func periodicSystemInfo(c *websocket.Conn) {
 		}
 		<-ticker.C
 	}
+}
+
+// gostRunning checks if gost is running via service manager or pid tools (best-effort)
+func gostRunning() bool {
+	if ok, known := isServiceActive("gost"); known {
+		return ok
+	}
+	if _, err := exec.LookPath("pidof"); err == nil {
+		if err := exec.Command("pidof", "gost").Run(); err == nil {
+			return true
+		}
+	}
+	if _, err := exec.LookPath("pgrep"); err == nil {
+		if err := exec.Command("pgrep", "-x", "gost").Run(); err == nil {
+			return true
+		}
+	}
+	// fallback: if API reachable, consider running
+	return apiAvailable()
 }
 
 func getInterfaces() []string {
@@ -806,7 +956,8 @@ func resolveGostConfigPathForRead() string {
 	return "/etc/gost/gost.json"
 }
 
-func resolveGostConfigPathForWrite() string { return resolveGostConfigPathForRead() }
+// Always write to /etc/gost/gost.json to enable API before Web API is available
+func resolveGostConfigPathForWrite() string { return "/etc/gost/gost.json" }
 
 func readGostConfig() map[string]any {
 	path := resolveGostConfigPathForRead()
@@ -834,8 +985,486 @@ func writeGostConfig(m map[string]any) error {
 	return os.WriteFile(path, b, 0600)
 }
 
+// --- Web API (gost) helpers ---
+
+func apiBaseURL() string { return "http://127.0.0.1:18080/api" }
+
+func md5String(s string) string {
+	sum := md5.Sum([]byte(strings.TrimSpace(s)))
+	return fmt.Sprintf("%x", sum)
+}
+
+func apiCreds() (user, pass string) {
+	user = "networkpanel"
+	hn, _ := os.Hostname()
+	if hn == "" {
+		hn = "node"
+	}
+	pass = md5String(hn)
+	return
+}
+
+func apiAvailable() bool {
+	req, _ := http.NewRequest("GET", apiBaseURL()+"/config", nil)
+	u, p := apiCreds()
+	req.SetBasicAuth(u, p)
+	cli := &http.Client{Timeout: 1500 * time.Millisecond}
+	resp, err := cli.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode/100 == 2
+}
+
+// apiConfigured best-effort checks gost.json for top-level api section.
+func apiConfigured() bool {
+	m := readGostConfig()
+	if m == nil {
+		return false
+	}
+	if _, ok := m["api"]; ok {
+		return true
+	}
+	return false
+}
+
+// ensureGostAPITopLevel writes top-level api config (not as a service).
+func ensureGostAPITopLevel() error {
+	cfg := readGostConfig()
+	u, p := apiCreds()
+	cfg["api"] = map[string]any{
+		"addr":       ":18080",
+		"pathPrefix": "/api",
+		"accesslog":  true,
+		"auth": map[string]any{
+			"username": u,
+			"password": p,
+		},
+	}
+	// remove legacy service-based api if exists
+	if arr, ok := cfg["services"].([]any); ok && len(arr) > 0 {
+		out := make([]any, 0, len(arr))
+		for _, it := range arr {
+			keep := true
+			if m, ok2 := it.(map[string]any); ok2 {
+				if n, _ := m["name"].(string); n == "gost_api" {
+					keep = false
+				}
+			}
+			if keep {
+				out = append(out, it)
+			}
+		}
+		cfg["services"] = out
+	}
+	return writeGostConfig(cfg)
+}
+
+// isApiUsable returns last known state for Web API.
+func isApiUsable() bool {
+	if atomic.LoadInt32(&apiUse) == 1 {
+		return true
+	}
+	if apiAvailable() {
+		atomic.StoreInt32(&apiUse, 1)
+		return true
+	}
+	return false
+}
+
+// apiBootstrapOnce tries to enable Web API exactly once.
+func apiBootstrapOnce() bool {
+	if !atomic.CompareAndSwapInt32(&apiBootDone, 0, 1) {
+		return isApiUsable()
+	}
+	if apiAvailable() {
+		atomic.StoreInt32(&apiUse, 1)
+		log.Printf("{\"event\":\"api_available\",\"ok\":true}")
+		return true
+	}
+	if err := ensureGostAPITopLevel(); err != nil {
+		log.Printf("{\"event\":\"api_bootstrap_failed\",\"error\":%q}", err.Error())
+		return false
+	}
+	if !tryRestartService("gost") {
+		log.Printf("{\"event\":\"api_restart_gost_failed\"}")
+		return false
+	}
+	time.Sleep(1500 * time.Millisecond)
+	ok := apiAvailable()
+	if ok {
+		atomic.StoreInt32(&apiUse, 1)
+	}
+	log.Printf("{\"event\":\"api_available\",\"ok\":%v}", ok)
+	return ok
+}
+
+func apiDo(method, path string, body []byte) (int, []byte, error) {
+	fullURL := apiBaseURL() + path
+	// log request (masked)
+	if body != nil && len(body) > 0 {
+		log.Printf("{\"event\":\"gost_api_call\",\"method\":%q,\"url\":%q,\"body\":%s}", method, maskURLSecrets(fullURL), string(maskJSONSecrets(body)))
+	} else {
+		log.Printf("{\"event\":\"gost_api_call\",\"method\":%q,\"url\":%q}", method, maskURLSecrets(fullURL))
+	}
+	req, _ := http.NewRequest(method, fullURL, bytes.NewReader(body))
+	u, p := apiCreds()
+	req.SetBasicAuth(u, p)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	cli := &http.Client{Timeout: 5 * time.Second}
+	resp, err := cli.Do(req)
+	if err != nil {
+		log.Printf("{\"event\":\"gost_api_err\",\"method\":%q,\"url\":%q,\"error\":%q}", method, maskURLSecrets(fullURL), err.Error())
+		emitOpLog("gost_api", "request error", map[string]any{"method": method, "url": maskURLSecrets(fullURL), "error": err.Error()})
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 == 2 {
+		atomic.StoreInt32(&apiUse, 1)
+	}
+	// log response (masked, truncated)
+	const capN = 4096
+	rb := out
+	if len(rb) > capN {
+		rb = rb[:capN]
+	}
+	log.Printf("{\"event\":\"gost_api_resp\",\"method\":%q,\"url\":%q,\"status\":%d,\"body\":%s}", method, maskURLSecrets(fullURL), resp.StatusCode, string(maskJSONSecrets(rb)))
+	step := "gost_api"
+	if resp.StatusCode/100 != 2 {
+		step = "gost_api_err"
+	}
+	emitOpLog(step, fmt.Sprintf("%s %s status=%d", method, path, resp.StatusCode), map[string]any{"method": method, "url": maskURLSecrets(fullURL), "status": resp.StatusCode, "body": string(maskJSONSecrets(rb))})
+	return resp.StatusCode, out, nil
+}
+
+// persistGostConfigSnapshot fetches full config via Web API and writes to /etc/gost/gost.json.
+func persistGostConfigSnapshot() error {
+	code, body, err := apiDo("GET", "/config", nil)
+	if err != nil {
+		emitOpLog("gost_api_err", "snapshot fetch failed", map[string]any{"error": err.Error()})
+		return err
+	}
+	if code/100 != 2 {
+		emitOpLog("gost_api_err", "snapshot fetch non-2xx", map[string]any{"status": code, "body": string(maskJSONSecrets(body))})
+		return fmt.Errorf("snapshot fetch status %d", code)
+	}
+	var cfg map[string]any
+	if e := json.Unmarshal(body, &cfg); e != nil {
+		emitOpLog("gost_api_err", "snapshot unmarshal failed", map[string]any{"error": e.Error()})
+		return e
+	}
+	// Preserve existing top-level api if missing (defensive)
+	old := readGostConfig()
+	if _, ok := cfg["api"]; !ok {
+		if v, ok2 := old["api"]; ok2 {
+			cfg["api"] = v
+		}
+	}
+	// Write to /etc/gost/gost.json
+	// Use our writer to ensure directory exists
+	if err := writeGostConfig(cfg); err != nil {
+		emitOpLog("gost_api_err", "snapshot write failed", map[string]any{"error": err.Error()})
+		return err
+	}
+	emitOpLog("gost_api", "snapshot written", map[string]any{"path": resolveGostConfigPathForWrite()})
+	return nil
+}
+
+// persistGostConfigServer saves current config back to GOST server via Web API.
+// Strategy: GET /config to obtain normalized config, then PUT /config?format=json
+// so GOST writes its configuration in JSON format to its configured storage.
+func persistGostConfigServer() error {
+	// Per API: POST /config?format=json with empty body to persist current runtime config.
+	code, body, err := apiDo("POST", "/config?format=json", nil)
+	if err != nil {
+		emitOpLog("gost_api_err", "persist server save error", map[string]any{"error": err.Error()})
+		return err
+	}
+	if code/100 != 2 {
+		emitOpLog("gost_api_err", "persist server save non-2xx", map[string]any{"status": code, "body": string(maskJSONSecrets(body))})
+		return fmt.Errorf("save config status %d", code)
+	}
+	emitOpLog("gost_api", "persist server saved", map[string]any{"status": code})
+	return nil
+}
+
+// apiGetByName fetches a single resource object from /config/{res}/{name}.
+func apiGetByName(res, name string) (map[string]any, int, error) {
+	code, body, err := apiDo("GET", "/config/"+res+"/"+url.PathEscape(name), nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	if code/100 != 2 {
+		return nil, code, nil
+	}
+	// Response shapes seen:
+	// 1) direct object: {"name":"obs_x", ...}
+	// 2) wrapped: {"data": {...}} or {"data": null}
+	var v any
+	if json.Unmarshal(body, &v) != nil {
+		return nil, code, nil
+	}
+	if obj, ok := v.(map[string]any); ok {
+		if d, ok2 := obj["data"]; ok2 {
+			if d == nil {
+				// explicitly indicates not found
+				return nil, code, nil
+			}
+			if dm, ok3 := d.(map[string]any); ok3 {
+				return dm, code, nil
+			}
+			// non-object data – treat as not found
+			return nil, code, nil
+		}
+		return obj, code, nil
+	}
+	return nil, code, nil
+}
+
+// apiExistsByName checks if a resource with a given name exists via Web API.
+// It tries item endpoints first, then falls back to listing and scanning by name.
+func apiExistsByName(res, name string) bool {
+	if strings.TrimSpace(name) == "" {
+		return false
+	}
+	// Only /config endpoints are valid per requirements
+	if code, _, err := apiDo("GET", "/config/"+res+"/"+url.PathEscape(name), nil); err == nil {
+		if code == 200 {
+			return true
+		}
+		if code == 404 {
+			return false
+		}
+	}
+	return false
+}
+
+// normalizeJSONAny marshals and unmarshals a value to JSON to normalize number types, etc.
+func normalizeJSONAny(v any) any {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return v
+	}
+	var out any
+	if json.Unmarshal(b, &out) != nil {
+		return v
+	}
+	return out
+}
+
+// equalBySubset returns true if all fields in want are present and equal in have (recursively), ignoring extra fields in have.
+func equalBySubset(want any, have any) bool {
+	switch w := want.(type) {
+	case map[string]any:
+		hv, ok := have.(map[string]any)
+		if !ok {
+			return false
+		}
+		for k, wv := range w {
+			if !equalBySubset(wv, hv[k]) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		hv, ok := have.([]any)
+		if !ok {
+			return false
+		}
+		if len(w) != len(hv) {
+			return false
+		}
+		for i := range w {
+			if !equalBySubset(w[i], hv[i]) {
+				return false
+			}
+		}
+		return true
+	default:
+		// numbers may be float64 after unmarshal
+		// normalize via JSON roundtrip
+		wn := normalizeJSONAny(w)
+		hn := normalizeJSONAny(have)
+		return reflect.DeepEqual(wn, hn)
+	}
+}
+
+// maskURLSecrets redacts known sensitive query params in URLs (e.g., secret, password)
+func maskURLSecrets(u string) string {
+	if !strings.Contains(u, "?") {
+		return u
+	}
+	parts := strings.SplitN(u, "?", 2)
+	base, qs := parts[0], parts[1]
+	vals, err := url.ParseQuery(qs)
+	if err != nil {
+		return u
+	}
+	for k := range vals {
+		lk := strings.ToLower(k)
+		if lk == "secret" || lk == "password" || lk == "token" {
+			vals[k] = []string{"***"}
+		}
+	}
+	return base + "?" + vals.Encode()
+}
+
+// maskJSONSecrets best-effort redacts secret/password fields in JSON payloads
+func maskJSONSecrets(b []byte) []byte {
+	var v any
+	if json.Unmarshal(b, &v) != nil {
+		return b
+	}
+	v2 := redactValue(v)
+	out, err := json.Marshal(v2)
+	if err != nil {
+		return b
+	}
+	return out
+}
+
+func redactValue(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		m2 := make(map[string]any, len(x))
+		for k, val := range x {
+			lk := strings.ToLower(k)
+			if lk == "password" || lk == "secret" || lk == "authorization" {
+				m2[k] = "***"
+				continue
+			}
+			m2[k] = redactValue(val)
+		}
+		return m2
+	case []any:
+		arr := make([]any, len(x))
+		for i := range x {
+			arr[i] = redactValue(x[i])
+		}
+		return arr
+	default:
+		return v
+	}
+}
+
+// emitOpLog queues an OpLog frame to panel via WS sender (runOnce).
+func emitOpLog(step, message string, data map[string]any) {
+	select {
+	case opLogCh <- map[string]any{"step": step, "message": message, "data": data}:
+	default:
+		// drop when busy
+	}
+}
+
+// apiConfigChains upserts chains via GOST Web API.
+// When updateOnly is true, it will only update existing chains; otherwise upsert.
+func apiConfigChains(chains []map[string]any, updateOnly bool) error {
+	if len(chains) == 0 {
+		return nil
+	}
+	// single-object only (see below)
+	// Strict single-object per call; GET existence decides PUT or POST
+	okCount := 0
+	for _, c := range chains {
+		name, _ := c["name"].(string)
+		target := normalizeJSONAny(c)
+		if cur, code, _ := apiGetByName("chains", name); code == 200 && cur != nil {
+			if equalBySubset(target, cur) {
+				log.Printf(`{"event":"gost_api_skip_put","res":"chains","name":%q}`, name)
+				okCount++
+				continue
+			}
+			body, _ := json.Marshal(c)
+			if code2, _, err := apiDo("PUT", "/config/chains/"+url.PathEscape(name), body); err == nil && code2/100 == 2 {
+				okCount++
+				continue
+			}
+		} else {
+			body, _ := json.Marshal(c)
+			if code2, _, err := apiDo("POST", "/config/chains", body); err == nil && code2/100 == 2 {
+				okCount++
+				continue
+			}
+		}
+	}
+	if okCount == len(chains) {
+		// persist to server (best-effort)
+		if err := persistGostConfigServer(); err != nil {
+			log.Printf("{\"event\":\"gost_server_persist_err\",\"error\":%q}", err.Error())
+		}
+		return nil
+	}
+	return fmt.Errorf("chains api partial/failed: %d/%d", okCount, len(chains))
+}
+
+// apiConfigObservers upserts observers via GOST Web API.
+// When updateOnly is true, it will only update existing observers; otherwise upsert.
+func apiConfigObservers(observers []map[string]any, updateOnly bool) error {
+	if len(observers) == 0 {
+		return nil
+	}
+	// single-object only (see below)
+	// Strict single-object per call; GET existence decides PUT or POST
+	okCount := 0
+	for _, o := range observers {
+		name, _ := o["name"].(string)
+		target := normalizeJSONAny(o)
+		if cur, code, _ := apiGetByName("observers", name); code == 200 && cur != nil {
+			if equalBySubset(target, cur) {
+				log.Printf(`{"event":"gost_api_skip_put","res":"observers","name":%q}`, name)
+				okCount++
+				continue
+			}
+			body, _ := json.Marshal(o)
+			if code2, _, err := apiDo("PUT", "/config/observers/"+url.PathEscape(name), body); err == nil && code2/100 == 2 {
+				okCount++
+				continue
+			}
+		} else {
+			body, _ := json.Marshal(o)
+			if code2, _, err := apiDo("POST", "/config/observers", body); err == nil && code2/100 == 2 {
+				okCount++
+				continue
+			}
+		}
+	}
+	if okCount == len(observers) {
+		// persist to server (best-effort)
+		if err := persistGostConfigServer(); err != nil {
+			log.Printf("{\"event\":\"gost_server_persist_err\",\"error\":%q}", err.Error())
+		}
+		return nil
+	}
+	return fmt.Errorf("observers api partial/failed: %d/%d", okCount, len(observers))
+}
+
 // queryServices returns a summary list of services, optionally filtered by handler type.
 func queryServices(filter string) []map[string]any {
+	// Prefer Web API if available
+	if isApiUsable() {
+		code, body, err := apiDo("GET", "/config/services", nil)
+		if err == nil && code/100 == 2 {
+			var list []map[string]any
+			if json.Unmarshal(body, &list) == nil {
+				// optionally filter by handler
+				if filter != "" {
+					out := make([]map[string]any, 0, len(list))
+					for _, m := range list {
+						h, _ := m["handler"].(string)
+						if strings.EqualFold(h, filter) {
+							out = append(out, m)
+						}
+					}
+					return out
+				}
+				return list
+			}
+		}
+	}
 	cfg := readGostConfig()
 	arrAny, _ := cfg["services"].([]any)
 	out := make([]map[string]any, 0, len(arrAny))
@@ -1026,172 +1655,249 @@ func suggestPorts(base, count int) []int {
 // addOrUpdateServices merges provided services into gost.json services array.
 // If updateOnly is true, only update existing by name; otherwise upsert (add if missing).
 func addOrUpdateServices(services []map[string]any, updateOnly bool) error {
-	cfg := readGostConfig()
-	// merge optional chains injected per-service under _chains (upsert by name)
-	// 1) Merge observers from _observers
-	if arr, ok := cfg["observers"].([]any); ok {
-		// keep existing
-		_ = arr
-	}
-	observersAny, _ := cfg["observers"].([]any)
-	obsIdx := map[string]int{}
-	for i, it := range observersAny {
-		if m, ok := it.(map[string]any); ok {
-			if n, ok2 := m["name"].(string); ok2 && n != "" {
-				obsIdx[n] = i
-			}
-		}
-	}
-	for _, svc := range services {
-		if extra, ok := svc["_observers"]; ok {
-			if arr, ok2 := extra.([]any); ok2 {
-				for _, it := range arr {
-					if m, ok3 := it.(map[string]any); ok3 {
-						n, _ := m["name"].(string)
-						if n == "" {
-							continue
-						}
-						if i, ok4 := obsIdx[n]; ok4 {
-							observersAny[i] = m
-						} else {
-							observersAny = append(observersAny, m)
-							obsIdx[n] = len(observersAny) - 1
+	// 必须使用 Web API；若不可用，直接报错，提示前端去启用 API
+	if isApiUsable() {
+		// extract chains
+		chains := make([]map[string]any, 0)
+		for i := range services {
+			if extra, ok := services[i]["_chains"]; ok {
+				if arr, ok2 := extra.([]any); ok2 {
+					for _, it := range arr {
+						if m, ok3 := it.(map[string]any); ok3 {
+							chains = append(chains, m)
 						}
 					}
 				}
-			}
-			delete(svc, "_observers")
-		}
-	}
-	if len(observersAny) > 0 {
-		cfg["observers"] = observersAny
-	}
-
-	// 2) Merge chains from _chains
-	chainsAny, _ := cfg["chains"].([]any)
-	chainIdx := map[string]int{}
-	for i, it := range chainsAny {
-		if m, ok := it.(map[string]any); ok {
-			if n, ok2 := m["name"].(string); ok2 && n != "" {
-				chainIdx[n] = i
+				delete(services[i], "_chains")
 			}
 		}
-	}
-	for _, svc := range services {
-		if extra, ok := svc["_chains"]; ok {
-			if arr, ok2 := extra.([]any); ok2 {
-				for _, it := range arr {
-					if m, ok3 := it.(map[string]any); ok3 {
-						n, _ := m["name"].(string)
-						if n == "" {
-							continue
-						}
-						if i, ok4 := chainIdx[n]; ok4 {
-							chainsAny[i] = m
-						} else {
-							chainsAny = append(chainsAny, m)
-							chainIdx[n] = len(chainsAny) - 1
+		if len(chains) > 0 {
+			if err := apiConfigChains(chains, true); err != nil {
+				return err
+			}
+		}
+		// extract observers
+		observers := make([]map[string]any, 0)
+		for i := range services {
+			if extra, ok := services[i]["_observers"]; ok {
+				if arr, ok2 := extra.([]any); ok2 {
+					for _, it := range arr {
+						if m, ok3 := it.(map[string]any); ok3 {
+							observers = append(observers, m)
 						}
 					}
 				}
+				delete(services[i], "_observers")
 			}
-			delete(svc, "_chains")
 		}
-		// fallback: if service references handler.chain but chain not present and no _chains provided, synthesize a simple chain
-		if h, ok := svc["handler"].(map[string]any); ok {
-			if cn, ok2 := h["chain"].(string); ok2 && cn != "" {
-				if _, exists := chainIdx[cn]; !exists {
-					// try to extract a node addr from forwarder.nodes[0]
-					addr := ""
-					if fwd, ok3 := svc["forwarder"].(map[string]any); ok3 {
-						if nodes, ok4 := fwd["nodes"].([]any); ok4 && len(nodes) > 0 {
-							if n0, ok5 := nodes[0].(map[string]any); ok5 {
-								if a, ok6 := n0["addr"].(string); ok6 {
-									addr = a
-								}
+		if len(observers) > 0 {
+			if err := apiConfigObservers(observers, true); err != nil {
+				return err
+			}
+		}
+		// no batch; single-object calls only per swagger
+		okCount := 0
+		for _, s := range services {
+			name, _ := s["name"].(string)
+			target := normalizeJSONAny(s)
+			if cur, code, _ := apiGetByName("services", name); code == 200 && cur != nil {
+				if equalBySubset(target, cur) {
+					log.Printf(`{"event":"gost_api_skip_put","res":"services","name":%q}`, name)
+					okCount++
+					continue
+				}
+				body, _ := json.Marshal(s)
+				if code2, _, err := apiDo("PUT", "/config/services/"+url.PathEscape(name), body); err == nil && code2/100 == 2 {
+					okCount++
+					continue
+				}
+			} else {
+				body, _ := json.Marshal(s)
+				if code2, _, err := apiDo("POST", "/config/services", body); err == nil && code2/100 == 2 {
+					okCount++
+					continue
+				}
+			}
+		}
+		if okCount == len(services) {
+			// ask GOST to persist its config server-side (best-effort)
+			if err := persistGostConfigServer(); err != nil {
+				log.Printf("{\"event\":\"gost_server_persist_err\",\"error\":%q}", err.Error())
+			}
+			return nil
+		}
+		return fmt.Errorf("services api partial/failed: %d/%d", okCount, len(services))
+	}
+	emitOpLog("gost_api_err", "web api unavailable", map[string]any{"message": "GOST Web API 未启用，请在节点上开启后重试"})
+	return fmt.Errorf("gost web api unavailable: please enable on node")
+	// (不再回退写文件)
+	/*cfg := readGostConfig()
+		// merge optional chains injected per-service under _chains (upsert by name)
+		// 1) Merge observers from _observers
+		if arr, ok := cfg["observers"].([]any); ok {
+			// keep existing
+			_ = arr
+		}
+		observersAny, _ := cfg["observers"].([]any)
+		obsIdx := map[string]int{}
+		for i, it := range observersAny {
+			if m, ok := it.(map[string]any); ok {
+				if n, ok2 := m["name"].(string); ok2 && n != "" {
+					obsIdx[n] = i
+				}
+			}
+		}
+		for _, svc := range services {
+			if extra, ok := svc["_observers"]; ok {
+				if arr, ok2 := extra.([]any); ok2 {
+					for _, it := range arr {
+						if m, ok3 := it.(map[string]any); ok3 {
+							n, _ := m["name"].(string)
+							if n == "" {
+								continue
+							}
+							if i, ok4 := obsIdx[n]; ok4 {
+								observersAny[i] = m
+							} else {
+								observersAny = append(observersAny, m)
+								obsIdx[n] = len(observersAny) - 1
 							}
 						}
 					}
-					if addr != "" {
-						c := map[string]any{
-							"name": cn,
-							"hops": []any{map[string]any{"name": cn + "_hop", "nodes": []any{map[string]any{"name": "auto", "addr": addr}}}},
-						}
-						chainsAny = append(chainsAny, c)
-						chainIdx[cn] = len(chainsAny) - 1
-					}
+				}
+				delete(svc, "_observers")
+			}
+		}
+		if len(observersAny) > 0 {
+			cfg["observers"] = observersAny
+		}
+
+		// 2) Merge chains from _chains
+		chainsAny, _ := cfg["chains"].([]any)
+		chainIdx := map[string]int{}
+		for i, it := range chainsAny {
+			if m, ok := it.(map[string]any); ok {
+				if n, ok2 := m["name"].(string); ok2 && n != "" {
+					chainIdx[n] = i
 				}
 			}
 		}
-	}
-	if len(chainsAny) > 0 {
-		cfg["chains"] = chainsAny
-	}
+		for _, svc := range services {
+			if extra, ok := svc["_chains"]; ok {
+				if arr, ok2 := extra.([]any); ok2 {
+					for _, it := range arr {
+						if m, ok3 := it.(map[string]any); ok3 {
+							n, _ := m["name"].(string)
+							if n == "" {
+								continue
+							}
+							if i, ok4 := chainIdx[n]; ok4 {
+								chainsAny[i] = m
+							} else {
+								chainsAny = append(chainsAny, m)
+								chainIdx[n] = len(chainsAny) - 1
+							}
+						}
+					}
+				}
+				delete(svc, "_chains")
+			}
+			// Do not synthesize implicit chains in fallback path; only merge provided _chains
+		}
+		if len(chainsAny) > 0 {
+			cfg["chains"] = chainsAny
+		}
 
-	// ensure services array exists
-	arrAny, _ := cfg["services"].([]any)
-	// build name -> index map
-	idx := map[string]int{}
-	for i, it := range arrAny {
-		if m, ok := it.(map[string]any); ok {
-			if n, ok2 := m["name"].(string); ok2 && n != "" {
-				idx[n] = i
+		// ensure services array exists
+		arrAny, _ := cfg["services"].([]any)
+		// build name -> index map
+		idx := map[string]int{}
+		for i, it := range arrAny {
+			if m, ok := it.(map[string]any); ok {
+				if n, ok2 := m["name"].(string); ok2 && n != "" {
+					idx[n] = i
+				}
 			}
 		}
-	}
-	for _, svc := range services {
-		name, _ := svc["name"].(string)
-		if name == "" {
-			continue
-		}
-		if i, ok := idx[name]; ok {
-			if updateOnly {
-				// merge into existing (handler-level merge)
-				if existing, ok2 := arrAny[i].(map[string]any); ok2 {
-					if hNew, okH := svc["handler"].(map[string]any); okH && hNew != nil {
-						hOld, _ := existing["handler"].(map[string]any)
-						if hOld == nil {
-							hOld = map[string]any{}
+		for _, svc := range services {
+			name, _ := svc["name"].(string)
+			if name == "" {
+				continue
+			}
+			if i, ok := idx[name]; ok {
+				if updateOnly {
+					// merge into existing (handler-level merge)
+					if existing, ok2 := arrAny[i].(map[string]any); ok2 {
+						if hNew, okH := svc["handler"].(map[string]any); okH && hNew != nil {
+							hOld, _ := existing["handler"].(map[string]any)
+							if hOld == nil {
+								hOld = map[string]any{}
+							}
+							for k, v := range hNew {
+								hOld[k] = v
+							}
+							existing["handler"] = hOld
 						}
-						for k, v := range hNew {
-							hOld[k] = v
-						}
-						existing["handler"] = hOld
+						arrAny[i] = existing
+					} else {
+						arrAny[i] = svc
 					}
-					arrAny[i] = existing
 				} else {
+					// replace existing
 					arrAny[i] = svc
 				}
 			} else {
-				// replace existing
-				arrAny[i] = svc
-			}
-		} else {
-			// missing service
-			if updateOnly {
-				// Add only if looks complete (has addr or listener)
-				addr, _ := svc["addr"].(string)
-				hasListener := false
-				if lst, ok2 := svc["listener"].(map[string]any); ok2 && len(lst) > 0 {
-					hasListener = true
-				}
-				if addr != "" || hasListener {
+				// missing service
+				if updateOnly {
+					// Add only if looks complete (has addr or listener)
+					addr, _ := svc["addr"].(string)
+					hasListener := false
+					if lst, ok2 := svc["listener"].(map[string]any); ok2 && len(lst) > 0 {
+						hasListener = true
+					}
+					if addr != "" || hasListener {
+						arrAny = append(arrAny, svc)
+						idx[name] = len(arrAny) - 1
+					}
+				} else {
 					arrAny = append(arrAny, svc)
 					idx[name] = len(arrAny) - 1
 				}
-			} else {
-				arrAny = append(arrAny, svc)
-				idx[name] = len(arrAny) - 1
 			}
 		}
-	}
-	cfg["services"] = arrAny
-	return writeGostConfig(cfg)
+		cfg["services"] = arrAny
+	    return writeGostConfig(cfg)*/
 }
 
 func deleteServices(names []string) error {
 	if len(names) == 0 {
 		return nil
+	}
+	if isApiUsable() {
+		// batch delete
+		payload := map[string]any{"services": names}
+		b, _ := json.Marshal(payload)
+		if code, _, err := apiDo("DELETE", "/config/services", b); err == nil && code/100 == 2 {
+			if err := persistGostConfigServer(); err != nil {
+				log.Printf("{\"event\":\"gost_server_persist_err\",\"error\":%q}", err.Error())
+			}
+			return nil
+		}
+		// per-name path delete (/config only)
+		okCount := 0
+		for _, n := range names {
+			p := "/config/services/" + url.PathEscape(n)
+			if code, _, err := apiDo("DELETE", p, nil); err == nil && code/100 == 2 {
+				okCount++
+				continue
+			}
+		}
+		if okCount == len(names) {
+			if err := persistGostConfigServer(); err != nil {
+				log.Printf("{\"event\":\"gost_server_persist_err\",\"error\":%q}", err.Error())
+			}
+			return nil
+		}
 	}
 	rm := map[string]struct{}{}
 	for _, n := range names {
@@ -1876,26 +2582,7 @@ func restartGostService() error {
 }
 
 // --- ensure gost.service stays running ---
-func periodicEnsureGost() {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		active, known := isServiceActive("gost")
-		if !known {
-			// service manager unavailable or service not installed; skip
-			continue
-		}
-		if active {
-			continue
-		}
-		// try restart when inactive
-		if tryRestartService("gost") {
-			log.Printf("{\"event\":\"gost_autorestart\",\"status\":\"restarted\"}")
-		} else {
-			log.Printf("{\"event\":\"gost_autorestart\",\"status\":\"failed\"}")
-		}
-	}
-}
+// periodicEnsureGost removed as per requirement: no background restarts.
 
 // isServiceActive checks if a service is active via systemctl/service.
 // returns (active, known). known=false if neither manager exists or status unknown.

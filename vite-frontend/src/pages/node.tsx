@@ -25,7 +25,10 @@ import {
   deleteNode,
   getNodeInstallCommand,
   setExitNode,
-  getExitNode
+  getExitNode,
+  restartGost,
+  agentReconcileNode,
+  enableGostApi
 } from "@/api";
 
 interface Node {
@@ -49,6 +52,9 @@ interface Node {
     uploadSpeed: number;
     downloadSpeed: number;
     uptime: number;
+    gostApi?: boolean;
+    gostRunning?: boolean;
+    gostApiConfigured?: boolean;
   } | null;
   copyLoading?: boolean;
   ssStatus?: string;
@@ -120,6 +126,8 @@ export default function NodePage() {
   const [serverVersion, setServerVersion] = useState<string>('');
   const [agentVersion, setAgentVersion] = useState<string>('');
   const [opsOpen, setOpsOpen] = useState(false);
+  const [rstLoading, setRstLoading] = useState<Record<number, boolean>>({});
+  const [reapplyLoading, setReapplyLoading] = useState<Record<number, boolean>>({});
 
   useEffect(() => {
     loadNodes();
@@ -146,12 +154,31 @@ export default function NodePage() {
     try {
       const res = await getNodeList();
       if (res.code === 0) {
-        setNodeList(res.data.map((node: any) => ({
-          ...node,
-          connectionStatus: node.status === 1 ? 'online' : 'offline',
-          systemInfo: null,
-          copyLoading: false
-        })));
+        setNodeList(res.data.map((node: any) => {
+          const online = node.status === 1 ? 'online' : 'offline';
+          const base: any = {
+            ...node,
+            connectionStatus: online,
+            copyLoading: false
+          };
+          if (typeof node.gostApi !== 'undefined' || typeof node.gostRunning !== 'undefined') {
+            base.systemInfo = {
+              cpuUsage: 0,
+              memoryUsage: 0,
+              uploadTraffic: 0,
+              downloadTraffic: 0,
+              uploadSpeed: 0,
+              downloadSpeed: 0,
+              uptime: 0,
+              gostApi: node.gostApi === 1,
+              gostRunning: node.gostRunning === 1,
+              gostApiConfigured: undefined
+            };
+          } else {
+            base.systemInfo = null;
+          }
+          return base;
+        }));
         // 批量拉取最近1小时探针概览（按配置可隐藏）
         if (showNetwork) {
           try {
@@ -443,7 +470,10 @@ export default function NodePage() {
                 downloadTraffic: currentDownload,
                 uploadSpeed: uploadSpeed,
                 downloadSpeed: downloadSpeed,
-                uptime: currentUptime
+                uptime: currentUptime,
+                gostApi: !!systemInfo.gost_api,
+                gostRunning: !!systemInfo.gost_running,
+                gostApiConfigured: !!systemInfo.gost_api_configured
               }
             };
           } catch (error) {
@@ -464,6 +494,39 @@ export default function NodePage() {
         setWsStatus('connecting');
         initWebSocket();
       }, 3000 * reconnectAttemptsRef.current);
+    }
+  };
+
+  const doRestartGost = async (nodeId:number) => {
+    setRstLoading(prev=>({ ...prev, [nodeId]: true }));
+    try {
+      const r:any = await restartGost(nodeId);
+      if (r && r.code === 0) {
+        const ok = !!r.data?.success;
+        toast[ok? 'success':'error'](r.data?.message || (ok? '已下发重启':'重启失败'));
+      } else {
+        toast.error(r?.msg || '重启失败');
+      }
+    } catch {
+      toast.error('重启失败');
+    } finally {
+      setRstLoading(prev=>({ ...prev, [nodeId]: false }));
+    }
+  };
+
+  const doReapply = async (nodeId:number) => {
+    setReapplyLoading(prev=>({ ...prev, [nodeId]: true }));
+    try {
+      const r:any = await agentReconcileNode(nodeId);
+      if (r && r.code === 0) {
+        toast.success(`已触发重新应用，推送数量: ${r.data?.pushed ?? 0}`);
+      } else {
+        toast.error(r?.msg || '触发失败');
+      }
+    } catch {
+      toast.error('触发失败');
+    } finally {
+      setReapplyLoading(prev=>({ ...prev, [nodeId]: false }));
     }
   };
 
@@ -846,8 +909,18 @@ export default function NodePage() {
           </Card>
         ) : (
           <>
-          <div className="flex justify-end mb-2">
+          <div className="flex justify-end mb-2 gap-2">
             <Button size="sm" variant="flat" onPress={()=> setOpsOpen(true)}>操作日志</Button>
+            <Button size="sm" color="primary" variant="flat" onPress={async()=>{
+              try {
+                const r:any = await getNodeList();
+                if (r && r.code === 0 && Array.isArray(r.data)) {
+                  let ok = 0; let total = r.data.length;
+                  for (const n of r.data) { try { const rr:any = await agentReconcileNode(n.id); if (rr && rr.code===0) ok++; } catch {} }
+                  toast.success(`已触发重新应用：${ok}/${total}`);
+                } else { toast.error(r?.msg || '获取节点列表失败'); }
+              } catch { toast.error('操作失败'); }
+            }}>批量重新应用</Button>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-2 2xl:grid-cols-3 gap-4">
             {nodeList.map((node) => (
@@ -917,16 +990,55 @@ export default function NodePage() {
                         </span>
                       </div>
                     )}
-                    <div className="flex justify-between text-sm">
-                      <span className="text-default-600">版本</span>
-                      <span className="text-xs">{node.version || '未知'}</span>
-                    </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-default-600">版本</span>
+                    <span className="text-xs">{node.version || '未知'}</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-default-600">GOST 服务</span>
+                    <span className="text-xs">
+                      {node.connectionStatus === 'online' && node.systemInfo
+                        ? (node.systemInfo.gostRunning ? '运行中' : '未运行')
+                        : '-'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-default-600">GOST API</span>
+                    <span className="text-xs">
+                      {node.connectionStatus === 'online' && node.systemInfo
+                        ? (node.systemInfo.gostApi ? '已启用' : '未启用')
+                        : '-'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-default-600">API 配置</span>
+                    <span className="text-xs">
+                      {node.connectionStatus === 'online' && node.systemInfo
+                        ? (node.systemInfo as any).gostApiConfigured === false ? (
+                          <Button size="sm" color="primary" variant="flat" onPress={async()=>{
+                            try {
+                              await enableGostApi(node.id);
+                              toast.success('已发送启用 GOST API 指令，稍候刷新');
+                            } catch(e:any){
+                              toast.error(e?.message || '指令发送失败');
+                            }
+                          }}>开启 GOST API</Button>
+                        ) : ((node.systemInfo as any).gostApiConfigured === true ? '已配置' : '检测中…')
+                        : '-'}
+                    </span>
+                  </div>
                     <div className="flex justify-between items-center text-sm">
                       <span className="text-default-600">服务</span>
                       <span className="text-xs flex items-center gap-2">
                         {node.ssStatus ? node.ssStatus : '-'}
                         <Button size="sm" variant="light" onPress={() => refreshServices(node)} isLoading={node.ssLoading}>
                           刷新
+                        </Button>
+                        <Button size="sm" color="warning" variant="flat" onPress={()=>doRestartGost(node.id)} isLoading={!!rstLoading[node.id]}>
+                          重启 GOST
+                        </Button>
+                        <Button size="sm" color="primary" variant="flat" onPress={()=>doReapply(node.id)} isLoading={!!reapplyLoading[node.id]}>
+                          重新应用服务
                         </Button>
                       </span>
                     </div>

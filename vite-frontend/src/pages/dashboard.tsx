@@ -6,7 +6,7 @@ import toast from 'react-hot-toast';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 
-import { getUserPackageInfo, getRecentAlerts, getForwardList } from "@/api";
+import { getUserPackageInfo, getRecentAlerts, getForwardList, getNodeList, agentReconcileNode } from "@/api";
 import { getCachedConfig } from "@/config/site";
 
 interface UserInfo {
@@ -66,6 +66,8 @@ export default function DashboardPage() {
   const [statisticsFlows, setStatisticsFlows] = useState<StatisticsFlow[]>([]);
   const [isAdmin, setIsAdmin] = useState(false);
   const [alerts, setAlerts] = useState<any[]>([]);
+  const [gostStat, setGostStat] = useState<{ total:number; running:number; api:number }>({ total: 0, running: 0, api: 0 });
+  const [reapplyAllLoading, setReapplyAllLoading] = useState(false);
   const [addressModalOpen, setAddressModalOpen] = useState(false);
   const [addressModalTitle, setAddressModalTitle] = useState('');
   const [addressList, setAddressList] = useState<AddressItem[]>([]);
@@ -241,6 +243,50 @@ export default function DashboardPage() {
     timer = setInterval(tick, pollMs);
     return () => { if (timer) clearInterval(timer); };
   }, [pollMs]);
+
+  // 轮询刷新节点 GOST 健康统计（每 pollMs）
+  useEffect(() => {
+    let timer: any;
+    const tick = async () => {
+      try {
+        const r:any = await getNodeList();
+        if (r && r.code === 0 && Array.isArray(r.data)) {
+          const total = r.data.length;
+          let running = 0, api = 0;
+          r.data.forEach((n:any) => { if (n.gostRunning === 1) running++; if (n.gostApi === 1) api++; });
+          setGostStat({ total, running, api });
+        }
+      } catch {}
+    };
+    tick();
+    timer = setInterval(tick, pollMs);
+    return () => { if (timer) clearInterval(timer); };
+  }, [pollMs]);
+
+  // 手动重新应用全部节点服务（管理员）
+  const doReapplyAll = async () => {
+    if (!isAdmin) return;
+    setReapplyAllLoading(true);
+    try {
+      const r:any = await getNodeList();
+      if (r && r.code === 0 && Array.isArray(r.data)) {
+        let ok = 0; let total = r.data.length;
+        for (const n of r.data) {
+          try {
+            const rr:any = await agentReconcileNode(n.id);
+            if (rr && rr.code === 0) ok++;
+          } catch {}
+        }
+        toast.success(`已触发重新应用：${ok}/${total}`);
+      } else {
+        toast.error(r?.msg || '获取节点列表失败');
+      }
+    } catch {
+      toast.error('操作失败');
+    } finally {
+      setReapplyAllLoading(false);
+    }
+  };
 
   // 轮询刷新用户包信息（含 24 小时统计表）
   useEffect(() => {
@@ -718,7 +764,7 @@ export default function DashboardPage() {
 
                           {/* 响应式统计卡片 */}
          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4 mb-6 lg:mb-8">
-           <Card className="border border-gray-200 dark:border-default-200 shadow-md hover:shadow-lg transition-shadow">
+          <Card className="border border-gray-200 dark:border-default-200 shadow-md hover:shadow-lg transition-shadow">
              <CardBody className="p-3 lg:p-4">
                <div className="flex flex-col space-y-2">
                  <div className="flex items-center justify-between">
@@ -733,6 +779,33 @@ export default function DashboardPage() {
                  <p className="text-base lg:text-xl font-bold text-foreground truncate">{totalFlowText}</p>
                </div>
            </CardBody>
+          </Card>
+
+          {/* GOST 健康统计 */}
+          <Card className="border border-gray-200 dark:border-default-200 shadow-md hover:shadow-lg transition-shadow">
+            <CardBody className="p-3 lg:p-4">
+              <div className="flex flex-col space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs lg:text-sm text-default-600 truncate">GOST 健康</p>
+                  <div className="p-1.5 lg:p-2 bg-purple-100 dark:bg-purple-500/20 rounded-lg flex-shrink-0">
+                    <svg className="w-4 h-4 lg:w-5 lg:h-5 text-purple-600 dark:text-purple-400" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M12 2a10 10 0 100 20 10 10 0 000-20zm1 5a1 1 0 10-2 0v5a1 1 0 00.293.707l3 3a1 1 0 001.414-1.414L13 11.586V7z"/>
+                    </svg>
+                  </div>
+                </div>
+                <div className="text-xs text-default-600 space-y-1">
+                  <div className="flex justify-between"><span>服务</span><span className="font-medium">{gostStat.running}/{gostStat.total}</span></div>
+                  <div className="flex justify-between"><span>API</span><span className="font-medium">{gostStat.api}/{gostStat.total}</span></div>
+                </div>
+                {isAdmin && (
+                  <div className="flex justify-end pt-1">
+                    <button disabled={reapplyAllLoading} onClick={doReapplyAll} className={`text-xs px-2 py-1 rounded ${reapplyAllLoading? 'opacity-60 cursor-not-allowed' : 'bg-primary-100 text-primary-700 dark:bg-primary-500/20 dark:text-primary-300'}`}>
+                      {reapplyAllLoading? '执行中…' : '全部重新应用'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </CardBody>
           </Card>
 
           {/* 最近告警（管理员） */}

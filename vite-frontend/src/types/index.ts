@@ -18,6 +18,7 @@ export interface User {
   createdTime?: number; // 创建时间戳
   inFlow?: number; // 下载流量(字节)
   outFlow?: number; // 上传流量(字节)
+  usedBilled?: number; // 计费口径用量（单向取大，双向相加）
 }
 
 export interface UserForm {

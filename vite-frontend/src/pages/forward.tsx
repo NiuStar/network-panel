@@ -218,6 +218,9 @@ export default function ForwardPage() {
   // 表单验证错误
   const [errors, setErrors] = useState<{[key: string]: string}>({});
   const [selectedTunnel, setSelectedTunnel] = useState<Tunnel | null>(null);
+  // 入口节点 API 状态（用于弹窗内提示与一键启用）
+  const [entryNodeId, setEntryNodeId] = useState<number | null>(null);
+  const [entryApiOn, setEntryApiOn] = useState<boolean | null>(null);
   // 路径与每节点 IP 仅在“隧道管理”维护；此页提供只读预览
   const [previewType, setPreviewType] = useState<number|undefined>(undefined);
   const [previewInNodeId, setPreviewInNodeId] = useState<number|undefined>(undefined);
@@ -228,8 +231,20 @@ export default function ForwardPage() {
   const [previewExitBind, setPreviewExitBind] = useState<string>("");
   const [nodeNameMap, setNodeNameMap] = useState<Record<number,string>>({});
   const [previewTunnelMap, setPreviewTunnelMap] = useState<Record<number, any>>({});
+  // 节点列表缓存（进入页面时获取一次，避免重复调用）
+  const [nodesCache, setNodesCache] = useState<any[]>([]);
 
   useEffect(() => { loadData(); }, []);
+
+  // 进入页面获取一次节点列表用于名称映射与入口API状态判断
+  useEffect(() => {
+    (async()=>{
+      try {
+        const nl:any = await getNodeList();
+        if (nl && nl.code===0 && Array.isArray(nl.data)) setNodesCache(nl.data);
+      } catch {}
+    })();
+  }, []);
 
   // 从网站配置读取轮询间隔（默认 3s）
   const [pollMs, setPollMs] = useState<number>(3000);
@@ -274,33 +289,39 @@ export default function ForwardPage() {
     return () => { if (timer) clearInterval(timer); };
   }, [pollMs]);
   
-  function ForwardIfacePicker({ selectedTunnel, onSelect, active }: { selectedTunnel: Tunnel | null; onSelect:(ip:string)=>void; active:boolean }){
+  function ForwardIfacePicker({ selectedTunnel, currentValue, onSelect, active }: { selectedTunnel: Tunnel | null; currentValue?: string; onSelect:(ip:string)=>void; active:boolean }){
     const [ips, setIps] = useState<string[]>([]);
+    const [loadingIps, setLoadingIps] = useState<boolean>(false);
     const [fetchedTunnelId, setFetchedTunnelId] = useState<number | null>(null);
+    // 仅在进入弹窗（active=true 首次）和“选择的隧道ID变化”时刷新一次
     useEffect(()=>{
       const load = async ()=>{
         const t = selectedTunnel;
-        if (!active || !t || !t.id) return;
-        if (fetchedTunnelId === t.id && ips.length > 0) return; // 已加载且同一隧道，避免重复刷新
+        if (!t || !t.id) return;
+        if (fetchedTunnelId === t.id && ips.length > 0) return; // 同一隧道且已有数据，不再刷新
         try {
+          setLoadingIps(true);
           const type = t.type ?? 1;
           const nodeId = (type === 2 && t.outNodeId) ? t.outNodeId : t.inNodeId;
           if (!nodeId) { return; }
           const res:any = await getNodeInterfaces(Number(nodeId));
           if (res.code===0 && Array.isArray(res.data?.ips)) setIps(res.data.ips as string[]);
           setFetchedTunnelId(t.id);
-        } catch { /* noop */ } finally { /* no-op */ }
+        } catch { /* noop */ }
+        finally { setLoadingIps(false); }
       };
-      load();
-    }, [active, selectedTunnel?.id, selectedTunnel?.type, selectedTunnel?.outNodeId, selectedTunnel?.inNodeId]);
+      if (active) load();
+      // 仅依赖隧道ID，避免其它状态变化触发刷新
+    }, [active, selectedTunnel?.id]);
     return (
       <Select
         label="出口IP"
-        placeholder={ips.length? '请选择出口IP' : '未获取到接口IP'}
-        selectedKeys={[]}
+        placeholder={'出口IP列表'}
+        selectedKeys={currentValue ? [currentValue] : []}
         onSelectionChange={(keys)=>{ const k = Array.from(keys)[0] as string; if (k) onSelect(k); }}
         variant="bordered"
         size="sm"
+        description={loadingIps ? '正在获取接口IP…' : (ips.length ? '请选择出口IP' : '未获取到接口IP')}
       >
         {ips.map(ip => (<SelectItem key={ip}>{ip}</SelectItem>))}
       </Select>
@@ -584,6 +605,18 @@ export default function ForwardPage() {
     });
     const tunnel = tunnels.find(t => t.id === forward.tunnelId);
     setSelectedTunnel(tunnel || null);
+    // 预取入口节点 API 状态（使用缓存，不轮询）
+    (async()=>{
+      try{
+        const tInfo = previewTunnelMap[forward.tunnelId];
+        const inId = tInfo?.inNodeId as number | undefined;
+        setEntryNodeId(inId || null);
+        if (inId){
+          const node:any = nodesCache.find((n:any)=> Number(n.id)===Number(inId));
+          setEntryApiOn(typeof node?.gostApi !== 'undefined' ? (node.gostApi===1) : null);
+        } else { setEntryApiOn(null); }
+      }catch{ setEntryApiOn(null); }
+    })();
     setErrors({});
     setModalOpen(true);
   };
@@ -641,16 +674,17 @@ export default function ForwardPage() {
           setPreviewType(tInfo.type);
           setPreviewInNodeId(tInfo.inNodeId);
           setPreviewOutNodeId(tInfo.outNodeId||undefined);
+          setEntryNodeId(tInfo.inNodeId || null);
         } else {
           setPreviewType(undefined); setPreviewInNodeId(undefined); setPreviewOutNodeId(undefined);
+          setEntryNodeId(null);
         }
       }catch{ setPreviewType(undefined); setPreviewInNodeId(undefined); setPreviewOutNodeId(undefined); }
       try{
-        const [rp, rb, ri, nl] = await Promise.all([
+        const [rp, rb, ri] = await Promise.all([
           getTunnelPath(parseInt(tunnelId)),
           getTunnelBind(parseInt(tunnelId)),
           getTunnelIface(parseInt(tunnelId)),
-          getNodeList(),
         ]);
         if (rp.code===0 && Array.isArray(rp.data?.path)) setPreviewPath(rp.data.path as number[]); else setPreviewPath([]);
         const bMap:Record<number,string> = {};
@@ -667,9 +701,14 @@ export default function ForwardPage() {
         const outId = (previewTunnelMap[parseInt(tunnelId)]?.outNodeId) || undefined;
         if (outId && bMap[outId]) setPreviewExitBind(bMap[outId]); else setPreviewExitBind("");
         const nMap:Record<number,string> = {};
-        if (nl.code===0 && Array.isArray(nl.data)){
-          (nl.data as any[]).forEach(n=>{ nMap[Number(n.id)] = String(n.name||('节点'+n.id)); });
-        }
+        (nodesCache || []).forEach((n:any)=>{ if(n && (n as any).id!=null) nMap[Number((n as any).id)] = String((n as any).name||('节点'+(n as any).id)); });
+        // 更新入口节点 API 状态（使用缓存）
+        const inId = (previewTunnelMap[parseInt(tunnelId)]?.inNodeId) as number | undefined;
+        setEntryNodeId(inId || null);
+        if (inId){
+          const node:any = (nodesCache || []).find((nn:any)=> Number(nn.id)===Number(inId));
+          setEntryApiOn(!!(node && node.gostApi===1));
+        } else { setEntryApiOn(null); }
         setNodeNameMap(nMap);
       }catch{
         setPreviewPath([]); setPreviewBind({}); setPreviewIface({}); setPreviewExitBind(""); setNodeNameMap({});
@@ -737,6 +776,29 @@ export default function ForwardPage() {
             ), { duration: 5000 });
           }
         }catch{}
+        // 如果入口节点未启用 GOST API，给出一键开启入口（使用缓存，不拉取列表）
+        try {
+          const { enableGostApi } = await import('@/api');
+          const tid = form.tunnelId as number;
+          const tInfo = previewTunnelMap[tid];
+          const inNodeId = tInfo?.inNodeId as number | undefined;
+          if (inNodeId){
+            const node:any = nodesCache.find((n:any)=> Number(n.id) === Number(inNodeId));
+            const apiOn = !!(node && node.gostApi === 1);
+            if (!apiOn){
+              toast.custom((t)=> (
+                <div className="px-4 py-3 bg-warning-50 rounded shadow border border-warning-200 flex items-center gap-3">
+                  <span>该入口节点未启用 GOST API，无法下发服务。</span>
+                  <button className="text-primary underline" onClick={async()=>{
+                    try{ await enableGostApi(inNodeId); toast.success('已发送开启 GOST API 指令'); }
+                    catch(e:any){ toast.error(e?.message||'发送失败'); }
+                    finally{ toast.dismiss(t.id); }
+                  }}>开启 GOST API</button>
+                </div>
+              ), { duration: 8000 });
+            }
+          }
+        } catch {}
         // 无需再次保存路径与IP映射（创建前已保存）
         setModalOpen(false);
         loadData();
@@ -1868,6 +1930,27 @@ export default function ForwardPage() {
                         </SelectItem>
                       ))}
                     </Select>
+
+                    {/* 入口节点 GOST API 状态与一键开启 */}
+                    {entryNodeId ? (
+                      <div className="p-3 border border-default-200 rounded-lg flex items-center justify-between">
+                        <div className="text-sm">
+                          <div className="text-default-600">入口节点 API</div>
+                          <div className="text-xs text-default-500 mt-1">
+                            {entryApiOn === null ? '检测中…' : (entryApiOn ? '已启用，可直接下发服务' : '未启用，需先开启后再保存')}
+                          </div>
+                        </div>
+                        {entryApiOn === false && (
+                          <Button size="sm" color="primary" variant="flat" onPress={async()=>{
+                            try{
+                              const { enableGostApi } = await import('@/api');
+                              await enableGostApi(entryNodeId);
+                              toast.success('已发送开启 GOST API 指令，请稍候刷新');
+                            }catch(e:any){ toast.error(e?.message||'发送失败'); }
+                          }}>开启 GOST API</Button>
+                        )}
+                      </div>
+                    ) : null}
                     
                     <Input
                       label="入口端口"
@@ -1901,7 +1984,7 @@ export default function ForwardPage() {
                       maxRows={6}
                     />
                     
-                    <ForwardIfacePicker active={modalOpen} selectedTunnel={selectedTunnel} onSelect={(ip)=>setForm(prev=>({...prev, interfaceName: ip}))} />
+                    <ForwardIfacePicker active={modalOpen} selectedTunnel={selectedTunnel} currentValue={form.interfaceName || ''} onSelect={(ip)=>setForm(prev=>({...prev, interfaceName: ip}))} />
 
                     {/* 只读预览：当前隧道的多级路径与每节点 IP 设置（在“隧道管理”维护） */}
                     {selectedTunnel && (
@@ -2377,7 +2460,7 @@ export default function ForwardPage() {
                               <div className="flex items-center justify-between w-full">
                                 <div>
                                   <h3 className="text-lg font-semibold text-foreground">{result.description}</h3>
-                                  <div className="flex items-center gap-2 mt-1">
+                                  <div className="flex items-center gap-2 mt-1 flex-wrap">
                                     <span className="text-small text-default-500">节点: {result.nodeName}</span>
                                     <Chip 
                                       color={result.success ? 'success' : 'danger'} 
@@ -2386,6 +2469,11 @@ export default function ForwardPage() {
                                     >
                                       {result.success ? '连接成功' : '连接失败'}
                                     </Chip>
+                                    {(result.targetIp || result.targetPort) && (
+                                      <Chip size="sm" variant="flat" color="secondary">
+                                        目标 {result.targetIp}{result.targetPort ? (":"+result.targetPort) : ''}
+                                      </Chip>
+                                    )}
                                   </div>
                                 </div>
                               </div>

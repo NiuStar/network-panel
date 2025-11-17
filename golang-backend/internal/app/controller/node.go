@@ -51,6 +51,10 @@ func NodeList(c *gin.Context) {
     // map to output adding cycleMonths for clarity; keep other fields
     outs := make([]map[string]any, 0, len(nodes))
     for _, n := range nodes {
+        // read last known health flags (in-memory)
+        healthMu.RLock()
+        hf, ok := nodeHealth[n.ID]
+        healthMu.RUnlock()
         m := map[string]any{
             "id": n.ID,
             "name": n.Name,
@@ -62,6 +66,9 @@ func NodeList(c *gin.Context) {
             "status": n.Status,
             "priceCents": n.PriceCents,
             "startDateMs": n.StartDateMs,
+            // health flags
+            "gostApi":     ifThen(ok && hf.GostAPI, 1, 0),
+            "gostRunning": ifThen(ok && hf.GostRunning, 1, 0),
         }
         // derive cycleMonths from stored cycleDays
         if n.CycleDays != nil {
@@ -258,6 +265,23 @@ func NodeRestartGost(c *gin.Context) {
     // Fallback: fire-and-forget old command; return timeout message
     _ = sendWSCommand(p.NodeID, "RestartGost", map[string]any{"reason": "manual_from_ui"})
     c.JSON(http.StatusOK, response.Ok(map[string]any{"success": false, "message": "agent未回执，已下发重启命令"}))
+}
+
+// POST /api/v1/node/enable-gost-api {nodeId}
+// Ask agent to enable top-level GOST Web API (write api{} then restart gost)
+func NodeEnableGostAPI(c *gin.Context) {
+    var p struct{ NodeID int64 `json:"nodeId" binding:"required"` }
+    if err := c.ShouldBindJSON(&p); err != nil {
+        c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+        return
+    }
+    var node model.Node
+    if err := dbpkg.DB.First(&node, p.NodeID).Error; err != nil {
+        c.JSON(http.StatusOK, response.ErrMsg("节点不存在"))
+        return
+    }
+    _ = sendWSCommand(node.ID, "EnableGostAPI", map[string]any{"from": "manual"})
+    c.JSON(http.StatusOK, response.OkNoData())
 }
 
 // utils (local)

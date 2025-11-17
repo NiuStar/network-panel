@@ -549,7 +549,7 @@ func TunnelDiagnoseStep(c *gin.Context) {
 		rid := RandUUID()
 		tmpNames := make([]string, len(fNodes))
 		jlog(map[string]any{"event": "iperf3_path_nodes", "tunnelId": t.ID, "nodes": fNodes, "ports": tmpPorts})
-		for i, nid := range fNodes {
+        for i, nid := range fNodes {
 			var n model.Node
 			_ = db.DB.First(&n, nid).Error
 			// overlay 优化：若上一跳出口IP与本跳入口IP均为 10.126.126.*，放宽端口范围限制，仅需 >=1000 且未占用
@@ -560,57 +560,64 @@ func TunnelDiagnoseStep(c *gin.Context) {
 			if i > 0 {
 				prevOut := ifaceMap[fNodes[i-1]]
 				thisIn := bindMap[nid]
-				if strings.HasPrefix(prevOut, "10.126.126.") && strings.HasPrefix(thisIn, "10.126.126.") {
-					p := findFreePortOnNodeAny(nid, 10000, 10000)
-					if p != 0 { tmpPorts[i] = p } else { tmpPorts[i] = 10000 }
-				} else {
-					minP, maxP := 10000, 65535
-					if n.PortSta > 0 {
-						minP = n.PortSta
-					}
-					if n.PortEnd > 0 {
-						maxP = n.PortEnd
-					}
-					if prefer < minP {
-						prefer = minP
-					}
-					tmpPorts[i] = findFreePortOnNode(nid, prefer, minP, maxP)
-					if tmpPorts[i] == 0 {
-						tmpPorts[i] = minP
-					}
-				}
-			} else {
-				// 第一个(入口临时)端口：若入口出站IP与下一跳入口IP(首个中间或出口)均为 overlay，则放宽；否则按节点范围
-				prevOut := ifaceMap[nid]
-				var nextIn string
+                if strings.HasPrefix(prevOut, "10.126.126.") && strings.HasPrefix(thisIn, "10.126.126.") {
+                    // 叠加网络优化也保持端口 >=10000
+                    p := findFreePortOnNodeAny(nid, 10000, 10000)
+                    if p != 0 { tmpPorts[i] = p } else { tmpPorts[i] = 10000 }
+                } else {
+                    minP, maxP := 10000, 65535
+                    if n.PortSta > 0 {
+                        minP = n.PortSta
+                    }
+                    if n.PortEnd > 0 {
+                        maxP = n.PortEnd
+                    }
+                    if prefer < minP {
+                        prefer = minP
+                    }
+                    tmpPorts[i] = findFreePortOnNode(nid, prefer, minP, maxP)
+                    if tmpPorts[i] == 0 {
+                        tmpPorts[i] = minP
+                    }
+                }
+            } else {
+                // 第一个(入口临时)端口：若入口出站IP与下一跳入口IP(首个中间或出口)均为 overlay，则放宽；否则按节点范围
+                prevOut := ifaceMap[nid]
+                var nextIn string
 				if len(fNodes) > 1 {
 					nextIn = bindMap[fNodes[1]]
 				} else if t.OutNodeID != nil {
 					nextIn = bindMap[*t.OutNodeID]
 				}
-				if strings.HasPrefix(prevOut, "10.126.126.") && strings.HasPrefix(nextIn, "10.126.126.") {
-					p := findFreePortOnNodeAny(nid, 10000, 10000)
-					if p != 0 { tmpPorts[i] = p } else { tmpPorts[i] = 10000 }
-				} else {
-					minP, maxP := 10000, 65535
-					if n.PortSta > 0 {
-						minP = n.PortSta
-					}
-					if n.PortEnd > 0 {
-						maxP = n.PortEnd
-					}
-					if prefer < minP {
-						prefer = minP
-					}
-					tmpPorts[i] = findFreePortOnNode(nid, prefer, minP, maxP)
-					if tmpPorts[i] == 0 {
-						tmpPorts[i] = minP
-					}
-				}
-			}
-			tmpNames[i] = fmt.Sprintf("tmp_iperf3_%d_%s_%d", t.ID, rid, i)
-			jlog(map[string]any{"event": "iperf3_tmp_port_pick", "tunnelId": t.ID, "nodeId": nid, "name": tmpNames[i], "port": tmpPorts[i]})
-		}
+                if strings.HasPrefix(prevOut, "10.126.126.") && strings.HasPrefix(nextIn, "10.126.126.") {
+                    // 叠加网络优化也保持端口 >=10000
+                    p := findFreePortOnNodeAny(nid, 10000, 10000)
+                    if p != 0 { tmpPorts[i] = p } else { tmpPorts[i] = 10000 }
+                } else {
+                    minP, maxP := 10000, 65535
+                    if n.PortSta > 0 {
+                        minP = n.PortSta
+                    }
+                    if n.PortEnd > 0 {
+                        maxP = n.PortEnd
+                    }
+                    if prefer < minP {
+                        prefer = minP
+                    }
+                    tmpPorts[i] = findFreePortOnNode(nid, prefer, minP, maxP)
+                    if tmpPorts[i] == 0 {
+                        tmpPorts[i] = minP
+                    }
+                }
+            }
+            // 兜底：确保临时端口不低于10000，避免与系统/保留端口冲突
+            if tmpPorts[i] > 0 && tmpPorts[i] < 10000 {
+                p := findFreePortOnNodeAny(nid, 10000, 10000)
+                if p != 0 { tmpPorts[i] = p } else { tmpPorts[i] = 10000 }
+            }
+            tmpNames[i] = fmt.Sprintf("tmp_iperf3_%d_%s_%d", t.ID, rid, i)
+            jlog(map[string]any{"event": "iperf3_tmp_port_pick", "tunnelId": t.ID, "nodeId": nid, "name": tmpNames[i], "port": tmpPorts[i]})
+        }
 		// 部署临时直转服务链
 		for i := 0; i < len(fNodes); i++ {
 			nid := fNodes[i]
@@ -647,12 +654,28 @@ func TunnelDiagnoseStep(c *gin.Context) {
 				s := string(b)
 				_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nid, Cmd: "DiagTmpServiceAdd", RequestID: diagID, Success: 1, Message: fmt.Sprintf("gost临时通道配置 name=%s", tmpNames[i]), Stdout: &s}).Error
 			}
+			// 尝试汇总 agent 的 GOST Web API 回执至操作日志（DiagTmpServiceAdd-recv）
+			go func(nodeID int64, reqID string){
+				t0 := time.Now().Add(-5 * time.Second).UnixMilli()
+				time.Sleep(800 * time.Millisecond)
+				// 抓取最近几条回执，优先匹配 services 接口，再退回到任意 gost_api/gost_api_err
+				var logs []model.NodeOpLog
+				_ = db.DB.Where("node_id = ? AND time_ms >= ? AND (cmd = ? OR cmd = ?)", nodeID, t0, "OpLog:gost_api", "OpLog:gost_api_err").Order("time_ms desc").Limit(10).Find(&logs).Error
+				pick := model.NodeOpLog{}
+				for _, it := range logs {
+					if strings.Contains(it.Message, "/config/services") {
+						pick = it; break
+					}
+				}
+				if pick.ID == 0 && len(logs) > 0 { pick = logs[0] }
+				if pick.ID > 0 {
+					_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nodeID, Cmd: "DiagTmpServiceAdd-recv", RequestID: reqID, Success: 1, Message: pick.Message}).Error
+				} else {
+					_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nodeID, Cmd: "DiagTmpServiceAdd-recv", RequestID: reqID, Success: 0, Message: "未捕获到agent API回执（查看 OpLog:gost_api*）"}).Error
+				}
+			}(nid, diagID)
 		}
-		// 下发 RestartGost 以确保临时配置立即生效
-		for i := 0; i < len(fNodes); i++ {
-			_ = sendWSCommand(fNodes[i], "RestartGost", map[string]any{"reason": "iperf3_tmp"})
-			_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: fNodes[i], Cmd: "DiagTmpRestartGost", RequestID: diagID, Success: 1, Message: "restart gost for tmp"}).Error
-		}
+		// 使用 Web API 动态添加临时服务，无需重启
 		// 主动轮询各节点临时服务是否生效（最多 8 秒）
 		readyAll := true
 		for i := 0; i < len(fNodes); i++ {

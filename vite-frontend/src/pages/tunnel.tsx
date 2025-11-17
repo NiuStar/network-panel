@@ -20,7 +20,8 @@ import {
   updateTunnel, 
   deleteTunnel,
   getNodeList,
-  diagnoseTunnelStep
+  diagnoseTunnelStep,
+  enableGostApi
 } from "@/api";
 
 interface Tunnel {
@@ -139,6 +140,8 @@ export default function TunnelPage() {
   const [exitRLimiter, setExitRLimiter] = useState<string>("");
   const [exitDeployed, setExitDeployed] = useState<string>("");
   const [exitMetaItems, setExitMetaItems] = useState<Array<{id:number, key:string, value:string}>>([]);
+  // 入口节点 API 状态（用于弹窗内启用）
+  const [entryApiOn, setEntryApiOn] = useState<boolean | null>(null);
 
   useEffect(() => {
     loadData();
@@ -249,6 +252,7 @@ export default function TunnelPage() {
     setEntryIface(''); setMidIfaces({}); setIfaceCache({});
     setExitPort(null); setExitPassword(""); setExitMethod("AEAD_CHACHA20_POLY1305"); setExitObserver("console"); setExitLimiter(""); setExitRLimiter(""); setExitDeployed(""); setExitMetaItems([]);
     setModalOpen(true);
+    setEntryApiOn(null);
   };
 
   // 编辑隧道 - 只能修改部分字段
@@ -275,6 +279,11 @@ export default function TunnelPage() {
     (async ()=>{ try { const { getTunnelPath } = await import('@/api'); const r:any = await getTunnelPath(tunnel.id); if (r.code===0 && Array.isArray(r.data?.path)) setMidPath(r.data.path); } catch {} })();
     setExitPort(null); setExitPassword(""); setExitMethod("AEAD_CHACHA20_POLY1305"); setExitObserver("console"); setExitLimiter(""); setExitRLimiter(""); setExitDeployed(""); setExitMetaItems([]);
     setModalOpen(true);
+    // 更新入口节点 API 状态
+    try {
+      const n:any = nodes.find(nn=> Number(nn.id)===Number(tunnel.inNodeId));
+      setEntryApiOn(typeof (n as any)?.gostApi !== 'undefined' ? ((n as any).gostApi===1) : null);
+    } catch { setEntryApiOn(null); }
     // 读取已保存的每节点接口IP
     (async()=>{
       try{ const { getTunnelIface } = await import('@/api'); const r:any = await getTunnelIface(tunnel.id);
@@ -331,6 +340,18 @@ export default function TunnelPage() {
     }));
     setExitDeployed("");
   };
+
+  // 当入口节点变更时刷新 API 状态
+  useEffect(()=>{
+    if (form.inNodeId){
+      try{
+        const n:any = nodes.find(nn=> Number(nn.id)===Number(form.inNodeId));
+        setEntryApiOn(typeof (n as any)?.gostApi !== 'undefined' ? ((n as any).gostApi===1) : null);
+      } catch { setEntryApiOn(null); }
+    } else {
+      setEntryApiOn(null);
+    }
+  }, [form.inNodeId, nodes]);
 
   // 提交表单
   const handleSubmit = async () => {
@@ -862,6 +883,23 @@ export default function TunnelPage() {
                       ))}
                     </Select>
 
+                    {form.inNodeId ? (
+                      <div className="p-3 border border-default-200 rounded-lg flex items-center justify-between">
+                        <div className="text-sm">
+                          <div className="text-default-600">入口节点 API</div>
+                          <div className="text-xs text-default-500 mt-1">
+                            {entryApiOn === null ? '检测中…' : (entryApiOn ? '已启用，可直接下发服务' : '未启用，需先开启后再保存/诊断')}
+                          </div>
+                        </div>
+                        {entryApiOn === false && (
+                          <Button size="sm" color="primary" variant="flat" onPress={async()=>{
+                            try{ await enableGostApi(form.inNodeId as number); toast.success('已发送开启 GOST API 指令，请稍候刷新'); }
+                            catch(e:any){ toast.error(e?.message||'发送失败'); }
+                          }}>开启 GOST API</Button>
+                        )}
+                      </div>
+                    ) : null}
+
                     {form.type === 2 && (
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <Input 
@@ -1204,6 +1242,31 @@ export default function TunnelPage() {
                   <h2 className="text-xl font-bold">确认删除</h2>
                 </ModalHeader>
                 <ModalBody>
+                  {/* 诊断前的入口 API 提示 */}
+                  {currentDiagnosisTunnel && (
+                    <div className="mb-3 p-3 border border-default-200 rounded-lg flex items-center justify-between">
+                      <div className="text-sm">
+                        <div className="text-default-600">入口节点 API</div>
+                        <div className="text-xs text-default-500 mt-1">
+                          {(()=>{
+                            const n:any = nodes.find(nn=> Number(nn.id)===Number(currentDiagnosisTunnel.inNodeId));
+                            const on = typeof (n as any)?.gostApi !== 'undefined' ? ((n as any).gostApi===1) : null;
+                            return on === null ? '检测中…' : (on ? '已启用，可直接进行诊断' : '未启用，可能无法下发临时服务');
+                          })()}
+                        </div>
+                      </div>
+                      {(()=>{
+                        const n:any = nodes.find(nn=> Number(nn.id)===Number(currentDiagnosisTunnel.inNodeId));
+                        const on = typeof (n as any)?.gostApi !== 'undefined' ? ((n as any).gostApi===1) : null;
+                        return on === false ? (
+                          <Button size="sm" color="primary" variant="flat" onPress={async()=>{
+                            try{ await enableGostApi(currentDiagnosisTunnel.inNodeId); toast.success('已发送开启 GOST API 指令'); }
+                            catch(e:any){ toast.error(e?.message||'发送失败'); }
+                          }}>开启 GOST API</Button>
+                        ) : null;
+                      })()}
+                    </div>
+                  )}
                   <p>确定要删除隧道 <strong>"{tunnelToDelete?.name}"</strong> 吗？</p>
                   <p className="text-small text-default-500">此操作不可恢复，请谨慎操作。</p>
                 </ModalBody>

@@ -90,7 +90,8 @@ func RegisterRoutes(r *gin.Engine) {
 		node.POST("/sysinfo", controller.NodeSysinfo)
 		node.POST("/interfaces", controller.NodeInterfaces)
         node.POST("/ops", controller.NodeOps)
-        node.POST("/restart-gost", controller.NodeRestartGost)
+		node.POST("/restart-gost", controller.NodeRestartGost)
+		node.POST("/enable-gost-api", controller.NodeEnableGostAPI)
 	}
 
 	// tunnel
@@ -213,7 +214,8 @@ func RegisterRoutes(r *gin.Engine) {
 		agent.POST("/push-services", controller.AgentPushServices)
 		agent.POST("/reconcile", controller.AgentReconcile)
 		agent.POST("/remove-services", controller.AgentRemoveServices)
-		agent.POST("/reconcile-node", controller.AgentReconcileNode)
+        // 手动重新应用全部服务（仅管理员可调用）
+        agent.POST("/reconcile-node", middleware.RequireRole(), controller.AgentReconcileNode)
 		agent.POST("/probe-targets", controller.AgentProbeTargets)
 		agent.POST("/report-probe", controller.AgentReportProbe)
 	}

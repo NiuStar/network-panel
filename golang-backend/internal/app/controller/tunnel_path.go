@@ -61,19 +61,14 @@ func TunnelPathSet(c *gin.Context) {
     } else {
         _ = dbpkg.DB.Create(&model.ViteConfig{Name: key, Value: string(b), Time: now}).Error
     }
-    // After saving path, best-effort restart gost on affected nodes so配置立即生效（入口+中间+出口）
+    // 使用 Web API 动态配置，无需重启；重连或编辑保存时会按路径自动下发服务
     var t model.Tunnel
     _ = dbpkg.DB.First(&t, p.TunnelID).Error
     nodes := make([]int64, 0, 2+len(uniq))
     nodes = append(nodes, t.InNodeID)
     nodes = append(nodes, uniq...)
     if t.OutNodeID != nil { nodes = append(nodes, *t.OutNodeID) }
-    restarted := 0
-    for _, nid := range nodes {
-        if nid <= 0 { continue }
-        if err := sendWSCommand(nid, "RestartGost", map[string]any{"reason":"path_set"}); err == nil { restarted++ }
-    }
-    c.JSON(http.StatusOK, response.Ok(map[string]any{"saved": len(uniq), "restarted": restarted}))
+    c.JSON(http.StatusOK, response.Ok(map[string]any{"saved": len(uniq)}))
 }
 
 func tunnelPathKey(tid int64) string { return "tunnel_path_" + strconv.FormatInt(tid, 10) }

@@ -94,6 +94,7 @@ export const resumeForwardService = (forwardId: number) => Network.post("/forwar
 export const diagnoseForward = (forwardId: number) => Network.post("/forward/diagnose", { forwardId });
 export const diagnoseForwardStep = (forwardId: number, step: string) => Network.post("/forward/diagnose-step", { forwardId, step });
 export const restartGost = (nodeId: number) => Network.post("/node/restart-gost", { nodeId });
+export const enableGostApi = (nodeId: number) => Network.post("/node/enable-gost-api", { nodeId });
 
 // 转发排序操作
 export const updateForwardOrder = (data: { forwards: Array<{ id: number; inx: number }> }) => Network.post("/forward/update-order", data);

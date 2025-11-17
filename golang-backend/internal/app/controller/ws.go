@@ -35,14 +35,17 @@ type nodeConn struct {
 }
 
 var (
-	nodeConnMu  sync.RWMutex
-	nodeConns   = map[int64][]*nodeConn{}
-	adminMu     sync.RWMutex
-	adminConns  = map[*websocket.Conn]struct{}{}
-	diagMu      sync.Mutex
+    nodeConnMu  sync.RWMutex
+    nodeConns   = map[int64][]*nodeConn{}
+    adminMu     sync.RWMutex
+    adminConns  = map[*websocket.Conn]struct{}{}
+    diagMu      sync.Mutex
     diagWaiters = map[string]chan map[string]interface{}{}
     opMu       sync.Mutex
     opWaiters  = map[string]chan map[string]interface{}{}
+    // latest health flags reported by agents
+    healthMu   sync.RWMutex
+    nodeHealth = map[int64]struct{GostAPI bool; GostRunning bool}{}
 )
 
 // GET /system-info?type=1&secret=...&version=...
@@ -139,17 +142,9 @@ func SystemInfoWS(c *gin.Context) {
             _ = sendWSCommand(node.ID, "UpgradeAgent", map[string]any{"to": expected})
         }
 
-        // On reconnect: re-apply desired entry services (port-forward) with unified observer in case of drift
-        if svcs := desiredServices(node.ID); len(svcs) > 0 {
-            _ = sendWSCommand(node.ID, "AddService", svcs)
-            jlog(map[string]interface{}{"event": "reapply_desired_services", "nodeId": node.ID, "count": len(svcs)})
-        }
-        if patches := BuildTunnelEntryObserverPatches(node.ID); len(patches) > 0 {
-            _ = sendWSCommand(node.ID, "UpdateService", patches)
-            jlog(map[string]interface{}{"event": "tunnel_entry_observer_patched", "nodeId": node.ID, "count": len(patches)})
-        }
-        // Restart gost after applying changes to ensure effect
-        _ = sendWSCommand(node.ID, "RestartGost", map[string]any{"reason": "agent_reconnect_apply"})
+        // Note: do not push or reapply services on reconnect.
+        // Services are only applied when user saves a forward.
+        // No restart here; Web API updates are live
 
 		// read messages and forward system info
 		for {
@@ -198,7 +193,7 @@ func SystemInfoWS(c *gin.Context) {
 			// Try to parse as command reply first
 			var generic map[string]interface{}
             if err := json.Unmarshal(msg, &generic); err == nil {
-                if t, ok := generic["type"].(string); ok && (t == "DiagnoseResult" || t == "QueryServicesResult" || t == "SuggestPortsResult") {
+                if t, ok := generic["type"].(string); ok && (t == "DiagnoseResult" || t == "QueryServicesResult" || t == "SuggestPortsResult" || t == "ProbePortResult") {
                     if reqID, ok := generic["requestId"].(string); ok {
                         diagMu.Lock()
                         ch := diagWaiters[reqID]
@@ -258,13 +253,22 @@ func SystemInfoWS(c *gin.Context) {
             }
 			// Else treat as system info payload
 			payload := parseNodeSystemInfo(node.Secret, msg)
-			if payload != nil {
-				// store into DB for long-term charts
-				storeSysInfoSample(node.ID, payload)
-				broadcastToAdmins(map[string]interface{}{"id": node.ID, "type": "info", "data": payload})
-			} else {
-				jlog(map[string]interface{}{"event": "node_non_json", "nodeId": node.ID, "len": len(msg)})
-			}
+            if payload != nil {
+                // store into DB for long-term charts
+                storeSysInfoSample(node.ID, payload)
+                // update in-memory health flags for NodeList aggregation
+                if v, ok := payload["gost_api"]; ok {
+                    b := false; if bb, ok2 := v.(bool); ok2 { b = bb }
+                    healthMu.Lock(); h := nodeHealth[node.ID]; h.GostAPI = b; nodeHealth[node.ID] = h; healthMu.Unlock()
+                }
+                if v, ok := payload["gost_running"]; ok {
+                    b := false; if bb, ok2 := v.(bool); ok2 { b = bb }
+                    healthMu.Lock(); h := nodeHealth[node.ID]; h.GostRunning = b; nodeHealth[node.ID] = h; healthMu.Unlock()
+                }
+                broadcastToAdmins(map[string]interface{}{"id": node.ID, "type": "info", "data": payload})
+            } else {
+                jlog(map[string]interface{}{"event": "node_non_json", "nodeId": node.ID, "len": len(msg)})
+            }
 		}
 	} else {
 		// unknown node; just close
@@ -561,6 +565,10 @@ func convertSysInfoJSON(b []byte) map[string]interface{} {
     } else if v, ok := in["interfaces"]; ok {
         out["interfaces"] = v
     }
+    // passthrough health flags: gost api & service status
+    if v, ok := in["GostAPI"]; ok { out["gost_api"] = v } else if v, ok := in["gost_api"]; ok { out["gost_api"] = v }
+    if v, ok := in["GostRunning"]; ok { out["gost_running"] = v } else if v, ok := in["gost_running"]; ok { out["gost_running"] = v }
+    if v, ok := in["GostAPIConfigured"]; ok { out["gost_api_configured"] = v } else if v, ok := in["gost_api_configured"]; ok { out["gost_api_configured"] = v }
     return out
 }
 

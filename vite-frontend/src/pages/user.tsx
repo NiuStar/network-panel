@@ -92,6 +92,9 @@ const getUserStatus = (user: User) => {
 };
 
 const calculateUserTotalUsedFlow = (user: User): number => {
+  if (typeof (user as any).usedBilled === 'number') {
+    return (user as any).usedBilled as number;
+  }
   return (user.inFlow || 0) + (user.outFlow || 0);
 };
 

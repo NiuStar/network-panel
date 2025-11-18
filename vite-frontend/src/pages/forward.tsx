@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Button } from "@heroui/button";
 import { Input } from "@heroui/input";
@@ -7,7 +7,6 @@ import { Select, SelectItem } from "@heroui/select";
 import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter } from "@heroui/modal";
 import { Chip } from "@heroui/chip";
 import { Spinner } from "@heroui/spinner";
-import { Switch } from "@heroui/switch";
 import { Alert } from "@heroui/alert";
 import { Accordion, AccordionItem } from "@heroui/accordion";
 import toast from 'react-hot-toast';
@@ -40,11 +39,11 @@ import {
   deleteForward,
   forceDeleteForward,
   userTunnel, 
-  pauseForwardService,
-  resumeForwardService,
   diagnoseForwardStep,
   diagnoseForward,
   updateForwardOrder,
+  getForwardStatus,
+  getForwardStatusDetail,
   getNodeInterfaces,
   getTunnelPath,
   getTunnelBind,
@@ -73,6 +72,7 @@ interface Forward {
   userName?: string;
   userId?: number;
   inx?: number;
+  configOk?: boolean;
 }
 
 interface Tunnel {
@@ -180,6 +180,10 @@ export default function ForwardPage() {
   const [forwardToDelete, setForwardToDelete] = useState<Forward | null>(null);
   const [currentDiagnosisForward, setCurrentDiagnosisForward] = useState<Forward | null>(null);
   const [diagnosisResult, setDiagnosisResult] = useState<DiagnosisResult | null>(null);
+  // 配置详情
+  const [cfgDetailOpen, setCfgDetailOpen] = useState(false);
+  const [cfgDetailLoading, setCfgDetailLoading] = useState(false);
+  const [cfgDetail, setCfgDetail] = useState<any|null>(null);
   const [addressModalTitle, setAddressModalTitle] = useState('');
   const [addressList, setAddressList] = useState<AddressItem[]>([]);
   
@@ -233,6 +237,9 @@ export default function ForwardPage() {
   const [previewTunnelMap, setPreviewTunnelMap] = useState<Record<number, any>>({});
   // 节点列表缓存（进入页面时获取一次，避免重复调用）
   const [nodesCache, setNodesCache] = useState<any[]>([]);
+  // 出口接口IP缓存与并发锁（页面级，跨弹窗渲染保持）
+  const ifaceCacheRef = useRef<Map<number, string[]>>(new Map());
+  const ifaceInflightRef = useRef<Set<number>>(new Set());
 
   useEffect(() => { loadData(); }, []);
 
@@ -259,10 +266,12 @@ export default function ForwardPage() {
     })();
   }, []);
 
-  // 轮询刷新每条转发的进/出流量
+  // 轮询刷新每条转发的进/出流量（当任一弹窗打开时暂停，避免编辑时界面抖动）
+  const anyModalOpen = modalOpen || deleteModalOpen || diagnosisModalOpen || cfgDetailOpen;
   useEffect(() => {
     let timer: any;
     const tick = async () => {
+      if (anyModalOpen) return; // 暂停轮询，避免干扰弹窗中的交互
       try {
         const res: any = await getForwardList();
         if (res && res.code === 0 && Array.isArray(res.data)) {
@@ -278,6 +287,20 @@ export default function ForwardPage() {
             if (m.inFlow === f.inFlow && m.outFlow === f.outFlow) return f;
             return { ...f, inFlow: m.inFlow, outFlow: m.outFlow };
           }));
+          // 同步获取配置状态
+          try {
+            const ids = (res.data as any[]).map((it:any)=>Number(it.id)).filter((x:number)=>x>0);
+            const sres:any = await getForwardStatus(ids);
+            if (sres && sres.code === 0 && Array.isArray(sres.data?.list)) {
+              const okMap = new Map<number, boolean>();
+              (sres.data.list as any[]).forEach(it => {
+                if (typeof it?.forwardId === 'number') {
+                  okMap.set(it.forwardId, !!it.ok);
+                }
+              });
+              setForwards(prev => prev.map(f => ({ ...f, configOk: okMap.has(f.id) ? !!okMap.get(f.id) : f.configOk })));
+            }
+          } catch {}
         }
       } catch (_) {
         // 忽略错误，下一次轮询继续
@@ -287,32 +310,51 @@ export default function ForwardPage() {
     tick();
     timer = setInterval(tick, pollMs);
     return () => { if (timer) clearInterval(timer); };
-  }, [pollMs]);
+  }, [pollMs, anyModalOpen]);
   
-  function ForwardIfacePicker({ selectedTunnel, currentValue, onSelect, active }: { selectedTunnel: Tunnel | null; currentValue?: string; onSelect:(ip:string)=>void; active:boolean }){
+  function ForwardIfacePicker({ selectedTunnel, currentValue, onSelect, active, cacheRef, inflightRef }: { selectedTunnel: Tunnel | null; currentValue?: string; onSelect:(ip:string)=>void; active:boolean; cacheRef: React.MutableRefObject<Map<number,string[]>>; inflightRef: React.MutableRefObject<Set<number>> }){
     const [ips, setIps] = useState<string[]>([]);
     const [loadingIps, setLoadingIps] = useState<boolean>(false);
-    const [fetchedTunnelId, setFetchedTunnelId] = useState<number | null>(null);
-    // 仅在进入弹窗（active=true 首次）和“选择的隧道ID变化”时刷新一次
+    const lastNodeIdRef = useRef<number | null>(null);
+
+    const doRefresh = async (nodeId?: number) => {
+      const t = selectedTunnel;
+      const type = t?.type ?? 1;
+      const nid = nodeId ?? Number((t && type === 2 && t.outNodeId) ? t.outNodeId : t?.inNodeId);
+      if (!nid) return;
+      if (inflightRef.current.has(nid)) return;
+      inflightRef.current.add(nid);
+      // 仅在本地没有列表时显示 loading，避免 UI 抖动
+      if (ips.length === 0) setLoadingIps(true);
+      try {
+        const res:any = await getNodeInterfaces(nid);
+        const list = (res && res.code===0 && Array.isArray(res.data?.ips)) ? (res.data.ips as string[]) : [];
+        cacheRef.current.set(nid, list);
+        setIps(list);
+      } catch { /* noop */ }
+      finally {
+        inflightRef.current.delete(nid);
+        setLoadingIps(false);
+      }
+    };
+
+    // 自动：弹窗打开且切换到新隧道时，若无缓存则自动拉取一次
     useEffect(()=>{
-      const load = async ()=>{
-        const t = selectedTunnel;
-        if (!t || !t.id) return;
-        if (fetchedTunnelId === t.id && ips.length > 0) return; // 同一隧道且已有数据，不再刷新
-        try {
-          setLoadingIps(true);
-          const type = t.type ?? 1;
-          const nodeId = (type === 2 && t.outNodeId) ? t.outNodeId : t.inNodeId;
-          if (!nodeId) { return; }
-          const res:any = await getNodeInterfaces(Number(nodeId));
-          if (res.code===0 && Array.isArray(res.data?.ips)) setIps(res.data.ips as string[]);
-          setFetchedTunnelId(t.id);
-        } catch { /* noop */ }
-        finally { setLoadingIps(false); }
-      };
-      if (active) load();
-      // 仅依赖隧道ID，避免其它状态变化触发刷新
-    }, [active, selectedTunnel?.id]);
+      if (!active) return;
+      const t = selectedTunnel;
+      const type = t?.type ?? 1;
+      const nodeId = Number((t && type === 2 && t.outNodeId) ? t.outNodeId : t?.inNodeId);
+      lastNodeIdRef.current = nodeId || null;
+      if (!nodeId) { setIps([]); setLoadingIps(false); return; }
+      if (cacheRef.current.has(nodeId)) {
+        setIps(cacheRef.current.get(nodeId) || []);
+        setLoadingIps(false);
+        return;
+      }
+      // 无缓存则自动拉一次（有并发锁保护）
+      void doRefresh(nodeId);
+    }, [selectedTunnel?.id, active]);
+
     return (
       <Select
         label="出口IP"
@@ -813,58 +855,6 @@ export default function ForwardPage() {
     }
   };
 
-  // 处理服务开关
-  const handleServiceToggle = async (forward: Forward) => {
-    if (forward.status !== 1 && forward.status !== 0) {
-      toast.error('转发状态异常，无法操作');
-      return;
-    }
-
-    const targetState = !forward.serviceRunning;
-    
-    try {
-      // 乐观更新UI
-      setForwards(prev => prev.map(f => 
-        f.id === forward.id 
-          ? { ...f, serviceRunning: targetState }
-          : f
-      ));
-
-      let res;
-      if (targetState) {
-        res = await resumeForwardService(forward.id);
-      } else {
-        res = await pauseForwardService(forward.id);
-      }
-      
-      if (res.code === 0) {
-        toast.success(targetState ? '服务已启动' : '服务已暂停');
-        // 更新转发状态
-        setForwards(prev => prev.map(f => 
-          f.id === forward.id 
-            ? { ...f, status: targetState ? 1 : 0 }
-            : f
-        ));
-      } else {
-        // 操作失败，恢复UI状态
-        setForwards(prev => prev.map(f => 
-          f.id === forward.id 
-            ? { ...f, serviceRunning: !targetState }
-            : f
-        ));
-        toast.error(res.msg || '操作失败');
-      }
-    } catch (error) {
-      // 操作失败，恢复UI状态
-      setForwards(prev => prev.map(f => 
-        f.id === forward.id 
-          ? { ...f, serviceRunning: !targetState }
-          : f
-      ));
-      console.error('服务开关操作失败:', error);
-      toast.error('网络错误，操作失败');
-    }
-  };
 
   // 诊断转发
   const handleDiagnose = async (forward: Forward) => {
@@ -1326,20 +1316,6 @@ export default function ForwardPage() {
     }
   };
 
-  // 获取状态显示
-  const getStatusDisplay = (status: number) => {
-    switch (status) {
-      case 1:
-        return { color: 'success', text: '正常' };
-      case 0:
-        return { color: 'warning', text: '暂停' };
-      case -1:
-        return { color: 'danger', text: '异常' };
-      default:
-        return { color: 'default', text: '未知' };
-    }
-  };
-
   // 获取策略显示
   const getStrategyDisplay = (strategy: string) => {
     switch (strategy) {
@@ -1509,7 +1485,7 @@ export default function ForwardPage() {
 
   // 渲染转发卡片
   const renderForwardCard = (forward: Forward, listeners?: any) => {
-    const statusDisplay = getStatusDisplay(forward.status);
+    //const statusDisplay = getStatusDisplay(forward.status);
     const strategyDisplay = getStrategyDisplay(forward.strategy);
     
     return (
@@ -1537,19 +1513,23 @@ export default function ForwardPage() {
                   </svg>
                 </div>
               )}
-              <Switch
-                size="sm"
-                isSelected={forward.serviceRunning}
-                onValueChange={() => handleServiceToggle(forward)}
-                isDisabled={forward.status !== 1 && forward.status !== 0}
-              />
-              <Chip 
-                color={statusDisplay.color as any} 
-                variant="flat" 
+              <Chip
+                color={forward.configOk === undefined ? 'default' as any : (forward.configOk ? 'success' as any : 'danger' as any)}
+                variant="flat"
                 size="sm"
                 className="text-xs"
+                onClick={async()=>{
+                  if (forward.configOk) return;
+                  setCfgDetailOpen(true); setCfgDetail(null); setCfgDetailLoading(true);
+                  try{
+                    const r:any = await getForwardStatusDetail(forward.id);
+                    if (r && r.code===0) setCfgDetail(r.data);
+                  }catch{}
+                  finally{ setCfgDetailLoading(false); }
+                }}
+                title={forward.configOk? '配置正常':'点击查看缺失详情'}
               >
-                {statusDisplay.text}
+                {forward.configOk === undefined ? '未知' : (forward.configOk ? '配置正常' : '配置缺失')}
               </Chip>
             </div>
           </div>
@@ -1671,6 +1651,59 @@ export default function ForwardPage() {
     );
   };
 
+  // 渲染配置详情模态框
+  const renderCfgDetailModal = () => (
+    <Modal isOpen={cfgDetailOpen} onOpenChange={setCfgDetailOpen} size="3xl" scrollBehavior="outside">
+      <ModalContent>
+        {(onClose)=> (
+          <>
+            <ModalHeader className="flex flex-col gap-1">
+              <h3 className="text-lg font-semibold">转发配置校验详情</h3>
+            </ModalHeader>
+            <ModalBody>
+              {cfgDetailLoading ? (
+                <div className="py-6 flex items-center justify-center"><Spinner size="sm"/> <span className="ml-2 text-sm text-default-500">加载中...</span></div>
+              ) : cfgDetail && Array.isArray(cfgDetail.nodes) ? (
+                <div className="space-y-4">
+                  {cfgDetail.nodes.map((n:any)=> (
+                    <div key={`${n.nodeId}-${n.role}`} className="border rounded-md p-3">
+                      <div className="flex items-center justify-between">
+                        <div className="font-medium">{n.nodeName} <span className="text-xs text-default-500">({n.role})</span></div>
+                        <Chip size="sm" color={n.ok? 'success':'danger'} variant="flat">{n.ok? 'OK':'缺失/不一致'}</Chip>
+                      </div>
+                      <div className="mt-2">
+                        <div className="text-xs text-default-600 mb-2">
+                          <span className="mr-4">期望端口: <code className="font-mono">{n.expectedPort ?? '-'}</code></span>
+                          <span className="mr-4">实际端口: <code className="font-mono">{n.actualPort ?? '-'}</code></span>
+                          <span>在监听: <code className="font-mono">{n.listening===undefined? '-': (n.listening? '是':'否')}</code></span>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <div className="text-xs text-default-500 mb-1">期望</div>
+                          <Textarea readOnly value={JSON.stringify(n.expected || {}, null, 2)} minRows={6} className="font-mono text-xs"/>
+                        </div>
+                        <div>
+                          <div className="text-xs text-default-500 mb-1">实际</div>
+                          <Textarea readOnly value={n.actual? JSON.stringify(n.actual, null, 2): '未查询到对应服务（可能未上报或未创建）'} minRows={6} className="font-mono text-xs"/>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <Alert color="warning" title="暂无数据"/>
+              )}
+            </ModalBody>
+            <ModalFooter>
+              <Button onPress={onClose}>关闭</Button>
+            </ModalFooter>
+          </>
+        )}
+      </ModalContent>
+    </Modal>
+  );
+
   if (loading) {
     return (
       
@@ -1689,6 +1722,7 @@ export default function ForwardPage() {
   return (
     
       <div className="px-3 lg:px-6 py-8">
+        {renderCfgDetailModal()}
         {/* 页面头部 */}
         <div className="flex items-center justify-between mb-6">
           <div className="flex-1">
@@ -1984,7 +2018,14 @@ export default function ForwardPage() {
                       maxRows={6}
                     />
                     
-                    <ForwardIfacePicker active={modalOpen} selectedTunnel={selectedTunnel} currentValue={form.interfaceName || ''} onSelect={(ip)=>setForm(prev=>({...prev, interfaceName: ip}))} />
+                    <ForwardIfacePicker 
+                      active={modalOpen}
+                      selectedTunnel={selectedTunnel}
+                      currentValue={form.interfaceName || ''}
+                      onSelect={(ip)=>setForm(prev=>({...prev, interfaceName: ip}))}
+                      cacheRef={ifaceCacheRef}
+                      inflightRef={ifaceInflightRef}
+                    />
 
                     {/* 只读预览：当前隧道的多级路径与每节点 IP 设置（在“隧道管理”维护） */}
                     {selectedTunnel && (

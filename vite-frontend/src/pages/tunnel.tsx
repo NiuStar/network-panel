@@ -709,11 +709,6 @@ export default function TunnelPage() {
                           } catch { toast.error('检查失败'); }
                         }}>检查路径</Button>
                       )}
-                      {tunnel.type===2 && (
-                        <Button size="sm" variant="flat" color="danger" className="flex-1 min-h-8" onPress={async()=>{
-                          try { const { cleanupTunnelTemp } = await import('@/api'); const r:any = await cleanupTunnelTemp(tunnel.id); if (r.code===0){ toast.success(`已清理临时通道：${r.data?.deleted||0}/${r.data?.found||0}`); } else { toast.error(r.msg||'清理失败'); } } catch { toast.error('清理失败'); }
-                        }}>清理临时通道</Button>
-                      )}
                       <Button
                         size="sm"
                         variant="flat"

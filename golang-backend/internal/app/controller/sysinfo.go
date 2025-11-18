@@ -37,11 +37,15 @@ func NodeSysinfo(c *gin.Context) {
 		windowMs = 3600 * 1000
 	}
 	from := now - windowMs
-	q := dbpkg.DB.Model(&model.NodeSysInfo{}).Where("node_id = ? AND time_ms >= ?", p.NodeID, from).Order("time_ms asc")
+    q := dbpkg.DB.Model(&model.NodeSysInfo{}).Where("node_id = ? AND time_ms >= ?", p.NodeID, from).Order("time_ms asc")
 	if p.Limit > 0 {
 		q = q.Limit(p.Limit)
 	}
-	var list []model.NodeSysInfo
-	q.Find(&list)
-	c.JSON(http.StatusOK, response.Ok(list))
+    var list []model.NodeSysInfo
+    q.Find(&list)
+    // merge unsaved buffered samples
+    if extra := readBufferedSysInfo(p.NodeID, from); len(extra) > 0 {
+        list = append(list, extra...)
+    }
+    c.JSON(http.StatusOK, response.Ok(list))
 }

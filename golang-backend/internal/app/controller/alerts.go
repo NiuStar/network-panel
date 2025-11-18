@@ -17,7 +17,13 @@ func AlertsRecent(c *gin.Context) {
 	if p.Limit <= 0 || p.Limit > 200 {
 		p.Limit = 50
 	}
-	var list []model.Alert
-	dbpkg.DB.Order("time_ms desc").Limit(p.Limit).Find(&list)
-	c.JSON(http.StatusOK, response.Ok(list))
+    var list []model.Alert
+    dbpkg.DB.Order("time_ms desc").Limit(p.Limit).Find(&list)
+    // merge buffered alerts
+    extra := readBufferedAlerts(p.Limit)
+    if len(extra) > 0 {
+        list = append(extra, list...)
+        if len(list) > p.Limit { list = list[:p.Limit] }
+    }
+    c.JSON(http.StatusOK, response.Ok(list))
 }

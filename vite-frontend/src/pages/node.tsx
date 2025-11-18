@@ -711,7 +711,8 @@ export default function NodePage() {
   // 删除节点
   const handleDelete = (node: Node) => {
     setNodeToDelete(node);
-    setDeleteAlsoUninstall(false);
+    // 默认勾选：删除节点时同时卸载 Agent
+    setDeleteAlsoUninstall(true);
     setDeleteModalOpen(true);
   };
 

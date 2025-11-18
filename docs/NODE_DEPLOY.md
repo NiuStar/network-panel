@@ -20,6 +20,10 @@
   - `/etc/gost/config.json`（面板地址、节点 secret）
   - `/etc/gost/gost.json`（gost 主配置，Agent/面板管理）
 
+> 单 Agent 模式：从当前版本起，默认仅运行一个常驻 Agent（`flux-agent`）。
+> 另一个辅助二进制（`flux-agent2`）仅用于升级/卸载等维护操作，不常驻运行。
+> 可通过环境变量 `SINGLE_AGENT=1`（默认已开启）控制。
+
 ---
 ## 方式二：手动执行安装脚本（可参数化）
 
@@ -53,6 +57,8 @@ sudo systemctl restart gost
 
 sudo systemctl status flux-agent
 sudo systemctl restart flux-agent
+
+# 若看到系统中存在 `flux-agent2` 服务，单 Agent 模式下会自动停止并禁用该服务。
 ```
 
 实时日志：
@@ -64,4 +70,3 @@ journalctl -u flux-agent -f
 常见问题：
 - 无法连接面板：确认 `/etc/gost/config.json` 中 addr/secret 正确；网络出站策略允许到面板端口；面板后端端口对外开放
 - 安装失败：再次执行脚本或使用 `-p` 指定代理前缀；确保系统已安装 `curl`、`tar`、`jq`（脚本会尽量自动安装）
-

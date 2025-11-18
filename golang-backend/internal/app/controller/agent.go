@@ -1,13 +1,14 @@
 package controller
 
 import (
-	"fmt"
-	"net/http"
+    "fmt"
+    "net/http"
+    "time"
 
-	"github.com/gin-gonic/gin"
-	"network-panel/golang-backend/internal/app/model"
-	"network-panel/golang-backend/internal/app/response"
-	dbpkg "network-panel/golang-backend/internal/db"
+    "github.com/gin-gonic/gin"
+    "network-panel/golang-backend/internal/app/model"
+    "network-panel/golang-backend/internal/app/response"
+    dbpkg "network-panel/golang-backend/internal/db"
 )
 
 // POST /api/v1/agent/desired-services {secret}
@@ -154,4 +155,28 @@ func AgentReconcileNode(c *gin.Context) {
 		_ = sendWSCommand(node.ID, "AddService", services)
 	}
 	c.JSON(http.StatusOK, response.Ok(map[string]any{"pushed": len(services)}))
+}
+
+// POST /api/v1/agent/report-services {secret, services: [name...], timeMs?}
+// Update in-memory snapshot of services present on a node, reported by agent every few seconds.
+func AgentReportServices(c *gin.Context) {
+    var p struct {
+        Secret   string   `json:"secret" binding:"required"`
+        Services []string `json:"services"`
+        Hashes   map[string]string `json:"hashes"`
+        TimeMs   int64    `json:"timeMs"`
+    }
+    if err := c.ShouldBindJSON(&p); err != nil {
+        c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+        return
+    }
+    var node model.Node
+    if err := dbpkg.DB.Where("secret = ?", p.Secret).First(&node).Error; err != nil {
+        c.JSON(http.StatusOK, response.ErrMsg("节点不存在"))
+        return
+    }
+    ts := p.TimeMs
+    if ts <= 0 { ts = time.Now().UnixMilli() }
+    updateNodeServices(node.ID, p.Services, p.Hashes, ts)
+    c.JSON(http.StatusOK, response.OkNoData())
 }

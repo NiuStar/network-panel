@@ -107,6 +107,7 @@ func Init() error {
 		&model.NodeSysInfo{},
 		&model.NodeRuntime{},
 		&model.NodeOpLog{},
+		&model.ForwardMidPort{},
 	); err != nil {
 		return err
 	}

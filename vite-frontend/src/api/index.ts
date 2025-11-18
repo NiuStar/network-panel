@@ -98,6 +98,9 @@ export const enableGostApi = (nodeId: number) => Network.post("/node/enable-gost
 
 // 转发排序操作
 export const updateForwardOrder = (data: { forwards: Array<{ id: number; inx: number }> }) => Network.post("/forward/update-order", data);
+// 转发状态聚合
+export const getForwardStatus = (forwardIds?: number[]) => Network.post("/forward/status", forwardIds && forwardIds.length>0 ? { forwardIds } : {});
+export const getForwardStatusDetail = (forwardId: number) => Network.post("/forward/status-detail", { forwardId });
 // 最近告警
 export const getRecentAlerts = (limit = 50) => Network.post("/alerts/recent", { limit });
 

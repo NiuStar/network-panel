@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -40,7 +41,7 @@ var (
 
 // versionBase is the agent semantic version (without role prefix).
 // final reported version is: go-agent-<versionBase> or go-agent2-<versionBase>
-var versionBase = " 1.0.8"
+var versionBase = " 1.0.8.5"
 var version = ""      // computed in main()
 var apiBootDone int32 // 0=not attempted, 1=attempted
 var apiUse int32      // 1=Web API usable
@@ -94,6 +95,21 @@ func getenv(k, def string) string {
 	return def
 }
 
+func singleAgentMode() bool {
+	v := strings.ToLower(strings.TrimSpace(getenv("SINGLE_AGENT", "1")))
+	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
+func disableService(name string) {
+	if _, err := exec.LookPath("systemctl"); err == nil {
+		_ = exec.Command("systemctl", "disable", name).Run()
+		_ = exec.Command("systemctl", "stop", name).Run()
+		_ = exec.Command("systemctl", "daemon-reload").Run()
+	} else if _, err := exec.LookPath("service"); err == nil {
+		_ = exec.Command("service", name, "stop").Run()
+	}
+}
+
 func readPanelConfig() (addr, secret string) {
 	// fallback to /etc/gost/config.json {addr, secret}
 	f, err := os.ReadFile("/etc/gost/config.json")
@@ -144,6 +160,13 @@ func main() {
 		version = "go-agent2-" + versionBase
 	} else {
 		version = "go-agent-" + versionBase
+	}
+
+	// In single-agent mode, prevent agent2 from running persistently
+	if isAgent2Binary() && singleAgentMode() {
+		log.Printf("{\"event\":\"single_agent_mode\",\"action\":\"agent2_exit\"}")
+		disableService("flux-agent2")
+		os.Exit(0)
 	}
 
 	u := url.URL{Scheme: scheme, Host: addr, Path: "/system-info"}
@@ -214,11 +237,18 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 
 	// 不在重连时自动启用/重启 GOST，仅保持心跳与命令通道
 
-	// do not run agent-initiated reconcile; only act on explicit server commands
+	// On connect, perform a best-effort reconcile to ensure desired services exist in gost.json.
+	// Only adds missing services; doesn't delete unless STRICT_RECONCILE=1.
+	go func() { time.Sleep(1200 * time.Millisecond); reconcile(addr, secret, scheme) }()
+	// background probes and system info reporting
 	go periodicProbe(addr, secret, scheme)
 	go periodicSystemInfo(c)
-	// OpLog forwarder: send queued op logs to server as {type:"OpLog", step, message, data}
+	// Optional periodic reconcile via RECONCILE_INTERVAL (seconds, <=0 to disable). Default 300s.
+	go periodicReconcile(addr, secret, scheme)
+	// Periodically report local gost services snapshot to server for forward status aggregation
 	done := make(chan struct{})
+	go periodicReportServices(addr, secret, scheme, done)
+	// OpLog forwarder: send queued op logs to server as {type:"OpLog", step, message, data}
 	go func() {
 		for {
 			select {
@@ -233,22 +263,24 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 			}
 		}
 	}()
-	// after connect, cross-check counterpart agent
-	go func() {
-		// fetch expected versions
-		a1, a2 := getExpectedVersions(addr, scheme)
-		if isAgent2Binary() {
-			// agent2 ensures agent1 up-to-date
-			if a1 != "" {
-				_ = upgradeAgent1(addr, scheme, a1)
+	// In single-agent mode, keep only agent1 active and ensure agent2 service is disabled.
+	if !isAgent2Binary() && singleAgentMode() {
+		go func() { disableService("flux-agent2") }()
+	} else {
+		// dual-agent behavior: cross-check counterpart version
+		go func() {
+			a1, a2 := getExpectedVersions(addr, scheme)
+			if isAgent2Binary() {
+				if a1 != "" {
+					_ = upgradeAgent1(addr, scheme, a1)
+				}
+			} else {
+				if a2 != "" {
+					_ = upgradeAgent2(addr, scheme, a2)
+				}
 			}
-		} else {
-			// agent1 ensures agent2 up-to-date
-			if a2 != "" {
-				_ = upgradeAgent2(addr, scheme, a2)
-			}
-		}
-	}()
+		}()
+	}
 
 	// read loop
 	c.SetReadLimit(1 << 20)
@@ -1139,6 +1171,192 @@ func apiDo(method, path string, body []byte) (int, []byte, error) {
 	}
 	emitOpLog(step, fmt.Sprintf("%s %s status=%d", method, path, resp.StatusCode), map[string]any{"method": method, "url": maskURLSecrets(fullURL), "status": resp.StatusCode, "body": string(maskJSONSecrets(rb))})
 	return resp.StatusCode, out, nil
+}
+
+// apiListServiceNames returns the list of service names from local GOST via Web API.
+func apiListServiceNames() ([]string, error) {
+	code, body, err := apiDo("GET", "/config/services", nil)
+	if err != nil {
+		return nil, err
+	}
+	if code/100 != 2 {
+		return nil, fmt.Errorf("status %d", code)
+	}
+	var arr []map[string]any
+	if e := json.Unmarshal(body, &arr); e != nil {
+		return nil, e
+	}
+	out := make([]string, 0, len(arr))
+	for _, it := range arr {
+		if n, _ := it["name"].(string); n != "" {
+			out = append(out, n)
+		}
+	}
+	return out, nil
+}
+
+// canonical string for stable hashing
+func canonicalString(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return "null"
+	case string:
+		return t
+	case bool:
+		if t {
+			return "true"
+		}
+		return "false"
+	case float64:
+		return fmt.Sprintf("%g", t)
+	case int, int64, int32:
+		return fmt.Sprintf("%v", t)
+	case map[string]any:
+		// sort keys
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		b := strings.Builder{}
+		for i, k := range keys {
+			if i > 0 {
+				b.WriteByte('|')
+			}
+			b.WriteString(k)
+			b.WriteByte('=')
+			b.WriteString(canonicalString(t[k]))
+		}
+		return b.String()
+	case []any:
+		b := strings.Builder{}
+		for i := range t {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(canonicalString(t[i]))
+		}
+		return b.String()
+	default:
+		// numbers decoded from JSON come as float64; fall back to fmt
+		return fmt.Sprintf("%v", t)
+	}
+}
+
+func md5Bytes(b []byte) string { s := md5.Sum(b); return fmt.Sprintf("%x", s) }
+
+// normalize subset for hashing comparison with server
+func subsetForHash(svc map[string]any) map[string]any {
+	out := map[string]any{}
+	name, _ := svc["name"].(string)
+	if name != "" {
+		out["name"] = name
+	}
+	if m, _ := svc["listener"].(map[string]any); m != nil {
+		if t, _ := m["type"].(string); t != "" {
+			out["listener"] = map[string]any{"type": t}
+		}
+	}
+	if m, _ := svc["handler"].(map[string]any); m != nil {
+		if t, _ := m["type"].(string); t != "" {
+			out["handler"] = map[string]any{"type": t}
+		}
+	}
+	// forwarder nodes -> addrs sorted
+	// For mid services (*_mid_i), forwarder target指向下一跳端口，端口不可预测，忽略 forwarder 以避免误判
+	if !strings.Contains(name, "_mid_") {
+		if m, _ := svc["forwarder"].(map[string]any); m != nil {
+			if arr, _ := m["nodes"].([]any); arr != nil {
+				addrs := make([]string, 0, len(arr))
+				for _, it := range arr {
+					if mm, ok := it.(map[string]any); ok {
+						if a, _ := mm["addr"].(string); a != "" {
+							addrs = append(addrs, a)
+						}
+					}
+				}
+				sort.Strings(addrs)
+				out["forwarder"] = map[string]any{"addrs": addrs}
+			}
+		}
+	}
+	if m, _ := svc["metadata"].(map[string]any); m != nil {
+		if ip, _ := m["interface"].(string); ip != "" {
+			out["metadata"] = map[string]any{"interface": ip}
+		}
+	}
+	return out
+}
+
+func hashServiceSubset(svc map[string]any) string {
+	sub := subsetForHash(svc)
+	s := canonicalString(sub)
+	return md5Bytes([]byte(s))
+}
+
+func apiListServiceHashes() (map[string]string, error) {
+	code, body, err := apiDo("GET", "/config/services", nil)
+	if err != nil {
+		return nil, err
+	}
+	if code/100 != 2 {
+		return nil, fmt.Errorf("status %d", code)
+	}
+	var arr []map[string]any
+	if e := json.Unmarshal(body, &arr); e != nil {
+		return nil, e
+	}
+	out := make(map[string]string, len(arr))
+	for _, it := range arr {
+		name, _ := it["name"].(string)
+		if name == "" {
+			continue
+		}
+		out[name] = hashServiceSubset(it)
+	}
+	return out, nil
+}
+
+// periodicReportServices polls local GOST services and reports to server every 5s
+func periodicReportServices(addr, secret, scheme string, done <-chan struct{}) {
+	sec := 5
+	if v := getenv("AGENT_SVC_REPORT_SEC", ""); v != "" {
+		if n, _ := strconv.Atoi(v); n > 0 {
+			sec = n
+		}
+	}
+	ticker := time.NewTicker(time.Duration(sec) * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			if !apiAvailable() {
+				continue
+			}
+			hashes, err := apiListServiceHashes()
+			if err != nil {
+				continue
+			}
+			names := make([]string, 0, len(hashes))
+			for k := range hashes {
+				names = append(names, k)
+			}
+			payload := map[string]any{"secret": secret, "services": names, "hashes": hashes, "timeMs": time.Now().UnixMilli()}
+			b, _ := json.Marshal(payload)
+			proto := "http"
+			if scheme == "wss" {
+				proto = "https"
+			}
+			url := fmt.Sprintf("%s://%s/api/v1/agent/report-services", proto, addr)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(b))
+			req.Header.Set("Content-Type", "application/json")
+			_, _ = http.DefaultClient.Do(req)
+			cancel()
+		}
+	}
 }
 
 // persistGostConfigSnapshot fetches full config via Web API and writes to /etc/gost/gost.json.
@@ -2294,9 +2512,14 @@ func upgradeAgent2(addr, scheme, expected string) error {
 	_ = safeReplace(target, tmp)
 	_ = os.Chmod(target, 0755)
 	_ = os.WriteFile(verFile, []byte(expected), 0644)
-	ensureSystemdService("flux-agent2", target)
-	if !tryRestartService("flux-agent2") {
-		_ = exec.Command(target).Start()
+	// In single-agent mode we only stage the binary and do NOT run service
+	if singleAgentMode() {
+		disableService("flux-agent2")
+	} else {
+		ensureSystemdService("flux-agent2", target)
+		if !tryRestartService("flux-agent2") {
+			_ = exec.Command(target).Start()
+		}
 	}
 	return nil
 }

@@ -26,6 +26,8 @@ POST `/node/create`
 POST `/node/list`
 POST `/node/update`
 POST `/node/delete`
+- body: `{ id, uninstall? }` `uninstall=true` 时会通过 WebSocket 向该节点下发 `UninstallAgent` 指令，触发 Agent 自我卸载（停止并移除 `flux-agent/flux-agent2` 服务及二进制）。
+
 POST `/node/install`  获取节点安装命令
 GET  `/node/connections` 当前连接概览（管理员）
 
@@ -35,6 +37,14 @@ POST `/node/set-exit` 创建/更新出口 SS 服务（可选）
 POST `/node/query-services` 查询节点服务（由 Agent 返回 gost.json 汇总）
 - body: `{ nodeId, filter? }`
 - resp: `data = [ { name, addr, handler, port, listening, limiter, rlimiter, metadata } ]`
+
+POST `/agent/report-services` Agent 上报本地 GOST 服务清单（每 5s）
+- body: `{ secret, services: [name...], hashes: { [name]: md5Subset }, timeMs? }`
+
+POST `/forward/status` 获取转发配置状态汇总（支持过滤）
+- body: `{ forwardIds?: number[], userId?: number }`
+- resp: `{ list: [ { forwardId, ok } ] }`
+- 说明：`ok=true` 表示该转发涉及到的节点在最近一次上报中都存在对应服务，且服务配置（子集：name/addr/listener.type/handler.type/forwarder.addrs/metadata.interface）哈希一致。
 
 ---
 ## 隧道 Tunnel
@@ -111,6 +121,5 @@ POST `/agent/remove-services`  删除服务（仅 managedBy=network-panel）
 POST `/agent/reconcile-node`   管理员手动触发对齐
 
 Agent WebSocket：`/system-info`（type=1 节点、type=0 管理端）
-- 命令：Diagnose、AddService、UpdateService、DeleteService、PauseService、ResumeService、QueryServices
+- 命令：Diagnose、AddService、UpdateService、DeleteService、PauseService、ResumeService、QueryServices、UninstallAgent
 - 结果：DiagnoseResult、QueryServicesResult
-

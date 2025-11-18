@@ -5,6 +5,7 @@ import (
     "time"
     "fmt"
     "strings"
+    "sort"
 
     "github.com/gin-gonic/gin"
     "network-panel/golang-backend/internal/app/dto"
@@ -236,6 +237,12 @@ func NodeOps(c *gin.Context) {
         }
         var list []model.NodeOpLog
         dbpkg.DB.Where("request_id = ?", p.RequestID).Order("time_ms asc").Limit(p.Limit).Find(&list)
+        if extra := readBufferedOpLogsByReq(p.RequestID); len(extra) > 0 {
+            // merge and sort asc
+            list = append(list, extra...)
+            sort.Slice(list, func(i,j int) bool { return list[i].TimeMs < list[j].TimeMs })
+            if len(list) > p.Limit { list = list[:p.Limit] }
+        }
         // build nodeId -> name map
         var nodes []model.Node
         dbpkg.DB.Find(&nodes)
@@ -252,8 +259,16 @@ func NodeOps(c *gin.Context) {
     var list []model.NodeOpLog
     if p.NodeID > 0 {
         dbpkg.DB.Where("node_id = ?", p.NodeID).Order("time_ms desc").Limit(p.Limit).Find(&list)
+        if extra := readBufferedOpLogsByNode(p.NodeID, p.Limit); len(extra) > 0 {
+            list = append(extra, list...)
+            if len(list) > p.Limit { list = list[:p.Limit] }
+        }
     } else {
         dbpkg.DB.Order("time_ms desc").Limit(p.Limit).Find(&list)
+        if extra := readBufferedOpLogsByNode(0, p.Limit); len(extra) > 0 {
+            list = append(extra, list...)
+            if len(list) > p.Limit { list = list[:p.Limit] }
+        }
     }
     c.JSON(http.StatusOK, response.Ok(map[string]any{"ops": list}))
 }

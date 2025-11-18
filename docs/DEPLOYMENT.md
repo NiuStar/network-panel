@@ -62,6 +62,10 @@ systemctl restart gost
 
 systemctl status flux-agent
 systemctl restart flux-agent
+
+单 Agent 模式（默认开启）：
+- 环境变量 `SINGLE_AGENT=1` 时，仅运行 `flux-agent` 常驻；如检测到 `flux-agent2` 服务，将自动停止并禁用。
+- 升级时仍会下发/阶段 `flux-agent2` 二进制用于维护，但不会常驻运行。
 ```
 
 ---
@@ -76,7 +80,11 @@ systemctl restart flux-agent
 ## 5. 安全与维护
 
 - 面板仅管理带 `metadata.managedBy=network-panel` 的服务
-- Agent reconcile 默认不删除任何服务；如需严格对齐，可显式开启严格模式，但删除范围仍仅限 `managedBy=network-panel` 的冗余项
+- Agent 在每次连接/重连面板后会执行一次对齐：若发现 `desired` 中的服务不在本地 `gost.json`，会自动补齐（仅新增）。
+- Agent reconcile 默认不删除任何服务；如需严格对齐，可显式开启严格模式（`STRICT_RECONCILE=1`），但删除范围仍仅限 `managedBy=network-panel` 的冗余项。
+- 可通过 `RECONCILE_INTERVAL`（秒）开启周期性对齐（默认 300s，<=0 关闭）。
+- Agent 每 `AGENT_SVC_REPORT_SEC` 秒（默认 5s）上报本地服务清单及配置哈希；后端聚合 `/forward/status` 时使用哈希进行严格校验。
+- 后端判定“上报是否新鲜”的阈值可配置：`FORWARD_STATUS_STALE_MS`（默认 15000 毫秒）。
 - IPv6 地址统一 `[ip]:port` 形式以避免解析问题
 
 ---

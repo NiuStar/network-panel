@@ -17,7 +17,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
-	"gorm.io/gorm/clause"
 )
 
 // jlog emits structured JSON logs for easier tracing
@@ -163,17 +162,17 @@ func SystemInfoWS(c *gin.Context) {
 		_ = dbpkg.DB.Save(&node).Error
 		// close an open disconnect log if any
 		var lastLog model.NodeDisconnectLog
-		if err := dbpkg.DB.Where("node_id = ? AND up_at_ms IS NULL", node.ID).Order("down_at_ms desc").First(&lastLog).Error; err == nil && lastLog.ID > 0 {
-			now := time.Now().UnixMilli()
-			dur := (now - lastLog.DownAtMs) / 1000
-			lastLog.UpAtMs = &now
-			lastLog.DurationS = &dur
-			_ = dbpkg.DB.Save(&lastLog).Error
-			// alert online with downtime info
-			name := node.Name
-			nid := node.ID
-			_ = dbpkg.DB.Create(&model.Alert{TimeMs: now, Type: "online", NodeID: &nid, NodeName: &name, Message: "节点恢复上线，时长(s): " + fmt.Sprintf("%d", dur)}).Error
-		}
+            if err := dbpkg.DB.Where("node_id = ? AND up_at_ms IS NULL", node.ID).Order("down_at_ms desc").First(&lastLog).Error; err == nil && lastLog.ID > 0 {
+                now := time.Now().UnixMilli()
+                dur := (now - lastLog.DownAtMs) / 1000
+                lastLog.UpAtMs = &now
+                lastLog.DurationS = &dur
+                _ = dbpkg.DB.Save(&lastLog).Error
+                // alert online with downtime info
+                name := node.Name
+                nid := node.ID
+                enqueueAlert(model.Alert{TimeMs: now, Type: "online", NodeID: &nid, NodeName: &name, Message: "节点恢复上线，时长(s): " + fmt.Sprintf("%d", dur)})
+            }
 
 		nodeConnMu.Lock()
 		nodeConns[node.ID] = append(nodeConns[node.ID], &nodeConn{c: conn, ver: version})
@@ -200,7 +199,7 @@ func SystemInfoWS(c *gin.Context) {
 			mt, msg, err := conn.ReadMessage()
 			if err != nil {
 				// connection closed; update connection set
-				jlog(map[string]interface{}{"event": "node_disconnected", "nodeId": node.ID, "name": node.Name})
+                jlog(map[string]interface{}{"event": "node_disconnected", "nodeId": node.ID, "name": node.Name})
 				nodeConnMu.Lock()
 				// remove this specific connection
 				list := nodeConns[node.ID]
@@ -220,15 +219,15 @@ func SystemInfoWS(c *gin.Context) {
 				nodeConnMu.Unlock()
 				if offline {
 					broadcastToAdmins(map[string]interface{}{"id": node.ID, "type": "status", "data": 0})
-					// create disconnect log
-					now := time.Now().UnixMilli()
-					rec := model.NodeDisconnectLog{NodeID: node.ID, DownAtMs: now}
-					_ = dbpkg.DB.Create(&rec).Error
+                    // create disconnect log
+                    now := time.Now().UnixMilli()
+                    rec := model.NodeDisconnectLog{NodeID: node.ID, DownAtMs: now}
+                    enqueueDisconnect(rec)
 					go notifyCallback("agent_offline", node, map[string]any{"downAtMs": now})
-					// alert record
-					name := node.Name
-					nid := node.ID
-					_ = dbpkg.DB.Create(&model.Alert{TimeMs: now, Type: "offline", NodeID: &nid, NodeName: &name, Message: "节点离线"}).Error
+                    // alert record
+                    name := node.Name
+                    nid := node.ID
+                    enqueueAlert(model.Alert{TimeMs: now, Type: "offline", NodeID: &nid, NodeName: &name, Message: "节点离线"})
 				}
 				if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 					log.Printf("ws closed: %v", err)
@@ -241,7 +240,7 @@ func SystemInfoWS(c *gin.Context) {
 			}
 			// Try to parse as command reply first
 			var generic map[string]interface{}
-            if err := json.Unmarshal(msg, &generic); err == nil {
+                if err := json.Unmarshal(msg, &generic); err == nil {
                 if t, ok := generic["type"].(string); ok && (t == "DiagnoseResult" || t == "QueryServicesResult" || t == "SuggestPortsResult" || t == "ProbePortResult") {
                     if reqID, ok := generic["requestId"].(string); ok {
                         diagMu.Lock()
@@ -275,9 +274,9 @@ func SystemInfoWS(c *gin.Context) {
                             var soPtr, sePtr *string
                             if so != "" { soPtr = &so }
                             if se != "" { sePtr = &se }
-                            _ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nid, Cmd: t, RequestID: reqID, Success: okFlag, Message: msg, Stdout: soPtr, Stderr: sePtr}).Error
+                            enqueueOpLog(model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nid, Cmd: t, RequestID: reqID, Success: okFlag, Message: msg, Stdout: soPtr, Stderr: sePtr})
                         } else {
-                            _ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nid, Cmd: t, RequestID: reqID, Success: okFlag, Message: "no data"}).Error
+                            enqueueOpLog(model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nid, Cmd: t, RequestID: reqID, Success: okFlag, Message: "no data"})
                         }
                         if ch != nil {
                             select { case ch <- generic: default: }
@@ -294,7 +293,7 @@ func SystemInfoWS(c *gin.Context) {
                     if data, _ := generic["data"].(map[string]interface{}); data != nil {
                         if s, _ := data["message"].(string); s != "" { msg = s }
                     }
-                    _ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nid, Cmd: "OpLog:" + step, RequestID: "", Success: 1, Message: msg}).Error
+                    enqueueOpLog(model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nid, Cmd: "OpLog:" + step, RequestID: "", Success: 1, Message: msg})
                 } else {
                     // Other JSON payload received (debug)
                     jlog(map[string]interface{}{"event": "node_unknown_json", "nodeId": node.ID, "payload": string(msg)})
@@ -512,27 +511,27 @@ func RequestOp(nodeID int64, cmd string, data map[string]interface{}, timeout ti
     sum := func(k string) string { if v, ok := data[k].(string); ok { if len(v) > 200 { return v[:200] } ; return v } ; return "" }
     jlog(map[string]interface{}{"event":"op_send","nodeId":nodeID,"cmd":cmd,"requestId":reqID,"contentSample":sum("content"),"path":data["path"],"name":data["name"],"url":data["url"]})
     if err := sendWSCommand(nodeID, cmd, data); err != nil { return nil, false }
-    // persist op_send to NodeOpLog for front-end visibility
+    // persist op_send to NodeOpLog for front-end visibility (buffered)
     var msg string
     if v, ok := data["path"].(string); ok && v != "" { msg += " path=" + v }
     if v, ok := data["name"].(string); ok && v != "" { msg += " name=" + v }
     if v, ok := data["url"].(string); ok && v != "" { msg += " url=" + v }
     if v, ok := data["content"].(string); ok && v != "" { msg += " content=" + v }
-    _ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nodeID, Cmd: cmd + "-send", RequestID: reqID, Success: 1, Message: strings.TrimSpace(msg)}).Error
+    enqueueOpLog(model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nodeID, Cmd: cmd + "-send", RequestID: reqID, Success: 1, Message: strings.TrimSpace(msg)})
     ch := make(chan map[string]interface{}, 1)
     opMu.Lock(); opWaiters[reqID] = ch; opMu.Unlock()
     defer func(){ opMu.Lock(); delete(opWaiters, reqID); opMu.Unlock() }()
     select {
     case res := <-ch:
         jlog(map[string]interface{}{"event":"op_recv","nodeId":nodeID,"cmd":cmd,"requestId":reqID,"data":res["data"]})
-        // persist op_recv summary
+        // persist op_recv summary (buffered)
         var okFlag int
         var msg string
         if data, _ := res["data"].(map[string]interface{}); data != nil {
             if s, _ := data["success"].(bool); s { okFlag = 1 }
             msg, _ = data["message"].(string)
         }
-        _ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nodeID, Cmd: cmd + "-recv", RequestID: reqID, Success: okFlag, Message: msg}).Error
+        enqueueOpLog(model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nodeID, Cmd: cmd + "-recv", RequestID: reqID, Success: okFlag, Message: msg})
         return res, true
     case <-time.After(timeout):
         return nil, false
@@ -686,17 +685,13 @@ func storeSysInfoSample(nodeID int64, m map[string]interface{}) {
 		CPU:     toFloat(m["cpu_usage"]),
 		Mem:     toFloat(m["memory_usage"]),
 	}
-	_ = dbpkg.DB.Create(&s).Error
+	enqueueSysInfo(s)
 	// persist interfaces snapshot if provided
 	if ifs, ok := m["interfaces"]; ok && ifs != nil {
 		if b, err := json.Marshal(ifs); err == nil {
 			s := string(b)
 			rec := model.NodeRuntime{NodeID: nodeID, Interfaces: &s, UpdatedTime: now}
-			// upsert by node_id
-			_ = dbpkg.DB.Clauses(clause.OnConflict{
-				Columns:   []clause.Column{{Name: "node_id"}},
-				DoUpdates: clause.Assignments(map[string]interface{}{"interfaces": s, "updated_time": now}),
-			}).Create(&rec).Error
+			setRuntime(rec)
 		}
 	}
 }

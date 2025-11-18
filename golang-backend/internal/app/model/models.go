@@ -204,3 +204,14 @@ type NodeRuntime struct {
     UpdatedTime int64   `gorm:"column:updated_time" json:"updatedTime"`
 }
 func (NodeRuntime) TableName() string { return "node_runtime" }
+
+// ForwardMidPort persists expected mid-hop listening ports for a forward's multi-level path.
+type ForwardMidPort struct {
+    ID          int64 `gorm:"primaryKey;column:id" json:"id"`
+    ForwardID   int64 `gorm:"column:forward_id;uniqueIndex:uniq_fwd_mid_idx,priority:1" json:"forwardId"`
+    Idx         int   `gorm:"column:idx;uniqueIndex:uniq_fwd_mid_idx,priority:2" json:"idx"` // 0-based position in path
+    NodeID      int64 `gorm:"column:node_id" json:"nodeId"`
+    Port        int   `gorm:"column:port" json:"port"`
+    UpdatedTime int64 `gorm:"column:updated_time" json:"updatedTime"`
+}
+func (ForwardMidPort) TableName() string { return "forward_mid_port" }

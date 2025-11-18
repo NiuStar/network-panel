@@ -18,6 +18,7 @@ import (
 
 	"github.com/gin-gonic/gin"
     "gorm.io/gorm"
+    "gorm.io/gorm/clause"
 )
 
 // POST /api/v1/forward/create
@@ -178,6 +179,14 @@ func ForwardCreate(c *gin.Context) {
 						}
 						midPorts[i] = minP
 					}
+				}
+			}
+			// Persist expected mid ports for strict compare
+			{
+				now := time.Now().UnixMilli()
+				for i := 0; i < len(path); i++ {
+					rec := model.ForwardMidPort{ForwardID: f.ID, Idx: i, NodeID: path[i], Port: midPorts[i], UpdatedTime: now}
+					_ = dbpkg.DB.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "forward_id"}, {Name: "idx"}}, DoUpdates: clause.Assignments(map[string]any{"node_id": rec.NodeID, "port": rec.Port, "updated_time": rec.UpdatedTime})}).Create(&rec).Error
 				}
 			}
 			// Deploy simple TCP forward on each mid to the next hop
@@ -572,6 +581,14 @@ func ForwardUpdate(c *gin.Context) {
 				}
 				_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: path[i], Cmd: "ForwardPortPick", RequestID: opId, Success: 1, Message: fmt.Sprintf("mid port=%d (%s)", midPorts[i], ifThen(overlay, "overlay", "range"))}).Error
 			}
+			// Persist expected mid ports for strict compare (update)
+			{
+				now := time.Now().UnixMilli()
+				for i := 0; i < len(path); i++ {
+					rec := model.ForwardMidPort{ForwardID: f.ID, Idx: i, NodeID: path[i], Port: midPorts[i], UpdatedTime: now}
+					_ = dbpkg.DB.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "forward_id"}, {Name: "idx"}}, DoUpdates: clause.Assignments(map[string]any{"node_id": rec.NodeID, "port": rec.Port, "updated_time": rec.UpdatedTime})}).Create(&rec).Error
+				}
+			}
 			// update services on mids
 			for i := 0; i < len(path); i++ {
 				nid := path[i]
@@ -810,10 +827,12 @@ func ForwardDelete(c *gin.Context) {
 			_ = sendWSCommand(nid, "DeleteService", map[string]any{"services": []string{name}})
 		}
 	}
-	if err := dbpkg.DB.Delete(&model.Forward{}, p.ID).Error; err != nil {
-		c.JSON(http.StatusOK, response.ErrMsg("端口转发删除失败"))
-		return
-	}
+    // cleanup expected mid ports
+    _ = dbpkg.DB.Where("forward_id = ?", p.ID).Delete(&model.ForwardMidPort{}).Error
+    if err := dbpkg.DB.Delete(&model.Forward{}, p.ID).Error; err != nil {
+        c.JSON(http.StatusOK, response.ErrMsg("端口转发删除失败"))
+        return
+    }
 	c.JSON(http.StatusOK, response.OkMsg("端口转发删除成功"))
 }
 

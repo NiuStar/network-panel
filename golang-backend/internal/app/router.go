@@ -135,8 +135,10 @@ func RegisterRoutes(r *gin.Engine) {
 		forward.POST("/resume", middleware.Auth(), controller.ForwardResume)
     forward.POST("/diagnose", middleware.Auth(), controller.ForwardDiagnose)
     forward.POST("/diagnose-step", middleware.Auth(), controller.ForwardDiagnoseStep)
-		forward.POST("/update-order", middleware.Auth(), controller.ForwardUpdateOrder)
-	}
+        forward.POST("/update-order", middleware.Auth(), controller.ForwardUpdateOrder)
+        forward.POST("/status", middleware.Auth(), controller.ForwardStatusList)
+        forward.POST("/status-detail", middleware.Auth(), controller.ForwardStatusDetail)
+    }
 
 	// speed-limit
 	sl := api.Group("/speed-limit")
@@ -214,6 +216,7 @@ func RegisterRoutes(r *gin.Engine) {
 		agent.POST("/push-services", controller.AgentPushServices)
 		agent.POST("/reconcile", controller.AgentReconcile)
 		agent.POST("/remove-services", controller.AgentRemoveServices)
+        agent.POST("/report-services", controller.AgentReportServices)
         // 手动重新应用全部服务（仅管理员可调用）
         agent.POST("/reconcile-node", middleware.RequireRole(), controller.AgentReconcileNode)
 		agent.POST("/probe-targets", controller.AgentProbeTargets)

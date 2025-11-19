@@ -54,10 +54,10 @@ func NodeSetExit(c *gin.Context) {
 		"rlimiter": p.RLimiter,
 		"metadata": p.Metadata,
 	})
-	if err := sendWSCommand(p.NodeID, "AddService", []map[string]any{svc}); err != nil {
-		c.JSON(http.StatusOK, response.ErrMsg("发送到节点失败: "+err.Error()))
-		return
-	}
+    if err := sendWSCommand(p.NodeID, "AddService", expandRUDP([]map[string]any{svc})); err != nil {
+        c.JSON(http.StatusOK, response.ErrMsg("发送到节点失败: "+err.Error()))
+        return
+    }
 
 	// persist settings for this node (upsert by node_id)
 	now := time.Now().UnixMilli()

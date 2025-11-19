@@ -15,6 +15,7 @@ export interface LoginResponse {
 }
 
 export const login = (data: LoginData) => Network.post<LoginResponse>("/user/login", data);
+export const register = (data: { username: string; password: string }) => Network.post("/user/register", data);
 
 // 用户CRUD操作 - 全部使用POST请求
 export const createUser = (data: any) => Network.post("/user/create", data);

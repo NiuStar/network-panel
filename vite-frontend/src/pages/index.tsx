@@ -6,10 +6,11 @@ import { useNavigate } from "react-router-dom";
 import toast from 'react-hot-toast';
 import axios from 'axios';
 import { isWebViewFunc } from '@/utils/panel';
-import { siteConfig } from '@/config/site';
+import { siteConfig, getCachedConfig, configCache } from '@/config/site';
+import { getConfigByName } from '@/api';
 import { title } from "@/components/primitives";
 import DefaultLayout from "@/layouts/default";
-import { login, LoginData, checkCaptcha } from "@/api";
+import { login, LoginData, checkCaptcha, register } from "@/api";
 import "@/utils/tac.css";
 import "@/utils/tac.min.js";
 import bgImage from "@/images/bg.jpg";
@@ -54,6 +55,9 @@ export default function IndexPage() {
   const tacInstanceRef = useRef<any>(null);
   const captchaContainerRef = useRef<HTMLDivElement>(null);
   const [isWebView, setIsWebView] = useState(false);
+  const [regEnabled, setRegEnabled] = useState(false);
+  const [regMode, setRegMode] = useState(false);
+  const [reg, setReg] = useState({ username: '', password: '', confirm: '' });
   // 清理验证码实例
   useEffect(() => {
     return () => {
@@ -66,6 +70,24 @@ export default function IndexPage() {
   // 检测是否在WebView中运行
   useEffect(() => {
     setIsWebView(isWebViewFunc());
+  }, []);
+  // 读取注册开关（优先缓存，但若为 false 再强制拉取一次最新值）
+  useEffect(() => {
+    (async()=>{
+      try{
+        const v = await getCachedConfig('registration_enabled');
+        let enabled = String(v).toLowerCase() === 'true';
+        if (!enabled) {
+          const r:any = await getConfigByName('registration_enabled');
+          if (r && r.code === 0) {
+            enabled = String(r.data).toLowerCase() === 'true';
+            // 覆盖本地缓存，避免旧值干扰
+            try { if (typeof r.data === 'string') configCache.set('registration_enabled', r.data); } catch {}
+          }
+        }
+        setRegEnabled(enabled);
+      }catch{ setRegEnabled(false); }
+    })();
   }, []);
   // 验证表单
   const validateForm = (): boolean => {
@@ -305,21 +327,68 @@ export default function IndexPage() {
 
       {/* 版权信息 - 固定在底部，不占据布局空间 */}
       
-               <div className="fixed inset-x-0 bottom-4 text-center py-4">
-               <p className="text-xs text-gray-400 dark:text-gray-500">
-                 Powered by{' '}
-                 <a 
-                   href="https://github.com/NiuStar/network-panel" 
-                   target="_blank" 
+              <div className="fixed inset-x-0 bottom-4 text-center py-4">
+               {/* Sponsor button */}
+               <a 
+                 href="https://vps.town" 
+                 target="_blank" 
+                 rel="noopener noreferrer"
+                 className="inline-block mb-2"
+                 aria-label="Sponsor"
+               >
+                 <img 
+                   src="https://vps.town/static/images/sponsor.png" 
+                   alt="Sponsor"
+                   className="h-8 mx-auto object-contain"
+                   loading="lazy"
+                 />
+               </a>
+               <p className="text-xs text-gray-400 dark:text-gray-500 mb-1">感谢vps.town提供的服务器赞助</p>
+                <p className="text-xs text-gray-400 dark:text-gray-500">
+                  Powered by{' '}
+                  <a 
+                    href="https://github.com/NiuStar/network-panel" 
+                    target="_blank" 
                    rel="noopener noreferrer"
                    className="text-gray-500 dark:text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
                  >
                    network-panel
                  </a>
-               </p>
-               <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
-                 v{ isWebView ? siteConfig.app_version : siteConfig.version}
-               </p>
+              </p>
+              <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+               v{ isWebView ? siteConfig.app_version : siteConfig.version}
+              </p>
+               {regEnabled && (
+                 <div className="mt-2">
+                   {!regMode ? (
+                     <button className="text-xs text-primary hover:underline" onClick={()=>setRegMode(true)}>没有账号？注册</button>
+                   ) : (
+                     <div className="max-w-md mx-auto mt-2 p-3 border border-default-200 rounded-md bg-default-50">
+                       <div className="grid gap-2">
+                         <Input size="sm" variant="bordered" label="新用户名" value={reg.username} onChange={e=>setReg(prev=>({...prev, username: e.target.value}))} />
+                         <Input size="sm" variant="bordered" label="新密码" type="password" value={reg.password} onChange={e=>setReg(prev=>({...prev, password: e.target.value}))} />
+                         <Input size="sm" variant="bordered" label="确认密码" type="password" value={reg.confirm} onChange={e=>setReg(prev=>({...prev, confirm: e.target.value}))} />
+                         <div className="flex gap-2 justify-end">
+                           <Button size="sm" variant="light" onPress={()=>setRegMode(false)}>取消</Button>
+                           <Button size="sm" color="primary" onPress={async()=>{
+                             if (!reg.username.trim() || reg.password.length<6 || reg.password!==reg.confirm){ toast.error('请填写有效用户名/密码'); return; }
+                             try{
+                               const r:any = await register({ username: reg.username.trim(), password: reg.password });
+                               if (r && r.code===0 && r.data?.token){
+                                 localStorage.setItem('token', r.data.token);
+                                 toast.success('注册并登录成功');
+                                 navigate('/dashboard');
+                               } else {
+                                 toast.error(r?.msg || '注册失败');
+                               }
+                             }catch(e:any){ toast.error(e?.message || '网络错误'); }
+                           }}>注册</Button>
+                         </div>
+                       </div>
+                     </div>
+                   )}
+                 </div>
+               )}
              </div>
       
    

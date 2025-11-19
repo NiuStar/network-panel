@@ -39,6 +39,7 @@ export default function AdminLayout({
   const [username, setUsername] = useState('');
   const [isAdmin, setIsAdmin] = useState(false);
   const [passwordLoading, setPasswordLoading] = useState(false);
+  const [roleId, setRoleId] = useState<number>(1);
   const [passwordForm, setPasswordForm] = useState<PasswordForm>({
     newUsername: '',
     currentPassword: '',
@@ -80,8 +81,7 @@ export default function AdminLayout({
         <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
           <path fillRule="evenodd" d="M12.586 4.586a2 2 0 112.828 2.828l-3 3a2 2 0 01-2.828 0 1 1 0 00-1.414 1.414 4 4 0 005.656 0l3-3a4 4 0 00-5.656-5.656l-1.5 1.5a1 1 0 101.414 1.414l1.5-1.5zm-5 5a2 2 0 012.828 0 1 1 0 101.414-1.414 4 4 0 00-5.656 0l-3 3a4 4 0 105.656 5.656l1.5-1.5a1 1 0 10-1.414-1.414l-1.5 1.5a2 2 0 11-2.828-2.828l3-3z" clipRule="evenodd" />
         </svg>
-      ),
-      adminOnly: true
+      )
     },
     {
       path: '/node',
@@ -90,8 +90,7 @@ export default function AdminLayout({
         <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
           <path fillRule="evenodd" d="M3 3a1 1 0 000 2v8a2 2 0 002 2h2.586l-1.293 1.293a1 1 0 101.414 1.414L10 15.414l2.293 2.293a1 1 0 001.414-1.414L12.414 15H15a2 2 0 002-2V5a1 1 0 100-2H3zm11.707 4.707a1 1 0 00-1.414-1.414L10 9.586 8.707 8.293a1 1 0 00-1.414 0l-2 2a1 1 0 101.414 1.414L8 10.414l1.293 1.293a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
         </svg>
-      ),
-      adminOnly: true
+      )
     },
     {
       path: '/easytier',
@@ -154,6 +153,15 @@ export default function AdminLayout({
       adminOnly: true
     },
     {
+      path: '/profile',
+      label: '个人中心',
+      icon: (
+        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M9 6a3 3 0 11-6 0 3 3 0 016 0zM17 6a3 3 0 11-6 0 3 3 0 016 0zM12.93 17c.046-.327.07-.66.07-1a6.97 6.97 0 00-1.5-4.33A5 5 0 0119 16v1h-6.07zM6 11a5 5 0 015 5v1H1v-1a5 5 0 015-5z" />
+        </svg>
+      )
+    },
+    {
       path: '/config',
       label: '网站配置',
       icon: (
@@ -188,6 +196,8 @@ export default function AdminLayout({
     
     setUsername(name);
     setIsAdmin(adminFlag);
+    const rid = parseInt(localStorage.getItem('role_id') || '1', 10);
+    setRoleId(rid);
 
     // 读取网站配置：是否显示“探针目标/网络”菜单（默认隐藏）
     (async()=>{
@@ -319,6 +329,8 @@ export default function AdminLayout({
   const filteredMenuItems = menuItems.filter(item => {
     if (item.path === '/probe' && !showProbe) return false;
     if (item.path === '/network' && !showNetworkMenu) return false;
+    // hide some menus for managed-only users (role_id === 2)
+    if (roleId === 2 && (item.path === '/node' || item.path === '/tunnel' || item.path === '/user')) return false;
     return !item.adminOnly || isAdmin;
   });
 
@@ -388,6 +400,22 @@ export default function AdminLayout({
                 {/* 底部版权信息 */}
         <div className="px-4 py-2 pb-4 mt-auto flex-shrink-0">
           <div className="text-center">
+            {/* Sponsor button */}
+            <a 
+              href="https://vps.town" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="inline-block mb-2"
+              aria-label="Sponsor"
+            >
+              <img 
+                src="https://vps.town/static/images/sponsor.png" 
+                alt="Sponsor"
+                className="h-8 mx-auto object-contain"
+                loading="lazy"
+              />
+            </a>
+            <p className="text-xs text-gray-400 dark:text-gray-500 mb-1">感谢vps.town提供的服务器赞助</p>
             <p className="text-xs text-gray-400 dark:text-gray-500">
               Powered by{' '}
               <a 

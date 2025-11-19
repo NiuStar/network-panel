@@ -28,7 +28,11 @@ func NodeCreate(c *gin.Context) {
 	}
 	now := time.Now().UnixMilli()
 	status := 0
-    n := model.Node{BaseEntity: model.BaseEntity{CreatedTime: now, UpdatedTime: now, Status: &status}, Name: req.Name, IP: req.IP, ServerIP: req.ServerIP, PortSta: req.PortSta, PortEnd: req.PortEnd}
+    var owner *int64
+    if uidInf, ok := c.Get("user_id"); ok {
+        uid := uidInf.(int64); owner = &uid
+    }
+    n := model.Node{BaseEntity: model.BaseEntity{CreatedTime: now, UpdatedTime: now, Status: &status}, Name: req.Name, IP: req.IP, ServerIP: req.ServerIP, PortSta: req.PortSta, PortEnd: req.PortEnd, OwnerID: owner}
     n.PriceCents = req.PriceCents
     // prefer cycleMonths, fallback to cycleDays
     if req.CycleMonths != nil {
@@ -49,11 +53,16 @@ func NodeCreate(c *gin.Context) {
 // POST /api/v1/node/list
 func NodeList(c *gin.Context) {
     var nodes []model.Node
-    dbpkg.DB.Find(&nodes)
+    if roleInf, ok := c.Get("role_id"); ok && roleInf != 0 {
+        if uidInf, ok2 := c.Get("user_id"); ok2 { dbpkg.DB.Where("owner_id=?", uidInf.(int64)).Find(&nodes) } else { nodes = []model.Node{} }
+    } else {
+        dbpkg.DB.Find(&nodes)
+    }
     // build last-seen map from node_sysinfo (latest sample per node)
     type rec struct{ NodeID int64; TimeMs int64 }
     var recs []rec
-    _ = dbpkg.DB.Raw("select node_id, max(time_ms) as time_ms from node_sys_info group by node_id").Scan(&recs)
+    // table name is node_sysinfo (no extra underscore)
+    _ = dbpkg.DB.Raw("select node_id, max(time_ms) as time_ms from node_sysinfo group by node_id").Scan(&recs)
     lastSeen := map[int64]int64{}
     for _, r := range recs { lastSeen[r.NodeID] = r.TimeMs }
     now := time.Now().UnixMilli()
@@ -120,11 +129,14 @@ func NodeUpdate(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
 		return
 	}
-	var n model.Node
-	if err := dbpkg.DB.First(&n, req.ID).Error; err != nil {
-		c.JSON(http.StatusOK, response.ErrMsg("节点不存在"))
-		return
-	}
+    var n model.Node
+    if err := dbpkg.DB.First(&n, req.ID).Error; err != nil {
+        c.JSON(http.StatusOK, response.ErrMsg("节点不存在"))
+        return
+    }
+    if roleInf, ok := c.Get("role_id"); ok && roleInf != 0 {
+        if uidInf, ok2 := c.Get("user_id"); ok2 { if n.OwnerID == nil || *n.OwnerID != uidInf.(int64) { c.JSON(http.StatusForbidden, response.ErrMsg("无权限")); return } }
+    }
 	if req.PortSta < 1 || req.PortSta > 65535 || req.PortEnd < 1 || req.PortEnd > 65535 || req.PortEnd < req.PortSta {
 		c.JSON(http.StatusOK, response.ErrMsg("端口范围无效"))
 		return
@@ -184,6 +196,10 @@ func NodeDelete(c *gin.Context) {
     if cnt > 0 {
         c.JSON(http.StatusOK, response.ErrMsg("该节点仍被隧道使用"))
         return
+    }
+    // permission
+    if roleInf, ok := c.Get("role_id"); ok && roleInf != 0 {
+        var node model.Node; if dbpkg.DB.First(&node, p.ID).Error==nil { if uidInf, ok2 := c.Get("user_id"); ok2 { if node.OwnerID == nil || *node.OwnerID != uidInf.(int64) { c.JSON(http.StatusForbidden, response.ErrMsg("无权限")); return } } }
     }
     // best-effort uninstall agent on node if requested
     if p.Uninstall {

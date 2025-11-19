@@ -1,19 +1,20 @@
 package controller
 
 import (
-	"encoding/json"
-	"fmt"
-	"net/http"
-	"strings"
-	"time"
+    "encoding/json"
+    "fmt"
+    "net/http"
+    "strconv"
+    "strings"
+    "time"
 
 	"network-panel/golang-backend/internal/app/dto"
 	"network-panel/golang-backend/internal/app/model"
 	"network-panel/golang-backend/internal/app/response"
 	"network-panel/golang-backend/internal/db"
 
-	"github.com/gin-gonic/gin"
-	"log"
+    "github.com/gin-gonic/gin"
+    "log"
 )
 
 // POST /api/v1/tunnel/create
@@ -39,10 +40,12 @@ func TunnelCreate(c *gin.Context) {
 	// set entity
 	now := time.Now().UnixMilli()
 	status := 1
-	t := model.Tunnel{BaseEntity: model.BaseEntity{CreatedTime: now, UpdatedTime: now, Status: &status},
-		Name: req.Name, InNodeID: req.InNodeID, InIP: in.IP, Type: req.Type, Flow: req.Flow,
-		Protocol: req.Protocol, TrafficRatio: req.TrafficRatio, TCPListenAddr: req.TCPListenAddr, UDPListenAddr: req.UDPListenAddr, InterfaceName: req.InterfaceName,
-	}
+    var owner *int64
+    if uidInf, ok := c.Get("user_id"); ok { tmp := uidInf.(int64); owner = &tmp }
+    t := model.Tunnel{BaseEntity: model.BaseEntity{CreatedTime: now, UpdatedTime: now, Status: &status},
+        Name: req.Name, OwnerID: owner, InNodeID: req.InNodeID, InIP: in.IP, Type: req.Type, Flow: req.Flow,
+        Protocol: req.Protocol, TrafficRatio: req.TrafficRatio, TCPListenAddr: req.TCPListenAddr, UDPListenAddr: req.UDPListenAddr, InterfaceName: req.InterfaceName,
+    }
 	if req.OutNodeID != nil {
 		var out model.Node
 		if db.DB.First(&out, *req.OutNodeID).Error == nil {
@@ -50,18 +53,33 @@ func TunnelCreate(c *gin.Context) {
 			t.OutIP = &out.ServerIP
 		}
 	}
-	if err := db.DB.Create(&t).Error; err != nil {
-		c.JSON(http.StatusOK, response.ErrMsg("隧道创建失败"))
-		return
-	}
+    // enforce tunnel quota for non-admin
+    if roleInf, ok := c.Get("role_id"); ok && roleInf != 0 {
+        uidInf, _ := c.Get("user_id"); uid := uidInf.(int64)
+        var cfg model.ViteConfig; db.DB.Where("name=?","registration_default_num").First(&cfg)
+        limit := 10; if n,err := strconv.Atoi(strings.TrimSpace(cfg.Value)); err==nil && n>0 { limit = n }
+        var cnt int64
+        db.DB.Model(&model.Tunnel{}).Where("owner_id=?", uid).Count(&cnt)
+        if int(cnt) >= limit {
+            c.JSON(http.StatusOK, response.ErrMsg("超出隧道数量上限")); return
+        }
+    }
+    if err := db.DB.Create(&t).Error; err != nil {
+        c.JSON(http.StatusOK, response.ErrMsg("隧道创建失败"))
+        return
+    }
 	c.JSON(http.StatusOK, response.OkMsg("隧道创建成功"))
 }
 
 // POST /api/v1/tunnel/list
 func TunnelList(c *gin.Context) {
-	var list []model.Tunnel
-	db.DB.Find(&list)
-	c.JSON(http.StatusOK, response.Ok(list))
+    var list []model.Tunnel
+    if roleInf, ok := c.Get("role_id"); ok && roleInf != 0 {
+        if uidInf, ok2 := c.Get("user_id"); ok2 { db.DB.Where("owner_id=?", uidInf.(int64)).Find(&list) } else { list = []model.Tunnel{} }
+    } else {
+        db.DB.Find(&list)
+    }
+    c.JSON(http.StatusOK, response.Ok(list))
 }
 
 // POST /api/v1/tunnel/update
@@ -71,11 +89,16 @@ func TunnelUpdate(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
 		return
 	}
-	var t model.Tunnel
-	if err := db.DB.First(&t, req.ID).Error; err != nil {
-		c.JSON(http.StatusOK, response.ErrMsg("隧道不存在"))
-		return
-	}
+    var t model.Tunnel
+    if err := db.DB.First(&t, req.ID).Error; err != nil {
+        c.JSON(http.StatusOK, response.ErrMsg("隧道不存在"))
+        return
+    }
+    if roleInf, ok := c.Get("role_id"); ok && roleInf != 0 {
+        if uidInf, ok2 := c.Get("user_id"); ok2 {
+            if t.OwnerID == nil || *t.OwnerID != uidInf.(int64) { c.JSON(http.StatusForbidden, response.ErrMsg("无权限")); return }
+        }
+    }
 	// name unique
 	var cnt int64
 	db.DB.Model(&model.Tunnel{}).Where("name = ? AND id <> ?", req.Name, req.ID).Count(&cnt)
@@ -103,7 +126,7 @@ func TunnelDelete(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
 		return
 	}
-	// usage: forwards and user_tunnel
+    // usage: forwards and user_tunnel
 	var cnt int64
 	db.DB.Model(&model.Forward{}).Where("tunnel_id = ?", p.ID).Count(&cnt)
 	if cnt > 0 {
@@ -115,10 +138,19 @@ func TunnelDelete(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("该隧道还有用户权限关联，请先取消用户权限分配"))
 		return
 	}
-	if err := db.DB.Delete(&model.Tunnel{}, p.ID).Error; err != nil {
-		c.JSON(http.StatusOK, response.ErrMsg("隧道删除失败"))
-		return
-	}
+    // permission
+    if roleInf, ok := c.Get("role_id"); ok && roleInf != 0 {
+        var tt model.Tunnel
+        if db.DB.First(&tt, p.ID).Error == nil {
+            if uidInf, ok2 := c.Get("user_id"); ok2 {
+                if tt.OwnerID == nil || *tt.OwnerID != uidInf.(int64) { c.JSON(http.StatusForbidden, response.ErrMsg("无权限")); return }
+            }
+        }
+    }
+    if err := db.DB.Delete(&model.Tunnel{}, p.ID).Error; err != nil {
+        c.JSON(http.StatusOK, response.ErrMsg("隧道删除失败"))
+        return
+    }
 	c.JSON(http.StatusOK, response.OkMsg("隧道删除成功"))
 }
 
@@ -647,7 +679,7 @@ func TunnelDiagnoseStep(c *gin.Context) {
 		if nid == inNode.ID {
 			svc["addr"] = safeHostPort("0.0.0.0", tmpPorts[i])
 		}
-			_ = sendWSCommand(nid, "AddService", []map[string]any{svc})
+			_ = sendWSCommand(nid, "AddService", expandRUDP([]map[string]any{svc}))
 			jlog(map[string]any{"event": "iperf3_tmp_add", "tunnelId": t.ID, "nodeId": nid, "name": tmpNames[i], "listen": tmpPorts[i], "target": target})
 			// 记录到操作日志（每个节点gost临时通道配置）
 			if b, err := json.Marshal(svc); err == nil {
@@ -727,7 +759,7 @@ func TunnelDiagnoseStep(c *gin.Context) {
             jlog(map[string]any{"event": "iperf3_tmp_ready_partial", "tunnelId": t.ID})
             // 清理临时服务
             for i := 0; i < len(fNodes); i++ {
-                _ = sendWSCommand(fNodes[i], "DeleteService", map[string]any{"services": []string{tmpNames[i]}})
+                _ = sendWSCommand(fNodes[i], "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{tmpNames[i]})})
                 _ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: fNodes[i], Cmd: "DiagTmpServiceDel", RequestID: diagID, Success: 1, Message: fmt.Sprintf("删除gost临时通道配置 name=%s", tmpNames[i])}).Error
             }
             resFail := map[string]any{"success": false, "description": "iperf3 反向带宽测试", "nodeName": inNode.Name, "nodeId": inNode.ID, "message": "临时通道未完全就绪，已中止 iperf3 测试", "diagId": diagID}
@@ -740,10 +772,10 @@ func TunnelDiagnoseStep(c *gin.Context) {
         _ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: inNode.ID, Cmd: "DiagIperf3TcpProbe", RequestID: diagID, Success: ifThen(ok0, 1, 0), Message: fmt.Sprintf("TCP %s avg=%vms loss=%v%% msg=%s", ifThen(ok0, "ok", "fail"), avg0, loss0, msg0)}).Error
         if !ok0 {
 			// 清理临时服务
-			for i := 0; i < len(fNodes); i++ {
-				_ = sendWSCommand(fNodes[i], "DeleteService", map[string]any{"services": []string{tmpNames[i]}})
-				_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: fNodes[i], Cmd: "DiagTmpServiceDel", RequestID: diagID, Success: 1, Message: fmt.Sprintf("删除gost临时通道配置 name=%s", tmpNames[i])}).Error
-			}
+            for i := 0; i < len(fNodes); i++ {
+                _ = sendWSCommand(fNodes[i], "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{tmpNames[i]})})
+                _ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: fNodes[i], Cmd: "DiagTmpServiceDel", RequestID: diagID, Success: 1, Message: fmt.Sprintf("删除gost临时通道配置 name=%s", tmpNames[i])}).Error
+            }
             resFail := map[string]any{"success": false, "description": "iperf3 反向带宽测试", "nodeName": inNode.Name, "nodeId": inNode.ID, "message": "入口直连出口端口不可达，已中止iperf3测试", "diagId": diagID}
             c.JSON(http.StatusOK, response.Ok(resFail))
             return
@@ -794,10 +826,10 @@ func TunnelDiagnoseStep(c *gin.Context) {
 					ok1 = true
 				} else {
 					// 保留原失败路径
-					for i := 0; i < len(fNodes); i++ {
-						_ = sendWSCommand(fNodes[i], "DeleteService", map[string]any{"services": []string{tmpNames[i]}})
-						_ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: fNodes[i], Cmd: "DiagTmpServiceDel", RequestID: diagID, Success: 1, Message: fmt.Sprintf("删除gost临时通道配置 name=%s", tmpNames[i])}).Error
-					}
+        for i := 0; i < len(fNodes); i++ {
+            _ = sendWSCommand(fNodes[i], "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{tmpNames[i]})})
+            _ = db.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: fNodes[i], Cmd: "DiagTmpServiceDel", RequestID: diagID, Success: 1, Message: fmt.Sprintf("删除gost临时通道配置 name=%s", tmpNames[i])}).Error
+        }
 					resFail := map[string]any{"success": false, "description": "iperf3 反向带宽测试", "nodeName": inNode.Name, "nodeId": inNode.ID, "message": "入口本地临时端口不可达，已中止iperf3测试", "diagId": diagID}
 					c.JSON(http.StatusOK, response.Ok(resFail))
 					return

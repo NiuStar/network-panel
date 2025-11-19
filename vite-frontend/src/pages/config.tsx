@@ -52,6 +52,33 @@ const CONFIG_ITEMS: ConfigItem[] = [
     type: 'input'
   },
   {
+    key: 'registration_default_flow_gb',
+    label: '注册默认流量(GB)',
+    placeholder: '默认 0 (不限制或按业务处理)',
+    description: '新注册用户的默认流量配额(GB)',
+    type: 'input'
+  },
+  {
+    key: 'registration_default_num',
+    label: '注册默认隧道上限',
+    placeholder: '默认 10',
+    description: '新注册用户可创建的隧道数量上限',
+    type: 'input'
+  },
+  {
+    key: 'registration_default_forward',
+    label: '注册默认转发上限',
+    placeholder: '默认 20',
+    description: '新注册用户可创建的转发数量上限',
+    type: 'input'
+  },
+  {
+    key: 'registration_enabled',
+    label: '开启用户注册',
+    description: '开启后，登录页显示“注册”入口，注册用户可使用面板功能（按其配额限制）',
+    type: 'switch'
+  },
+  {
     key: 'easytier_install_timeout_sec',
     label: 'EasyTier 安装超时(秒)',
     placeholder: '默认 420 (7 分钟)，慢网络可适当调大',
@@ -131,7 +158,7 @@ const CONFIG_ITEMS: ConfigItem[] = [
 const getInitialConfigs = (): Record<string, string> => {
   if (typeof window === 'undefined') return {};
   
-  const configKeys = ['app_name', 'captcha_enabled', 'captcha_type', 'ip', 'easytier_install_timeout_sec', 'diag_local_probe_timeout_s', 'show_probe', 'show_network'];
+  const configKeys = ['app_name', 'captcha_enabled', 'captcha_type', 'ip', 'easytier_install_timeout_sec', 'diag_local_probe_timeout_s', 'show_probe', 'show_network', 'registration_enabled'];
   const initialConfigs: Record<string, string> = {};
   
   try {

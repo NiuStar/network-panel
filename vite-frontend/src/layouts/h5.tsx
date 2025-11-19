@@ -21,6 +21,7 @@ export default function H5Layout({
   const navigate = useNavigate();
   const location = useLocation();
   const [isAdmin, setIsAdmin] = useState(false);
+  const [roleId, setRoleId] = useState<number>(1);
   const [showProbe, setShowProbe] = useState(false);
 
   // Tabbar配置
@@ -60,8 +61,7 @@ export default function H5Layout({
         <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
           <path fillRule="evenodd" d="M12.586 4.586a2 2 0 112.828 2.828l-3 3a2 2 0 01-2.828 0 1 1 0 00-1.414 1.414 4 4 0 005.656 0l3-3a4 4 0 00-5.656-5.656l-1.5 1.5a1 1 0 101.414 1.414l1.5-1.5zm-5 5a2 2 0 012.828 0 1 1 0 101.414-1.414 4 4 0 00-5.656 0l-3 3a4 4 0 105.656 5.656l1.5-1.5a1 1 0 10-1.414-1.414l-1.5 1.5a2 2 0 11-2.828-2.828l3-3z" clipRule="evenodd" />
         </svg>
-      ),
-      adminOnly: true
+      )
     },
     {
       path: '/node',
@@ -70,8 +70,7 @@ export default function H5Layout({
         <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
           <path fillRule="evenodd" d="M3 3a1 1 0 000 2v8a2 2 0 002 2h2.586l-1.293 1.293a1 1 0 101.414 1.414L10 15.414l2.293 2.293a1 1 0 001.414-1.414L12.414 15H15a2 2 0 002-2V5a1 1 0 100-2H3zm11.707 4.707a1 1 0 00-1.414-1.414L10 9.586 8.707 8.293a1 1 0 00-1.414 0l-2 2a1 1 0 101.414 1.414L8 10.414l1.293 1.293a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
         </svg>
-      ),
-      adminOnly: true
+      )
     },
     {
       path: '/profile',
@@ -97,6 +96,7 @@ export default function H5Layout({
     
 
     setIsAdmin(adminFlag);
+    setRoleId(parseInt(localStorage.getItem('role_id') || '1', 10));
     (async()=>{
       try{ const sp = await getCachedConfig('show_probe'); setShowProbe(sp==='true'); }catch{}
     })();
@@ -110,6 +110,7 @@ export default function H5Layout({
   // 过滤tab项（根据权限）
   const filteredTabItems = tabItems.filter(item => {
     if (item.path==='/probe' && !showProbe) return false;
+    if (roleId === 2 && (item.path === '/tunnel' || item.path === '/node')) return false;
     return !item.adminOnly || isAdmin;
   });
 
@@ -140,6 +141,24 @@ export default function H5Layout({
       {/* 主内容区域 */}
       <main className="flex-1 bg-gray-100 dark:bg-black">
         {children}
+        {/* Sponsor block above tabbar */}
+        <div className="py-2 text-center">
+          <a
+            href="https://vps.town"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-block mb-1"
+            aria-label="Sponsor"
+          >
+            <img
+              src="https://vps.town/static/images/sponsor.png"
+              alt="Sponsor"
+              className="h-8 mx-auto object-contain"
+              loading="lazy"
+            />
+          </a>
+          <p className="text-xs text-gray-400 dark:text-gray-500">感谢vps.town提供的服务器赞助</p>
+        </div>
       </main>
 
       {/* 用于给固定 Tabbar 腾出空间的占位元素 */}

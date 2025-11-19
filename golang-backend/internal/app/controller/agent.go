@@ -50,7 +50,7 @@ func AgentPushServices(c *gin.Context) {
 		c.JSON(http.StatusOK, response.OkNoData())
 		return
 	}
-	_ = sendWSCommand(node.ID, "AddService", p.Services)
+	_ = sendWSCommand(node.ID, "AddService", expandRUDP(p.Services))
 	c.JSON(http.StatusOK, response.OkNoData())
 }
 
@@ -73,7 +73,7 @@ func AgentReconcile(c *gin.Context) {
 	}
 	services := desiredServices(node.ID)
 	if len(services) > 0 {
-		_ = sendWSCommand(node.ID, "AddService", services)
+		_ = sendWSCommand(node.ID, "AddService", expandRUDP(services))
 	}
 	c.JSON(http.StatusOK, response.Ok(map[string]any{"pushed": len(services)}))
 }
@@ -131,7 +131,7 @@ func AgentRemoveServices(c *gin.Context) {
 		c.JSON(http.StatusOK, response.OkNoData())
 		return
 	}
-	_ = sendWSCommand(node.ID, "DeleteService", map[string]any{"services": p.Services})
+    _ = sendWSCommand(node.ID, "DeleteService", map[string]any{"services": expandNamesWithRUDP(p.Services)})
 	c.JSON(http.StatusOK, response.OkNoData())
 }
 
@@ -152,7 +152,7 @@ func AgentReconcileNode(c *gin.Context) {
 	}
 	services := desiredServices(node.ID)
 	if len(services) > 0 {
-		_ = sendWSCommand(node.ID, "AddService", services)
+		_ = sendWSCommand(node.ID, "AddService", expandRUDP(services))
 	}
 	c.JSON(http.StatusOK, response.Ok(map[string]any{"pushed": len(services)}))
 }

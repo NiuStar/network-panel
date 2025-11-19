@@ -680,7 +680,15 @@ export default function UserPage() {
                     <div className="space-y-1.5 pt-2 border-t border-divider">
                       <div className="flex justify-between text-sm">
                         <span className="text-default-600">转发数量</span>
-                        <span className="font-medium text-xs">{user.num}</span>
+                        <span className="font-medium text-xs">{(user as any).forwardCount ?? '-'}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-default-600">隧道数量</span>
+                        <span className="font-medium text-xs">{(user as any).tunnelCount ?? '-'}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-default-600">节点数量</span>
+                        <span className="font-medium text-xs">{(user as any).nodeCount ?? '-'}</span>
                       </div>
                       <div className="flex justify-between text-sm">
                         <span className="text-default-600">重置日期</span>

@@ -54,6 +54,7 @@ func RegisterRoutes(r *gin.Engine) {
 	user := api.Group("/user")
 	{
 		user.POST("/login", controller.UserLogin)
+		user.POST("/register", controller.UserRegister)
 		user.POST("/package", middleware.AuthOptional(), controller.UserPackage)
 		user.POST("/updatePassword", middleware.Auth(), controller.UserUpdatePassword)
 
@@ -69,13 +70,13 @@ func RegisterRoutes(r *gin.Engine) {
 	}
 
 	// node
-	node := api.Group("/node")
-	node.Use(middleware.RequireRole())
-	{
-		node.POST("/create", controller.NodeCreate)
-		node.POST("/list", controller.NodeList)
-		node.POST("/update", controller.NodeUpdate)
-		node.POST("/delete", controller.NodeDelete)
+    node := api.Group("/node")
+    node.Use(middleware.Auth(), middleware.ForbidManagedLimited())
+    {
+        node.POST("/create", controller.NodeCreate)
+        node.POST("/list", controller.NodeList)
+        node.POST("/update", controller.NodeUpdate)
+        node.POST("/delete", controller.NodeDelete)
 		node.POST("/install", controller.NodeInstallCmd)
 		node.GET("/connections", controller.NodeConnections)
 		// create/update exit node SS service
@@ -83,7 +84,7 @@ func RegisterRoutes(r *gin.Engine) {
 		// get last saved exit settings for node
 		node.POST("/get-exit", controller.NodeGetExit)
 		// query services on node
-		node.POST("/query-services", controller.NodeQueryServices)
+        node.POST("/query-services", controller.NodeQueryServices)
 		// network stats for node
 		node.POST("/network-stats", controller.NodeNetworkStats)
 		node.POST("/network-stats-batch", controller.NodeNetworkStatsBatch)
@@ -97,15 +98,23 @@ func RegisterRoutes(r *gin.Engine) {
 	// tunnel
 	tunnel := api.Group("/tunnel")
 	{
+		// all users: see permitted tunnels for forwarding
 		tunnel.POST("/user/tunnel", middleware.AuthOptional(), controller.TunnelUserTunnel)
 
+		// authenticated (non-admin allowed): manage own tunnels
+		tunAuth := tunnel.Group("")
+        tunAuth.Use(middleware.Auth(), middleware.ForbidManagedLimited())
+		{
+			tunAuth.POST("/create", controller.TunnelCreate)
+			tunAuth.POST("/list", controller.TunnelList)
+			tunAuth.POST("/update", controller.TunnelUpdate)
+			tunAuth.POST("/delete", controller.TunnelDelete)
+		}
+
+		// admin-only advanced operations
 		adm := tunnel.Group("")
 		adm.Use(middleware.RequireRole())
 		{
-			adm.POST("/create", controller.TunnelCreate)
-			adm.POST("/list", controller.TunnelList)
-			adm.POST("/update", controller.TunnelUpdate)
-			adm.POST("/delete", controller.TunnelDelete)
 			adm.POST("/path/get", controller.TunnelPathGet)
 			adm.POST("/path/set", controller.TunnelPathSet)
 			adm.POST("/user/assign", controller.TunnelUserAssign)

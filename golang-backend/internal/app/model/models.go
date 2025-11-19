@@ -27,6 +27,7 @@ func (User) TableName() string { return "user" }
 type Node struct {
     BaseEntity
     Name     string `gorm:"column:name" json:"name"`
+    OwnerID  *int64 `gorm:"column:owner_id" json:"ownerId,omitempty"`
     Secret   string `gorm:"column:secret" json:"secret"`
     IP       string `gorm:"column:ip" json:"ip"`
     ServerIP string `gorm:"column:server_ip" json:"serverIp"`
@@ -43,6 +44,7 @@ func (Node) TableName() string { return "node" }
 type Tunnel struct {
     BaseEntity
     Name          string   `gorm:"column:name" json:"name"`
+    OwnerID       *int64   `gorm:"column:owner_id" json:"ownerId,omitempty"`
     InNodeID      int64    `gorm:"column:in_node_id" json:"inNodeId"`
     InIP          string   `gorm:"column:in_ip" json:"inIp"`
     OutNodeID     *int64   `gorm:"column:out_node_id" json:"outNodeId,omitempty"`

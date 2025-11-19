@@ -63,6 +63,7 @@ export default function DashboardPage() {
   const [userInfo, setUserInfo] = useState<UserInfo>({} as UserInfo);
   const [userTunnels, setUserTunnels] = useState<UserTunnel[]>([]);
   const [forwardList, setForwardList] = useState<Forward[]>([]);
+  const [quota, setQuota] = useState<{tunnel:number; forward:number}>({tunnel:10, forward:20});
   const [statisticsFlows, setStatisticsFlows] = useState<StatisticsFlow[]>([]);
   const [isAdmin, setIsAdmin] = useState(false);
   const [alerts, setAlerts] = useState<any[]>([]);
@@ -103,6 +104,21 @@ export default function DashboardPage() {
     if (v < 1024*1024*1024) return (v/(1024*1024)).toFixed(2) + ' MB';
     return (v/(1024*1024*1024)).toFixed(2) + ' GB';
   })();
+
+  // 读取注册默认配额
+  useEffect(()=>{
+    (async()=>{
+      try{
+        const [t, f] = await Promise.all([
+          getCachedConfig('registration_default_num'),
+          getCachedConfig('registration_default_forward')
+        ]);
+        const tn = Math.max(0, parseInt(String(t||'10'),10));
+        const fn = Math.max(0, parseInt(String(f||'20'),10));
+        setQuota({ tunnel: tn, forward: fn });
+      }catch{}
+    })();
+  },[]);
 
   // 检查有效期通知
   const checkExpirationNotifications = (userInfo: UserInfo, tunnels: UserTunnel[]) => {
@@ -860,7 +876,7 @@ export default function DashboardPage() {
                    </div>
                  </div>
                </div>
-             </CardBody>
+           </CardBody>
            </Card>
 
            <Card className="border border-gray-200 dark:border-default-200 shadow-md hover:shadow-lg transition-shadow">
@@ -896,6 +912,25 @@ export default function DashboardPage() {
                    <p className="text-xs text-default-500 mt-1 truncate">
                      {userInfo.num === 99999 ? '无限制' : `${calculateUsagePercentage('forwards').toFixed(1)}%`}
                    </p>
+                 </div>
+               </div>
+             </CardBody>
+           </Card>
+
+           {/* 注册默认配额（网站配置）提示 */}
+           <Card className="border border-gray-200 dark:border-default-200 shadow-md hover:shadow-lg transition-shadow">
+             <CardBody className="p-3 lg:p-4">
+               <div className="flex items-center justify-between">
+                 <div>
+                   <p className="text-xs lg:text-sm text-default-600">默认配额（网站配置）</p>
+                   <p className="text-sm lg:text-base text-foreground mt-1">
+                     隧道上限：<span className="font-semibold">{quota.tunnel}</span>，转发上限：<span className="font-semibold">{quota.forward}</span>
+                   </p>
+                 </div>
+                 <div className="p-1.5 lg:p-2 bg-blue-100 dark:bg-blue-500/20 rounded-lg flex-shrink-0">
+                   <svg className="w-4 h-4 lg:w-5 lg:h-5 text-blue-600 dark:text-blue-400" fill="currentColor" viewBox="0 0 20 20">
+                     <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v5a1 1 0 002 0V7zm-1 8a1.5 1.5 0 110-3 1.5 1.5 0 010 3z" clipRule="evenodd" />
+                   </svg>
                  </div>
                </div>
              </CardBody>

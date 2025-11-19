@@ -43,6 +43,12 @@ func ForwardCreate(c *gin.Context) {
 			c.JSON(http.StatusOK, response.ErrMsg("你没有该隧道权限"))
 			return
 		}
+		// forward quota
+		var cfg model.ViteConfig; dbpkg.DB.Where("name=?","registration_default_forward").First(&cfg)
+		limit := 20; if n,err := strconv.Atoi(strings.TrimSpace(cfg.Value)); err==nil && n>0 { limit = n }
+		var cnt int64
+		dbpkg.DB.Model(&model.Forward{}).Where("user_id=?", uid).Count(&cnt)
+		if int(cnt) >= limit { c.JSON(http.StatusOK, response.ErrMsg("超出转发数量上限")); return }
 	}
 	// allocate inPort if nil: find first port in range not used
 	inPort := 0
@@ -118,7 +124,7 @@ func ForwardCreate(c *gin.Context) {
             "handler":  map[string]any{"type": "relay", "auth": map[string]any{"username": user, "password": pass}},
             "metadata": map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false},
         }
-		_ = sendWSCommand(outNodeIDOr0(tun), "AddService", []map[string]any{outSvc})
+        _ = sendWSCommand(outNodeIDOr0(tun), "AddService", expandRUDP([]map[string]any{outSvc}))
 
 		// 计算出口地址：优先使用出口节点的监听IP(在隧道编辑里配置的 inIp/bind)，否则使用隧道/节点出口IP
 		outIP := getOutNodeIP(tun)
@@ -231,7 +237,7 @@ func ForwardCreate(c *gin.Context) {
 				if iface != nil && *iface != "" {
 					svc["metadata"].(map[string]any)["interface"] = *iface
 				}
-				_ = sendWSCommand(nid, "AddService", []map[string]any{svc})
+                _ = sendWSCommand(nid, "AddService", expandRUDP([]map[string]any{svc}))
 				if b, err := json.Marshal(svc); err == nil {
 					s := string(b)
 					_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nid, Cmd: "ForwardAddService", RequestID: opId, Success: 1, Message: fmt.Sprintf("create mid svc %s port=%d", midName, thisPort), Stdout: &s}).Error
@@ -281,7 +287,7 @@ func ForwardCreate(c *gin.Context) {
                     nodes = []map[string]any{{"name": "target_0", "addr": firstTargetHost(f.RemoteAddr)}}
                 }
                 inSvc["forwarder"] = map[string]any{"nodes": nodes}
-				_ = sendWSCommand(tun.InNodeID, "AddService", []map[string]any{inSvc})
+				_ = sendWSCommand(tun.InNodeID, "AddService", expandRUDP([]map[string]any{inSvc}))
 				if b, err := json.Marshal(inSvc); err == nil {
 					s := string(b)
 					_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: tun.InNodeID, Cmd: "ForwardAddService", RequestID: opId, Success: 1, Message: "create entry svc", Stdout: &s}).Error
@@ -319,7 +325,7 @@ func ForwardCreate(c *gin.Context) {
                 nodes = []map[string]any{{"name": "target_0", "addr": firstTargetHost(f.RemoteAddr)}}
             }
             inSvc["forwarder"] = map[string]any{"nodes": nodes}
-			_ = sendWSCommand(tun.InNodeID, "AddService", []map[string]any{inSvc})
+			_ = sendWSCommand(tun.InNodeID, "AddService", expandRUDP([]map[string]any{inSvc}))
 			if b, err := json.Marshal(inSvc); err == nil {
 				s := string(b)
 				_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: tun.InNodeID, Cmd: "ForwardAddService", RequestID: opId, Success: 1, Message: "create entry svc", Stdout: &s}).Error
@@ -348,7 +354,7 @@ func ForwardCreate(c *gin.Context) {
                 svc["observer"] = obsName
                 svc["_observers"] = []any{spec}
             }
-			_ = sendWSCommand(tun.InNodeID, "AddService", []map[string]any{svc})
+			_ = sendWSCommand(tun.InNodeID, "AddService", expandRUDP([]map[string]any{svc}))
 			// 不重启，配置已生效
 		} else {
 			// chain: [inNode -> mid1 -> mid2 -> ... -> last]
@@ -413,7 +419,7 @@ func ForwardCreate(c *gin.Context) {
 					iface = preferIface(f.InterfaceName, tun.InterfaceName)
 				}
 				svc := buildServiceConfig(name, listenPort, target, iface)
-				_ = sendWSCommand(nodeID, "AddService", []map[string]any{svc})
+				_ = sendWSCommand(nodeID, "AddService", expandRUDP([]map[string]any{svc}))
 				if b, err := json.Marshal(svc); err == nil {
 					s := string(b)
 					_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nodeID, Cmd: "ForwardAddService", RequestID: opId, Success: 1, Message: fmt.Sprintf("create hop svc port=%d", listenPort), Stdout: &s}).Error
@@ -436,19 +442,19 @@ func ForwardCreate(c *gin.Context) {
 
 // POST /api/v1/forward/list
 func ForwardList(c *gin.Context) {
-	roleInf, _ := c.Get("role_id")
-	uidInf, _ := c.Get("user_id")
+    roleInf, _ := c.Get("role_id")
+    uidInf, _ := c.Get("user_id")
 	var res []struct {
 		model.Forward
 		TunnelName string `json:"tunnelName"`
 		InIp       string `json:"inIp"`
 	}
-	q := dbpkg.DB.Table("forward f").Select("f.*, t.name as tunnel_name, t.in_ip as in_ip").Joins("left join tunnel t on t.id = f.tunnel_id")
-	if roleInf != 0 {
-		q = q.Where("f.user_id = ?", uidInf)
-	}
-	q.Scan(&res)
-	c.JSON(http.StatusOK, response.Ok(res))
+    q := dbpkg.DB.Table("forward f").Select("f.*, t.name as tunnel_name, t.in_ip as in_ip").Joins("left join tunnel t on t.id = f.tunnel_id")
+    if roleInf != 0 {
+        q = q.Where("f.user_id = ?", uidInf)
+    }
+    q.Scan(&res)
+    c.JSON(http.StatusOK, response.Ok(res))
 }
 
 // POST /api/v1/forward/update
@@ -458,11 +464,17 @@ func ForwardUpdate(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
 		return
 	}
-	var f model.Forward
-	if err := dbpkg.DB.First(&f, req.ID).Error; err != nil {
-		c.JSON(http.StatusOK, response.ErrMsg("转发不存在"))
-		return
-	}
+    var f model.Forward
+    if err := dbpkg.DB.First(&f, req.ID).Error; err != nil {
+        c.JSON(http.StatusOK, response.ErrMsg("转发不存在"))
+        return
+    }
+    // permission: non-admin can only update own forward
+    if roleInf, ok := c.Get("role_id"); ok && roleInf != 0 {
+        if uidInf, ok2 := c.Get("user_id"); ok2 {
+            if f.UserID != uidInf.(int64) { c.JSON(http.StatusForbidden, response.ErrMsg("无权限")); return }
+        }
+    }
 	// ensure tunnel exists
 	var tun model.Tunnel
 	if err := dbpkg.DB.First(&tun, req.TunnelID).Error; err != nil {
@@ -534,7 +546,7 @@ func ForwardUpdate(c *gin.Context) {
             "handler":  map[string]any{"type": "relay", "auth": map[string]any{"username": fmt.Sprintf("u-%d", f.ID), "password": util.MD5(fmt.Sprintf("%d:%d", f.ID, f.CreatedTime))[:16]}},
             "metadata": map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false},
         }
-		_ = sendWSCommand(outNodeIDOr0(tun), "AddService", []map[string]any{outSvc})
+		_ = sendWSCommand(outNodeIDOr0(tun), "AddService", expandRUDP([]map[string]any{outSvc}))
 		if b, err := json.Marshal(outSvc); err == nil {
 			s := string(b)
 			_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: outNodeIDOr0(tun), Cmd: "ForwardAddService", RequestID: opId, Success: 1, Message: "update out svc", Stdout: &s}).Error
@@ -636,7 +648,7 @@ func ForwardUpdate(c *gin.Context) {
 				if iface != nil && *iface != "" {
 					svc["metadata"].(map[string]any)["interface"] = *iface
 				}
-				_ = sendWSCommand(nid, "AddService", []map[string]any{svc})
+				_ = sendWSCommand(nid, "AddService", expandRUDP([]map[string]any{svc}))
 				if b, err := json.Marshal(svc); err == nil {
 					s := string(b)
 					_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nid, Cmd: "ForwardAddService", RequestID: opId, Success: 1, Message: fmt.Sprintf("update mid svc %s port=%d", midName, thisPort), Stdout: &s}).Error
@@ -692,7 +704,7 @@ func ForwardUpdate(c *gin.Context) {
 		}
 		node := map[string]any{"name": "node-" + name, "addr": entryTarget, "connector": map[string]any{"type": "relay", "auth": map[string]any{"username": user, "password": pass}}, "dialer": map[string]any{"type": "grpc"}}
 		inSvc["_chains"] = []any{map[string]any{"name": chainName, "hops": []any{map[string]any{"name": hopName, "nodes": []any{node}}}}}
-        _ = sendWSCommand(tun.InNodeID, "AddService", []map[string]any{inSvc})
+        _ = sendWSCommand(tun.InNodeID, "AddService", expandRUDP([]map[string]any{inSvc}))
 		if b, err := json.Marshal(inSvc); err == nil {
 			s := string(b)
 			_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: tun.InNodeID, Cmd: "ForwardUpdateService", RequestID: opId, Success: 1, Message: "update entry svc", Stdout: &s}).Error
@@ -718,7 +730,7 @@ func ForwardUpdate(c *gin.Context) {
                 svc["observer"] = obsName
                 svc["_observers"] = []any{spec}
             }
-            _ = sendWSCommand(tun.InNodeID, "AddService", []map[string]any{svc})
+            _ = sendWSCommand(tun.InNodeID, "AddService", expandRUDP([]map[string]any{svc}))
             if b, err := json.Marshal(svc); err == nil {
                 s := string(b)
                 _ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: tun.InNodeID, Cmd: "ForwardUpdateService", RequestID: opId, Success: 1, Message: "update entry svc (type1-single)", Stdout: &s}).Error
@@ -774,7 +786,7 @@ func ForwardUpdate(c *gin.Context) {
                     iface = preferIface(f.InterfaceName, tun.InterfaceName)
                 }
                 svc := buildServiceConfig(name, listenPort, target, iface)
-                _ = sendWSCommand(nodeID, "AddService", []map[string]any{svc})
+                _ = sendWSCommand(nodeID, "AddService", expandRUDP([]map[string]any{svc}))
                 if b, err := json.Marshal(svc); err == nil {
                     s := string(b)
                     _ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nodeID, Cmd: "ForwardAddService", RequestID: opId, Success: 1, Message: fmt.Sprintf("update hop svc port=%d", listenPort), Stdout: &s}).Error
@@ -810,22 +822,22 @@ func ForwardDelete(c *gin.Context) {
 	name := buildServiceName(f.ID, f.UserID, f.TunnelID)
 	if tun.Type == 2 && f.OutPort != nil {
 		// 删除入口与出口上的主服务
-		_ = sendWSCommand(tun.InNodeID, "DeleteService", map[string]any{"services": []string{name}})
-		_ = sendWSCommand(outNodeIDOr0(tun), "DeleteService", map[string]any{"services": []string{name}})
+        _ = sendWSCommand(tun.InNodeID, "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{name})})
+        _ = sendWSCommand(outNodeIDOr0(tun), "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{name})})
 		// 删除多级路径的中间节点 mid 服务（name_mid_i）
 		path := getTunnelPathNodes(tun.ID)
 		for i := 0; i < len(path); i++ {
 			midName := fmt.Sprintf("%s_mid_%d", name, i)
-			_ = sendWSCommand(path[i], "DeleteService", map[string]any{"services": []string{midName}})
+            _ = sendWSCommand(path[i], "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{midName})})
 		}
 	} else {
 		// 端口转发：删除入口上的服务
-		_ = sendWSCommand(tun.InNodeID, "DeleteService", map[string]any{"services": []string{name}})
+        _ = sendWSCommand(tun.InNodeID, "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{name})})
 		// 若端口转发也采用了多级路径（各 hop 使用相同 name），尝试在中间节点删除同名服务
 		path := getTunnelPathNodes(tun.ID)
-		for _, nid := range path {
-			_ = sendWSCommand(nid, "DeleteService", map[string]any{"services": []string{name}})
-		}
+        for _, nid := range path {
+            _ = sendWSCommand(nid, "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{name})})
+        }
 	}
     // cleanup expected mid ports
     _ = dbpkg.DB.Where("forward_id = ?", p.ID).Delete(&model.ForwardMidPort{}).Error
@@ -859,9 +871,9 @@ func ForwardPause(c *gin.Context) {
 	var t model.Tunnel
 	if err := dbpkg.DB.First(&t, f.TunnelID).Error; err == nil {
 		name := buildServiceName(f.ID, f.UserID, f.TunnelID)
-		_ = sendWSCommand(t.InNodeID, "PauseService", map[string]interface{}{"services": []string{name}})
+        _ = sendWSCommand(t.InNodeID, "PauseService", map[string]interface{}{"services": expandNamesWithRUDP([]string{name})})
 		if t.Type == 2 {
-			_ = sendWSCommand(outNodeIDOr0(t), "PauseService", map[string]interface{}{"services": []string{name}})
+            _ = sendWSCommand(outNodeIDOr0(t), "PauseService", map[string]interface{}{"services": expandNamesWithRUDP([]string{name})})
 		}
 	}
 	c.JSON(http.StatusOK, response.OkNoData())
@@ -887,9 +899,9 @@ func ForwardResume(c *gin.Context) {
 	var t model.Tunnel
 	if err := dbpkg.DB.First(&t, f.TunnelID).Error; err == nil {
 		name := buildServiceName(f.ID, f.UserID, f.TunnelID)
-		_ = sendWSCommand(t.InNodeID, "ResumeService", map[string]interface{}{"services": []string{name}})
+        _ = sendWSCommand(t.InNodeID, "ResumeService", map[string]interface{}{"services": expandNamesWithRUDP([]string{name})})
 		if t.Type == 2 {
-			_ = sendWSCommand(outNodeIDOr0(t), "ResumeService", map[string]interface{}{"services": []string{name}})
+            _ = sendWSCommand(outNodeIDOr0(t), "ResumeService", map[string]interface{}{"services": expandNamesWithRUDP([]string{name})})
 		}
 	}
 	c.JSON(http.StatusOK, response.OkNoData())

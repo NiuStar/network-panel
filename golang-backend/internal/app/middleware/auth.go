@@ -56,3 +56,26 @@ func RequireRole() gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+// ForbidManagedLimited forbids role_id == 2 (admin-created limited users)
+// These users are only allowed to manage forwards; they cannot access
+// node monitoring or tunnel management APIs.
+func ForbidManagedLimited() gin.HandlerFunc {
+    return func(c *gin.Context) {
+        token := c.GetHeader("Authorization")
+        if token == "" || !util.ValidateToken(token) {
+            c.JSON(http.StatusUnauthorized, response.ErrMsg("未登录或token无效"))
+            c.Abort()
+            return
+        }
+        roleID := util.GetRoleID(token)
+        if roleID == 2 { // managed-limited user
+            c.JSON(http.StatusForbidden, response.ErrMsg("权限不足"))
+            c.Abort()
+            return
+        }
+        c.Set("user_id", util.GetUserID(token))
+        c.Set("role_id", roleID)
+        c.Next()
+    }
+}

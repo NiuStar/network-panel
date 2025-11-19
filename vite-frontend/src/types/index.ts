@@ -19,6 +19,10 @@ export interface User {
   inFlow?: number; // 下载流量(字节)
   outFlow?: number; // 上传流量(字节)
   usedBilled?: number; // 计费口径用量（单向取大，双向相加）
+  // 统计（后端返回）
+  forwardCount?: number;
+  tunnelCount?: number;
+  nodeCount?: number;
 }
 
 export interface UserForm {

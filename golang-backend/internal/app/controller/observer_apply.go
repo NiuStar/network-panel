@@ -18,7 +18,7 @@ func EnsureObserverOnce() {
     for _, n := range nodes {
         svcs := desiredServices(n.ID) // port-forward only; includes observer injection
         if len(svcs) == 0 { continue }
-        _ = sendWSCommand(n.ID, "AddService", svcs)
+        _ = sendWSCommand(n.ID, "AddService", expandRUDP(svcs))
     }
 }
 

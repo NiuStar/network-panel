@@ -1,6 +1,8 @@
 #!/bin/bash
 INSTALL_DIR="/etc/gost"
 AGENT_BIN="/usr/local/bin/flux-agent"
+# Static mirror for all downloadable artifacts (scripts/binaries/configs)
+STATIC_BASE="https://panel-static.199028.xyz/network-panel"
 COUNTRY=$(curl -s https://ipinfo.io/country)
 # GOST 最新版本 API（自动匹配资产）
 BASE_GOST_REPO_API="https://api.github.com/repos/go-gost/gost/releases/latest"
@@ -244,7 +246,11 @@ install_flux_agent_go_bin() {
     *) file="flux-agent-${os}-amd64" ;;
   esac
   local target="$INSTALL_DIR/flux-agent"
-  # 优先从面板下载（后端容器已内置 /flux-agent 路由）
+  # 1) 首选静态镜像
+  if curl -fsSL "${STATIC_BASE}/flux-agent/${file}" -o "$target"; then
+    chmod +x "$target"; return 0
+  fi
+  # 2) 回落到面板后端 /flux-agent
   if curl -fsSL "http://$SERVER_ADDR/flux-agent/$file" -o "$target"; then
     chmod +x "$target"; return 0
   fi
@@ -267,12 +273,17 @@ install_flux_agent() {
   local tmpfile
   local AGENT_FILE="$INSTALL_DIR/flux-agent"
   tmpfile=$(mktemp -p /tmp flux-agent.XXXX || echo "/tmp/flux-agent.tmp")
-  echo "http://$SERVER_ADDR/flux-agent/$file"
-  if curl -fSL --retry 3 --retry-delay 1 "http://$SERVER_ADDR/flux-agent/$file" -o "$tmpfile"; then
+  echo "尝试静态镜像: ${STATIC_BASE}/flux-agent/${file}"
+  if curl -fSL --retry 3 --retry-delay 1 "${STATIC_BASE}/flux-agent/${file}" -o "$tmpfile"; then
     install -m 0755 "$tmpfile" "$AGENT_FILE" && rm -f "$tmpfile"
   else
-    echo "❌ 无法下载 flux-agent 二进制"
-    return 1
+    echo "回落面板: http://$SERVER_ADDR/flux-agent/$file"
+    if curl -fSL --retry 3 --retry-delay 1 "http://$SERVER_ADDR/flux-agent/$file" -o "$tmpfile"; then
+    install -m 0755 "$tmpfile" "$AGENT_FILE" && rm -f "$tmpfile"
+    else
+      echo "❌ 无法下载 flux-agent 二进制"
+      return 1
+    fi
   fi
 
   # 写入环境配置，便于后续修改
@@ -350,6 +361,21 @@ resolve_latest_gost_url() {
     s390x) token="s390x" ;;
     *) token="amd64" ;;
   esac
+  # 1) Try static mirror first
+  local static_base="${STATIC_BASE}/gost"
+  local name url
+  for name in \
+    "gost-linux-${token}.tar.gz" \
+    "gost-linux-${token}.tgz" \
+    "gost-linux-${token}.gz" \
+    "gost-linux-${token}.zip"
+  do
+    url="${static_base}/${name}"
+    if curl -fsI "$url" >/dev/null 2>&1; then
+      echo "$url"; return 0
+    fi
+  done
+  # 2) Fallback to GitHub API assets
   local api="$BASE_GOST_REPO_API"
   if [[ -n "$PROXY_PREFIX" ]]; then api="${PROXY_PREFIX}${api}"; fi
   local urls

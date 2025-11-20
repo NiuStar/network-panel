@@ -147,9 +147,10 @@ func VersionUpgrade(c *gin.Context) {
 	_ = os.MkdirAll(filepath.Join(installDir, "easytier"), 0o755)
 
 	// Raw files from main branch
-	rawInstall := "https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/install.sh"
-	rawEtConf := "https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/easytier/default.conf"
-	rawEtInstall := "https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/easytier/install.sh"
+    staticBase := "https://panel-static.199028.xyz/network-panel"
+    rawInstall := staticBase + "/install.sh"
+    rawEtConf := staticBase + "/easytier/default.conf"
+    rawEtInstall := staticBase + "/easytier/install.sh"
 	// allow proxyPrefix for these raw downloads
 	ri := rawInstall
 	rc := rawEtConf

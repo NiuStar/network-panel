@@ -1,5 +1,19 @@
 # 服务端部署指南（面板）
 
+> 更新提示：脚本与静态资源已迁移至静态镜像域名，建议优先使用以下命令：
+
+一键脚本（推荐）
+```bash
+curl -fsSL https://panel-static.199028.xyz/network-panel/panel_install.sh -o panel_install.sh \
+  && bash panel_install.sh
+```
+
+二进制一键脚本（systemd）
+```bash
+curl -fsSL https://panel-static.199028.xyz/network-panel/scripts/install_server.sh -o install_server.sh \
+  && sudo bash install_server.sh
+```
+
 本文提供三种视角，推荐优先使用“一键脚本”：
 
 - 一键脚本安装（推荐，默认 SQLite，可选 MySQL+Compose）
@@ -19,7 +33,7 @@
 在线一键安装：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/panel_install.sh -o panel_install.sh \
+curl -fsSL https://panel-static.199028.xyz/network-panel/panel_install.sh -o panel_install.sh \
   && bash panel_install.sh
 ```
 
@@ -38,7 +52,7 @@ curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/ma
 1）下载并执行安装脚本（root 权限）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/scripts/install_server.sh -o install_server.sh \
+curl -fsSL https://panel-static.199028.xyz/network-panel/scripts/install_server.sh -o install_server.sh \
   && sudo bash install_server.sh
 ```
 

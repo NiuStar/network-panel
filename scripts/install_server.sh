@@ -38,6 +38,7 @@ DOT_ENV_FILE="${INSTALL_DIR}/.env"
 # On subsequent runs, values will be loaded automatically, bypassing prompts.
 # -----------------------------------------------------------------------------
 CONFIG_FILE="/etc/default/network-panel-install.conf"
+STATIC_BASE="https://panel-static.199028.xyz/network-panel"
 
 # Read configuration file if it exists.  Source only simple key=value pairs.
 read_config() {
@@ -96,9 +97,23 @@ prompt_arch() {
 # Download a prebuilt release tarball or binary for the given architecture.
 download_prebuilt() {
   local arch="$1"
-  local base="https://github.com/NiuStar/network-panel/releases/latest/download"
-  if [[ -n "$PROXY_PREFIX" ]]; then base="${PROXY_PREFIX}${base}"; fi
+  local base="${STATIC_BASE}/server"
   local name
+  for name in \
+    "network-panel-server-linux-${arch}" \
+    "server-linux-${arch}" \
+    "network-panel_linux_${arch}.tar.gz" \
+    "server_linux_${arch}.tar.gz"
+  do
+    log "Trying to download ${base}/${name}"
+    if curl -fSL --retry 3 --retry-delay 1 "${base}/${name}" -o /tmp/network-panel.dl; then
+      printf '/tmp/network-panel.dl\n'
+      return 0
+    fi
+  done
+  # fallback to GitHub latest
+  base="https://github.com/NiuStar/network-panel/releases/latest/download"
+  if [[ -n "$PROXY_PREFIX" ]]; then base="${PROXY_PREFIX}${base}"; fi
   for name in \
     "network-panel-server-linux-${arch}" \
     "server-linux-${arch}" \
@@ -116,10 +131,16 @@ download_prebuilt() {
 
 # Download the frontend distribution archive.
 download_frontend_dist() {
+  local url="${STATIC_BASE}/frontend/${FRONTEND_ASSET_NAME}"
+  log "Trying to download frontend assets: $url"
+  if curl -fSL --retry 3 --retry-delay 1 "$url" -o /tmp/frontend-dist.zip; then
+    printf '/tmp/frontend-dist.zip\n'
+    return 0
+  fi
   local base="https://github.com/NiuStar/network-panel/releases/latest/download"
   if [[ -n "$PROXY_PREFIX" ]]; then base="${PROXY_PREFIX}${base}"; fi
-  local url="${base}/${FRONTEND_ASSET_NAME}"
-  log "Trying to download frontend assets: $url"
+  url="${base}/${FRONTEND_ASSET_NAME}"
+  log "Trying to download frontend assets (fallback): $url"
   if curl -fSL --retry 3 --retry-delay 1 "$url" -o /tmp/frontend-dist.zip; then
     printf '/tmp/frontend-dist.zip\n'
     return 0
@@ -399,7 +420,7 @@ install_flux_agents() {
   for f in "${need[@]}"; do
     if [[ -f "$outdir/$f" ]]; then continue; fi
     log "Downloading flux-agent: $f"
-    local token url1 url2 url3
+    local token url1 url2 url3 url4
     case "$f" in
       *amd64) token="amd64" ;;
       *arm64) token="arm64" ;;
@@ -410,8 +431,9 @@ install_flux_agents() {
       url1=$(printf '%s\n' "$api_body" | grep -oE '"browser_download_url"\s*:\s*"[^"]+"' | grep -E "flux-agent.*(linux-($token))" | head -n1 | sed -E 's/.*"(http[^"]+)".*/\1/')
     fi
     url2="${dlbase}/$f"
-    url3="https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/golang-backend/public/flux-agent/$f"
-    if [[ -n "$PROXY_PREFIX" ]]; then url3="${PROXY_PREFIX}${url3}"; fi
+    url3="${STATIC_BASE}/flux-agent/$f"
+    url4="https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/golang-backend/public/flux-agent/$f"
+    if [[ -n "$PROXY_PREFIX" ]]; then url4="${PROXY_PREFIX}${url4}"; fi
     local dest="$outdir/$f"; local res
     if [[ -n "$url1" ]]; then
       res=$(try_dl "$url1" "$dest") || log "❌ failed $f from $url1 ($(printf '%s' "$res" | awk '{print $2}'))"
@@ -420,6 +442,8 @@ install_flux_agents() {
     res=$(try_dl "$url2" "$dest") || log "❌ failed $f from $url2 ($(printf '%s' "$res" | awk '{print $2}'))"
     if [[ "$res" == OK* ]]; then have_any=1; log "✅ downloaded $f via latest/download"; continue; fi
     res=$(try_dl "$url3" "$dest") || log "❌ failed $f from $url3 ($(printf '%s' "$res" | awk '{print $2}'))"
+    if [[ "$res" == OK* ]]; then have_any=1; log "✅ downloaded $f via static mirror"; continue; fi
+    res=$(try_dl "$url4" "$dest") || log "❌ failed $f from $url4 ($(printf '%s' "$res" | awk '{print $2}'))"
     if [[ "$res" == OK* ]]; then have_any=1; log "✅ downloaded $f via raw repo"; continue; fi
   done
   if (( have_any == 1 )); then
@@ -465,20 +489,19 @@ install_easytier() {
     printf 'ERR %s\n' "${code:-unknown}"
     return 1
   }
-  local base_url="https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/easytier"
-  if [[ -n "$PROXY_PREFIX" ]]; then
-    base_url="${PROXY_PREFIX}${base_url}"
-  fi
+  local base_url="${STATIC_BASE}/easytier"
   for f in "${need[@]}"; do
     if [[ -f "$outdir/$f" ]]; then continue; fi
     log "下载 easytier: $f"
     local url="${base_url}/${f}"
     local dest="$outdir/$f"
     res=$(try_dl "$url" "$dest") || log "❌ 从 $url 下载失败 ($(printf '%s' "$res" | awk '{print $2}'))"
-    if [[ "$res" == OK* ]]; then
-      have_any=1
-      log "✅ 从 GitHub 仓库下载 $f"
-    fi
+    if [[ "$res" == OK* ]]; then have_any=1; log "✅ 从静态镜像下载 $f"; continue; fi
+    # fallback raw GitHub
+    local ghraw="https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/easytier/${f}"
+    if [[ -n "$PROXY_PREFIX" ]]; then ghraw="${PROXY_PREFIX}${ghraw}"; fi
+    res=$(try_dl "$ghraw" "$dest") || log "❌ 从 $ghraw 下载失败 ($(printf '%s' "$res" | awk '{print $2}'))"
+    if [[ "$res" == OK* ]]; then have_any=1; log "✅ 从 GitHub 仓库下载 $f"; fi
   done
   if (( have_any == 1 )); then
     log "✅ easytier 文件准备就绪，位于 $outdir"

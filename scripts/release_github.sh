@@ -233,3 +233,12 @@ if [[ ${#assets[@]} -gt 0 ]]; then
 fi
 
 echo "✅ Release $TAG completed via REST API."
+
+# After GitHub release, also upload static bundle to the external static host
+UPLOAD_SCRIPT="$ROOT_DIR/scripts/upload_static_to_server.sh"
+if [[ -x "$UPLOAD_SCRIPT" ]]; then
+  echo "==> Uploading static assets to external static host"
+  bash "$UPLOAD_SCRIPT" || echo "⚠️  Static host upload failed (continuing)"
+else
+  echo "(skip) $UPLOAD_SCRIPT not executable"
+fi

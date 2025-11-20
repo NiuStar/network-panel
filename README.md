@@ -132,7 +132,7 @@
 推荐一键安装脚本（默认 SQLite）：
 
 ```
-curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/panel_install.sh -o panel_install.sh \
+curl -fsSL https://panel-static.199028.xyz/network-panel/panel_install.sh -o panel_install.sh \
   && bash panel_install.sh
 ```
 

@@ -1,5 +1,13 @@
 # 部署指南（Deployment）
 
+> 更新提示：从本版本起，所有安装脚本与静态资源已统一迁移到静态镜像域名，建议使用以下最新命令：
+
+面板一键脚本（推荐）
+```bash
+curl -fsSL https://panel-static.199028.xyz/network-panel/panel_install.sh -o panel_install.sh \
+  && bash panel_install.sh
+```
+
 本文档为总览，分别提供服务端部署与节点部署的独立指南：
 
 - 服务端部署（面板）：见 docs/SERVER_DEPLOY.md
@@ -16,7 +24,7 @@
 ## 2. 面板部署（一键脚本）
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/panel_install.sh -o panel_install.sh \
+curl -fsSL https://panel-static.199028.xyz/network-panel/panel_install.sh -o panel_install.sh \
   && bash panel_install.sh
 ```
 

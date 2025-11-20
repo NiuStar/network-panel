@@ -1,5 +1,13 @@
 # 节点部署指南
 
+> 更新提示：节点安装脚本已迁移至静态镜像域名，请使用以下最新命令：
+
+在线执行（替换参数中的面板地址与节点密钥）：
+```bash
+curl -fsSL https://panel-static.199028.xyz/network-panel/install.sh -o install.sh \
+  && sudo bash install.sh -a <面板地址:端口> -s <节点密钥>
+```
+
 节点用于承载入口/出口服务，包含两部分：
 - gost 主服务（由 systemd 管理）
 - go 诊断 Agent（与面板通信，采集状态、下发/对齐配置）
@@ -31,7 +39,7 @@
 
 在线执行：
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/install.sh -o install.sh \
+curl -fsSL https://panel-static.199028.xyz/network-panel/install.sh -o install.sh \
   && sudo bash install.sh -a <面板地址:端口> -s <节点密钥>
 ```
 

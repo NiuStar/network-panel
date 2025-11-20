@@ -24,8 +24,9 @@ SERVICE_FILE="/etc/systemd/system/network-panel.service"
 ENV_FILE="/etc/default/network-panel"
 DOT_ENV_FILE="/opt/network-panel/.env"
 
-INSTALL_SERVER_RAW="https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/scripts/install_server.sh"
-COMPOSE_MYSQL_RAW="https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/docker-compose-v4_mysql.yml"
+STATIC_BASE="https://panel-static.199028.xyz/network-panel"
+INSTALL_SERVER_RAW="$STATIC_BASE/scripts/install_server.sh"
+COMPOSE_MYSQL_RAW="$STATIC_BASE/docker-compose-v4_mysql.yml"
 
 proxy_prefix=""
 detect_cn() {

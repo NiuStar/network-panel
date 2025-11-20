@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "[install] fetching easytier install.sh from GitHub"
-wget -O /tmp/easytier.sh "https://static-sg.529851.xyz/easytier/install.sh"
+echo "[install] fetching easytier install.sh from static host"
+wget -O /tmp/easytier.sh "https://panel-static.199028.xyz/network-panel/easytier/install.sh"
 chmod +x /tmp/easytier.sh
 sudo bash /tmp/easytier.sh uninstall || true
 sudo rm -rf /opt/easytier
-sudo bash /tmp/easytier.sh install --gh-proxy http://proxy.529851.xyz/
+sudo bash /tmp/easytier.sh install
 echo "[install] done"

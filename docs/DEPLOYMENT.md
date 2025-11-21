@@ -6,6 +6,8 @@
 ```bash
 curl -fsSL https://panel-static.199028.xyz/network-panel/panel_install.sh -o panel_install.sh \
   && bash panel_install.sh
+# 若静态源不可用，可用 GitHub 备用源：
+# curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/panel_install.sh -o panel_install.sh && bash panel_install.sh
 ```
 
 本文档为总览，分别提供服务端部署与节点部署的独立指南：
@@ -26,6 +28,8 @@ curl -fsSL https://panel-static.199028.xyz/network-panel/panel_install.sh -o pan
 ```bash
 curl -fsSL https://panel-static.199028.xyz/network-panel/panel_install.sh -o panel_install.sh \
   && bash panel_install.sh
+# 若静态源不可用，可用 GitHub 备用源：
+# curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/panel_install.sh -o panel_install.sh && bash panel_install.sh
 ```
 
 安装过程包含：

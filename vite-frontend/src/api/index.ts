@@ -142,6 +142,7 @@ export const deleteProbeTarget = (id: number) => Network.post("/probe/delete", {
 // 节点网络统计
 export const getNodeNetworkStats = (nodeId: number, range: string) => Network.post("/node/network-stats", { nodeId, range });
 export const getNodeNetworkStatsBatch = (range: string) => Network.post("/node/network-stats-batch", { range });
+export const getGostConfig = (nodeId: number) => Network.post("/node/gost-config", { nodeId });
 // 版本信息
 export const getVersionInfo = () => Network.get("/version");
 export const getLatestVersionInfo = () => Network.get("/version/latest");
@@ -154,3 +155,8 @@ export const getNodeSysinfo = (nodeId: number, range: string = '1h', limit?: num
 // Share (public, read-only)
 export const shareNetworkList = (range: string = '1h') => Network.post("/share/network-list", { range });
 export const shareNetworkStats = (nodeId: number, range: string = '1h') => Network.post("/share/network-stats", { nodeId, range });
+
+// Heartbeat inventory
+export const reportHeartbeat = (data: { kind: 'agent' | 'controller'; uniqueId: string; version?: string; createdAtMs?: number; os?: string; arch?: string }) =>
+  Network.post("/stats/heartbeat", data);
+export const getHeartbeatSummary = () => Network.get("/stats/heartbeat/summary");

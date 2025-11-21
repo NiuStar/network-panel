@@ -40,6 +40,7 @@ export default function AdminLayout({
   const [isAdmin, setIsAdmin] = useState(false);
   const [passwordLoading, setPasswordLoading] = useState(false);
   const [roleId, setRoleId] = useState<number>(1);
+  const [showCenter, setShowCenter] = useState(false);
   const [passwordForm, setPasswordForm] = useState<PasswordForm>({
     newUsername: '',
     currentPassword: '',
@@ -133,6 +134,16 @@ export default function AdminLayout({
            adminOnly: true
          },
     {
+      path: '/center',
+      label: '心跳中心',
+      icon: (
+        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M3 10a1 1 0 011-1h2.586l1.707-1.707a1 1 0 011.414 0L10.414 9H13l2-2 3 3-3 3-2-2h-1.586l-1.707 1.707a1 1 0 01-1.414 0L6.414 13H4a1 1 0 01-1-1v-2z" />
+        </svg>
+      ),
+      adminOnly: true
+    },
+    {
       path: '/limit',
       label: '限速管理',
       icon: (
@@ -221,7 +232,10 @@ export default function AdminLayout({
   // 检查版本，决定是否显示升级按钮
   useEffect(() => {
     getVersionInfo().then((res:any)=>{
-      if (res.code===0 && res.data){ setServerVersion(res.data.server || ""); }
+      if (res.code===0 && res.data){
+        setServerVersion(res.data.server || "");
+        setShowCenter(res.data.centerOn === true || res.data.center === 'true');
+      }
     }).catch(()=>{});
     getLatestVersionInfo().then((res:any)=>{
       if (res.code===0 && res.data){ setLatestTag(res.data.tag || ""); }
@@ -329,6 +343,7 @@ export default function AdminLayout({
   const filteredMenuItems = menuItems.filter(item => {
     if (item.path === '/probe' && !showProbe) return false;
     if (item.path === '/network' && !showNetworkMenu) return false;
+    if (item.path === '/center' && !showCenter) return false;
     // hide some menus for managed-only users (role_id === 2)
     if (roleId === 2 && (item.path === '/node' || item.path === '/tunnel' || item.path === '/user')) return false;
     return !item.adminOnly || isAdmin;

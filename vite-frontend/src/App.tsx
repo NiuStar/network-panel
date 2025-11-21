@@ -16,6 +16,7 @@ import ProfilePage from "@/pages/profile";
 import LimitPage from "@/pages/limit";
 import ConfigPage from "@/pages/config";
 import { SettingsPage } from "@/pages/settings";
+import CenterPage from "@/pages/center";
 
 import AdminLayout from "@/layouts/admin";
 import H5Layout from "@/layouts/h5";
@@ -268,6 +269,14 @@ function App() {
             <ConfigPage />
           </ProtectedRoute>
         } 
+      />
+      <Route
+        path="/center"
+        element={
+          <ProtectedRoute>
+            <CenterPage />
+          </ProtectedRoute>
+        }
       />
       <Route 
         path="/settings" 

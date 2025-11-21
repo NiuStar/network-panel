@@ -18,7 +18,14 @@ func RegisterRoutes(r *gin.Engine) {
 	// serve install script for nodes
 	r.GET("/install.sh", controller.InstallScript)
 	// serve easytier installer and templates
-	r.GET("/easytier/:file", func(c *gin.Context){ f := c.Param("file"); if f=="" { c.JSON(404, gin.H{"code":404}); return } ; c.File("easytier/"+f) })
+	r.GET("/easytier/:file", func(c *gin.Context) {
+		f := c.Param("file")
+		if f == "" {
+			c.JSON(404, gin.H{"code": 404})
+			return
+		}
+		c.File("easytier/" + f)
+	})
 	// serve flux-agent binaries
 	r.GET("/flux-agent/:file", func(c *gin.Context) {
 		f := c.Param("file")
@@ -70,7 +77,7 @@ func RegisterRoutes(r *gin.Engine) {
 	}
 
 	// node
-    node := api.Group("/node")
+	node := api.Group("/node")
     node.Use(middleware.Auth(), middleware.ForbidManagedLimited())
     {
         node.POST("/create", controller.NodeCreate)
@@ -83,6 +90,8 @@ func RegisterRoutes(r *gin.Engine) {
 		node.POST("/set-exit", controller.NodeSetExit)
 		// get last saved exit settings for node
 		node.POST("/get-exit", controller.NodeGetExit)
+		// read gost config content
+		node.POST("/gost-config", controller.NodeGostConfig)
 		// query services on node
         node.POST("/query-services", controller.NodeQueryServices)
 		// network stats for node
@@ -90,7 +99,7 @@ func RegisterRoutes(r *gin.Engine) {
 		node.POST("/network-stats-batch", controller.NodeNetworkStatsBatch)
 		node.POST("/sysinfo", controller.NodeSysinfo)
 		node.POST("/interfaces", controller.NodeInterfaces)
-        node.POST("/ops", controller.NodeOps)
+		node.POST("/ops", controller.NodeOps)
 		node.POST("/restart-gost", controller.NodeRestartGost)
 		node.POST("/enable-gost-api", controller.NodeEnableGostAPI)
 	}
@@ -103,7 +112,7 @@ func RegisterRoutes(r *gin.Engine) {
 
 		// authenticated (non-admin allowed): manage own tunnels
 		tunAuth := tunnel.Group("")
-        tunAuth.Use(middleware.Auth(), middleware.ForbidManagedLimited())
+		tunAuth.Use(middleware.Auth(), middleware.ForbidManagedLimited())
 		{
 			tunAuth.POST("/create", controller.TunnelCreate)
 			tunAuth.POST("/list", controller.TunnelList)
@@ -142,12 +151,12 @@ func RegisterRoutes(r *gin.Engine) {
 		forward.POST("/force-delete", middleware.Auth(), controller.ForwardForceDelete)
 		forward.POST("/pause", middleware.Auth(), controller.ForwardPause)
 		forward.POST("/resume", middleware.Auth(), controller.ForwardResume)
-    forward.POST("/diagnose", middleware.Auth(), controller.ForwardDiagnose)
-    forward.POST("/diagnose-step", middleware.Auth(), controller.ForwardDiagnoseStep)
-        forward.POST("/update-order", middleware.Auth(), controller.ForwardUpdateOrder)
-        forward.POST("/status", middleware.Auth(), controller.ForwardStatusList)
-        forward.POST("/status-detail", middleware.Auth(), controller.ForwardStatusDetail)
-    }
+		forward.POST("/diagnose", middleware.Auth(), controller.ForwardDiagnose)
+		forward.POST("/diagnose-step", middleware.Auth(), controller.ForwardDiagnoseStep)
+		forward.POST("/update-order", middleware.Auth(), controller.ForwardUpdateOrder)
+		forward.POST("/status", middleware.Auth(), controller.ForwardStatusList)
+		forward.POST("/status-detail", middleware.Auth(), controller.ForwardStatusDetail)
+	}
 
 	// speed-limit
 	sl := api.Group("/speed-limit")
@@ -164,6 +173,13 @@ func RegisterRoutes(r *gin.Engine) {
 	openAPI := api.Group("/open_api")
 	{
 		openAPI.GET("/sub_store", controller.OpenAPISubStore)
+	}
+
+	// heartbeat inventory (agents/controllers)
+	stats := api.Group("/stats")
+	{
+		stats.POST("/heartbeat", controller.HeartbeatReport)
+		stats.GET("/heartbeat/summary", middleware.RequireRole(), controller.HeartbeatSummary)
 	}
 
 	// version
@@ -225,9 +241,9 @@ func RegisterRoutes(r *gin.Engine) {
 		agent.POST("/push-services", controller.AgentPushServices)
 		agent.POST("/reconcile", controller.AgentReconcile)
 		agent.POST("/remove-services", controller.AgentRemoveServices)
-        agent.POST("/report-services", controller.AgentReportServices)
-        // 手动重新应用全部服务（仅管理员可调用）
-        agent.POST("/reconcile-node", middleware.RequireRole(), controller.AgentReconcileNode)
+		agent.POST("/report-services", controller.AgentReportServices)
+		// 手动重新应用全部服务（仅管理员可调用）
+		agent.POST("/reconcile-node", middleware.RequireRole(), controller.AgentReconcileNode)
 		agent.POST("/probe-targets", controller.AgentProbeTargets)
 		agent.POST("/report-probe", controller.AgentReportProbe)
 	}

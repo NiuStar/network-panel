@@ -6,12 +6,16 @@
 ```bash
 curl -fsSL https://panel-static.199028.xyz/network-panel/panel_install.sh -o panel_install.sh \
   && bash panel_install.sh
+# 若静态源不可用，可用 GitHub 备用源：
+# curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/panel_install.sh -o panel_install.sh && bash panel_install.sh
 ```
 
 二进制一键脚本（systemd）
 ```bash
 curl -fsSL https://panel-static.199028.xyz/network-panel/scripts/install_server.sh -o install_server.sh \
   && sudo bash install_server.sh
+# 若静态源不可用，可用 GitHub 备用源：
+# curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/scripts/install_server.sh -o install_server.sh && sudo bash install_server.sh
 ```
 
 本文提供三种视角，推荐优先使用“一键脚本”：

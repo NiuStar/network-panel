@@ -51,11 +51,8 @@ interface AddressItem {
 }
 
 interface StatisticsFlow {
-  id: number;
-  userId: number;
-  flow: number;
-  totalFlow: number;
   time: string;
+  flow: number;
 }
 
 export default function DashboardPage() {
@@ -385,7 +382,8 @@ export default function DashboardPage() {
     const hours: string[] = [];
     for (let i = 23; i >= 0; i--) {
       const t = new Date(nowCST.getTime() - i * 60 * 60 * 1000);
-      hours.push(t.getHours().toString().padStart(2, '0') + ':00');
+      const label = `${(t.getMonth()+1).toString().padStart(2,'0')}-${t.getDate().toString().padStart(2,'0')} ${t.getHours().toString().padStart(2, '0')}:00`;
+      hours.push(label);
     }
     return hours;
   };

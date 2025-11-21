@@ -135,6 +135,8 @@
 ```
 curl -fsSL https://panel-static.199028.xyz/network-panel/panel_install.sh -o panel_install.sh \
   && bash panel_install.sh
+# 若静态源不可用，可用 GitHub 备用源：
+# curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/panel_install.sh -o panel_install.sh && bash panel_install.sh
 ```
 
 说明：

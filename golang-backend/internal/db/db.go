@@ -108,6 +108,8 @@ func Init() error {
 		&model.NodeRuntime{},
 		&model.NodeOpLog{},
 		&model.ForwardMidPort{},
+		&model.HeartbeatRecord{},
+		&model.FlowTimeseries{},
 	); err != nil {
 		return err
 	}

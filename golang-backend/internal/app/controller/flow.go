@@ -105,6 +105,8 @@ func FlowUpload(c *gin.Context) {
 		if outInc > quotaInc {
 			quotaInc = outInc
 		}
+		now := time.Now()
+		nowCST := now.In(time.FixedZone("UTC+8", 8*3600))
 
 		// apply increments (forward, user, user_tunnel)
 		dbpkg.DB.Model(&model.Forward{}).Where("id = ?", fwdID).
@@ -117,7 +119,7 @@ func FlowUpload(c *gin.Context) {
 			dbpkg.DB.Model(&model.UserTunnel{}).Where("id = ?", ut.ID).
 				Updates(map[string]any{"in_flow": gorm.Expr("in_flow + ?", inInc), "out_flow": gorm.Expr("out_flow + ?", outInc)})
 		}
-		// 24h statistics (per user, bucket by hour HH:00). For single-flow tunnel, count max(in,out); else sum.
+		// 24h statistics (per user, bucket by hour). For single-flow tunnel, count max(in,out); else sum.
 		func() {
 			calc := inInc + outInc
 			if tun.Flow == 1 {
@@ -127,10 +129,9 @@ func FlowUpload(c *gin.Context) {
 					calc = inInc
 				}
 			}
-			// bucket key: HH:00 (UTC+8)
-			cst := time.FixedZone("UTC+8", 8*3600)
-			now := time.Now().In(cst)
-			hourKey := now.Format("15:00")
+			// bucket key: MM-DD HH:00 (UTC+8)
+			now := nowCST
+			hourKey := now.Format("01-02 15:00")
 			var rec model.StatisticsFlow
 			if err := dbpkg.DB.Where("user_id = ? AND time = ?", fwd.UserID, hourKey).First(&rec).Error; err == nil && rec.ID > 0 {
 				dbpkg.DB.Model(&model.StatisticsFlow{}).Where("id = ?", rec.ID).
@@ -139,6 +140,15 @@ func FlowUpload(c *gin.Context) {
 				rec = model.StatisticsFlow{UserID: fwd.UserID, Flow: calc, TotalFlow: calc, Time: hourKey, CreatedTime: now.UnixMilli()}
 				_ = dbpkg.DB.Create(&rec).Error
 			}
+			// append to timeseries for precise 24h chart
+			_ = dbpkg.DB.Create(&model.FlowTimeseries{
+				UserID:      fwd.UserID,
+				InBytes:     inInc,
+				OutBytes:    outInc,
+				BilledBytes: calc,
+				TimeMs:      now.UnixMilli(),
+				CreatedTime: now.UnixMilli(),
+			}).Error
 		}()
 
 		// limits：仅在配额判断时使用单向增量估算
@@ -195,6 +205,8 @@ func FlowUpload(c *gin.Context) {
 	if outInc > quotaInc {
 		quotaInc = outInc
 	}
+	now := time.Now()
+	nowCST := now.In(time.FixedZone("UTC+8", 8*3600))
 	dbpkg.DB.Model(&model.Forward{}).Where("id = ?", fwdID).Updates(map[string]any{"in_flow": gorm.Expr("in_flow + ?", inInc), "out_flow": gorm.Expr("out_flow + ?", outInc), "updated_time": time.Now().UnixMilli()})
 	dbpkg.DB.Model(&model.User{}).Where("id = ?", userID).Updates(map[string]any{"in_flow": gorm.Expr("in_flow + ?", inInc), "out_flow": gorm.Expr("out_flow + ?", outInc), "updated_time": time.Now().UnixMilli()})
 	if utID != 0 {
@@ -210,9 +222,8 @@ func FlowUpload(c *gin.Context) {
 				calc = inInc
 			}
 		}
-		cst := time.FixedZone("UTC+8", 8*3600)
-		now := time.Now().In(cst)
-		hourKey := now.Format("15:00")
+		now := nowCST
+		hourKey := now.Format("01-02 15:00")
 		var rec model.StatisticsFlow
 		if err := dbpkg.DB.Where("user_id = ? AND time = ?", userID, hourKey).First(&rec).Error; err == nil && rec.ID > 0 {
 			dbpkg.DB.Model(&model.StatisticsFlow{}).Where("id = ?", rec.ID).
@@ -221,6 +232,14 @@ func FlowUpload(c *gin.Context) {
 			rec = model.StatisticsFlow{UserID: userID, Flow: calc, TotalFlow: calc, Time: hourKey, CreatedTime: now.UnixMilli()}
 			_ = dbpkg.DB.Create(&rec).Error
 		}
+		_ = dbpkg.DB.Create(&model.FlowTimeseries{
+			UserID:      userID,
+			InBytes:     inInc,
+			OutBytes:    outInc,
+			BilledBytes: calc,
+			TimeMs:      now.UnixMilli(),
+			CreatedTime: now.UnixMilli(),
+		}).Error
 	}()
 
 	var user model.User

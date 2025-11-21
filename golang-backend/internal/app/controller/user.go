@@ -1,18 +1,18 @@
 package controller
 
 import (
-    "net/http"
-    "time"
-    "strconv"
-    "strings"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
-    "network-panel/golang-backend/internal/app/dto"
-    "network-panel/golang-backend/internal/app/model"
-    "network-panel/golang-backend/internal/app/response"
-    "network-panel/golang-backend/internal/app/util"
-    dbpkg "network-panel/golang-backend/internal/db"
+	"network-panel/golang-backend/internal/app/dto"
+	"network-panel/golang-backend/internal/app/model"
+	"network-panel/golang-backend/internal/app/response"
+	"network-panel/golang-backend/internal/app/util"
+	dbpkg "network-panel/golang-backend/internal/db"
 
-    "github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin"
 )
 
 // POST /api/v1/user/login
@@ -51,37 +51,53 @@ func UserLogin(c *gin.Context) {
 // POST /api/v1/user/register {username, password}
 // Public registration; guarded by vite_config: registration_enabled=true
 func UserRegister(c *gin.Context) {
-    var p struct { Username string `json:"username"`; Password string `json:"password"` }
-    if err := c.ShouldBindJSON(&p); err != nil || p.Username == "" || len(p.Password) < 6 {
-        c.JSON(http.StatusOK, response.ErrMsg("参数错误")); return
-    }
-    // check flag
-    var cfg model.ViteConfig
-    if err := dbpkg.DB.Where("name = ?", "registration_enabled").First(&cfg).Error; err != nil || cfg.Value != "true" {
-        c.JSON(http.StatusOK, response.ErrMsg("暂未开放注册")); return
-    }
-    // uniqueness
-    var cnt int64
-    dbpkg.DB.Model(&model.User{}).Where("user = ?", p.Username).Count(&cnt)
-    if cnt > 0 { c.JSON(http.StatusOK, response.ErrMsg("用户名已存在")); return }
-    now := time.Now().UnixMilli(); status := 1
-    // default quotas from config:
-    // - registration_default_flow_gb: user flow quota (GB)
-    // - registration_default_forward: per-user forward count quota
-    // Note: tunnel count quota is enforced at create-time via controller/tunnel.go using registration_default_num.
-    defFlowGb := int64(0)
-    defForward := 20 // forwards
-    var c1, c3 model.ViteConfig
-    dbpkg.DB.Where("name=?", "registration_default_flow_gb").First(&c1)
-    if v, err := strconv.ParseInt(strings.TrimSpace(c1.Value), 10, 64); err==nil && v>=0 { defFlowGb = v }
-    dbpkg.DB.Where("name=?", "registration_default_forward").First(&c3)
-    if v, err := strconv.Atoi(strings.TrimSpace(c3.Value)); err==nil && v>0 { defForward = v }
-    u := model.User{ BaseEntity: model.BaseEntity{CreatedTime: now, UpdatedTime: now, Status: &status},
-        User: p.Username, Pwd: util.MD5(p.Password), RoleID: 1, Flow: defFlowGb, InFlow: 0, OutFlow: 0, Num: defForward, FlowResetTime: 0 }
-    if err := dbpkg.DB.Create(&u).Error; err != nil { c.JSON(http.StatusOK, response.ErrMsg("注册失败")); return }
-    // auto login: return token
-    token := util.GenerateToken(u.ID, u.User, u.RoleID)
-    c.JSON(http.StatusOK, response.Ok(gin.H{"token": token, "name": u.User, "role_id": u.RoleID}))
+	var p struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := c.ShouldBindJSON(&p); err != nil || p.Username == "" || len(p.Password) < 6 {
+		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+		return
+	}
+	// check flag
+	var cfg model.ViteConfig
+	if err := dbpkg.DB.Where("name = ?", "registration_enabled").First(&cfg).Error; err != nil || cfg.Value != "true" {
+		c.JSON(http.StatusOK, response.ErrMsg("暂未开放注册"))
+		return
+	}
+	// uniqueness
+	var cnt int64
+	dbpkg.DB.Model(&model.User{}).Where("user = ?", p.Username).Count(&cnt)
+	if cnt > 0 {
+		c.JSON(http.StatusOK, response.ErrMsg("用户名已存在"))
+		return
+	}
+	now := time.Now().UnixMilli()
+	status := 1
+	// default quotas from config:
+	// - registration_default_flow_gb: user flow quota (GB)
+	// - registration_default_forward: per-user forward count quota
+	// Note: tunnel count quota is enforced at create-time via controller/tunnel.go using registration_default_num.
+	defFlowGb := int64(0)
+	defForward := 20 // forwards
+	var c1, c3 model.ViteConfig
+	dbpkg.DB.Where("name=?", "registration_default_flow_gb").First(&c1)
+	if v, err := strconv.ParseInt(strings.TrimSpace(c1.Value), 10, 64); err == nil && v >= 0 {
+		defFlowGb = v
+	}
+	dbpkg.DB.Where("name=?", "registration_default_forward").First(&c3)
+	if v, err := strconv.Atoi(strings.TrimSpace(c3.Value)); err == nil && v > 0 {
+		defForward = v
+	}
+	u := model.User{BaseEntity: model.BaseEntity{CreatedTime: now, UpdatedTime: now, Status: &status},
+		User: p.Username, Pwd: util.MD5(p.Password), RoleID: 1, Flow: defFlowGb, InFlow: 0, OutFlow: 0, Num: defForward, FlowResetTime: 0}
+	if err := dbpkg.DB.Create(&u).Error; err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("注册失败"))
+		return
+	}
+	// auto login: return token
+	token := util.GenerateToken(u.ID, u.User, u.RoleID)
+	c.JSON(http.StatusOK, response.Ok(gin.H{"token": token, "name": u.User, "role_id": u.RoleID}))
 }
 
 // POST /api/v1/user/create
@@ -100,17 +116,17 @@ func UserCreate(c *gin.Context) {
 	}
 	now := time.Now().UnixMilli()
 	status := 1
-    u := model.User{
-        BaseEntity: model.BaseEntity{CreatedTime: now, UpdatedTime: now, Status: &status},
-        User:       req.User,
-        Pwd:        util.MD5(req.Pwd),
-        RoleID:     2, // admin-created limited user (forwards-only)
-        ExpTime:    &req.ExpTime,
-        Flow:       req.Flow,
-        InFlow:     0, OutFlow: 0,
-        Num:           req.Num,
-        FlowResetTime: req.FlowResetTime,
-    }
+	u := model.User{
+		BaseEntity: model.BaseEntity{CreatedTime: now, UpdatedTime: now, Status: &status},
+		User:       req.User,
+		Pwd:        util.MD5(req.Pwd),
+		RoleID:     2, // admin-created limited user (forwards-only)
+		ExpTime:    &req.ExpTime,
+		Flow:       req.Flow,
+		InFlow:     0, OutFlow: 0,
+		Num:           req.Num,
+		FlowResetTime: req.FlowResetTime,
+	}
 	if err := dbpkg.DB.Create(&u).Error; err != nil {
 		c.JSON(http.StatusOK, response.ErrMsg("用户创建失败"))
 		return
@@ -122,62 +138,79 @@ func UserCreate(c *gin.Context) {
 
 // POST /api/v1/user/list
 func UserList(c *gin.Context) {
-    var users []model.User
-    dbpkg.DB.Where("role_id <> ?", 0).Find(&users)
-    // compute usedBilled per user: sum over forwards with tunnel.flow rule (single uses max(in,out), double uses in+out)
-    type agg struct{ UserID int64; Used int64 }
-    var aggs []agg
-    dbpkg.DB.Table("forward f").
-        Select("f.user_id as user_id, SUM(CASE WHEN t.flow = 1 THEN (CASE WHEN f.in_flow > f.out_flow THEN f.in_flow ELSE f.out_flow END) ELSE (f.in_flow + f.out_flow) END) as used").
-        Joins("left join tunnel t on t.id = f.tunnel_id").
-        Group("f.user_id").Scan(&aggs)
-    usedMap := map[int64]int64{}
-    for _, a := range aggs { usedMap[a.UserID] = a.Used }
+	var users []model.User
+	dbpkg.DB.Where("role_id <> ?", 0).Find(&users)
+	// compute usedBilled per user: sum over forwards with tunnel.flow rule (single uses max(in,out), double uses in+out)
+	type agg struct {
+		UserID int64
+		Used   int64
+	}
+	var aggs []agg
+	dbpkg.DB.Table("forward f").
+		Select("f.user_id as user_id, SUM(CASE WHEN t.flow = 1 THEN (CASE WHEN f.in_flow > f.out_flow THEN f.in_flow ELSE f.out_flow END) ELSE (f.in_flow + f.out_flow) END) as used").
+		Joins("left join tunnel t on t.id = f.tunnel_id").
+		Group("f.user_id").Scan(&aggs)
+	usedMap := map[int64]int64{}
+	for _, a := range aggs {
+		usedMap[a.UserID] = a.Used
+	}
 
-    // forward count per user
-    type aggF struct{ UserID int64; C int64 }
-    var af []aggF
-    dbpkg.DB.Table("forward").Select("user_id, COUNT(1) as c").Group("user_id").Scan(&af)
-    fMap := map[int64]int64{}; for _, a := range af { fMap[a.UserID] = a.C }
-    // tunnel count per user (distinct tunnels in forwards)
-    var at []aggF
-    dbpkg.DB.Table("forward f").Select("f.user_id as user_id, COUNT(DISTINCT f.tunnel_id) as c").Group("f.user_id").Scan(&at)
-    tMap := map[int64]int64{}; for _, a := range at { tMap[a.UserID] = a.C }
-    // node count per user (distinct in/out nodes across user's forwards' tunnels)
-    var an []aggF
-    dbpkg.DB.Raw(`SELECT x.user_id, COUNT(DISTINCT x.nid) as c
+	// forward count per user
+	type aggF struct {
+		UserID int64
+		C      int64
+	}
+	var af []aggF
+	dbpkg.DB.Table("forward").Select("user_id, COUNT(1) as c").Group("user_id").Scan(&af)
+	fMap := map[int64]int64{}
+	for _, a := range af {
+		fMap[a.UserID] = a.C
+	}
+	// tunnel count per user (distinct tunnels in forwards)
+	var at []aggF
+	dbpkg.DB.Table("forward f").Select("f.user_id as user_id, COUNT(DISTINCT f.tunnel_id) as c").Group("f.user_id").Scan(&at)
+	tMap := map[int64]int64{}
+	for _, a := range at {
+		tMap[a.UserID] = a.C
+	}
+	// node count per user (distinct in/out nodes across user's forwards' tunnels)
+	var an []aggF
+	dbpkg.DB.Raw(`SELECT x.user_id, COUNT(DISTINCT x.nid) as c
         FROM (
             SELECT f.user_id, t.in_node_id as nid FROM forward f LEFT JOIN tunnel t ON t.id=f.tunnel_id
             UNION ALL
             SELECT f.user_id, t.out_node_id as nid FROM forward f LEFT JOIN tunnel t ON t.id=f.tunnel_id WHERE t.out_node_id IS NOT NULL
         ) x GROUP BY x.user_id`).Scan(&an)
-    nMap := map[int64]int64{}; for _, a := range an { nMap[a.UserID] = a.C }
+	nMap := map[int64]int64{}
+	for _, a := range an {
+		nMap[a.UserID] = a.C
+	}
 
-    // normalize to camelCase for frontend consistency
-    out := make([]map[string]any, 0, len(users))
-    for i := range users {
-        u := users[i]
-        m := map[string]any{
-            "id":             u.ID,
-            "createdTime":    u.CreatedTime,
-            "updatedTime":    u.UpdatedTime,
-            "status":         u.Status,
-            "user":           u.User,
-            "roleId":         u.RoleID,
-            "expTime":        u.ExpTime,
-            "flow":           u.Flow,
-            "inFlow":         u.InFlow,
-            "outFlow":        u.OutFlow,
-            "num":            u.Num,
-            "flowResetTime":  u.FlowResetTime,
-            "usedBilled":     usedMap[u.ID],
-            "forwardCount":   fMap[u.ID],
-            "tunnelCount":    tMap[u.ID],
-            "nodeCount":      nMap[u.ID],
-        }
-        out = append(out, m)
-    }
-    c.JSON(http.StatusOK, response.Ok(out))
+	// normalize to camelCase for frontend consistency
+	out := make([]map[string]any, 0, len(users))
+	for i := range users {
+		u := users[i]
+		m := map[string]any{
+			"id":            u.ID,
+			"createdTime":   u.CreatedTime,
+			"updatedTime":   u.UpdatedTime,
+			"status":        u.Status,
+			"user":          u.User,
+			"roleId":        u.RoleID,
+			"expTime":       u.ExpTime,
+			"flow":          u.Flow,
+			"inFlow":        u.InFlow,
+			"outFlow":       u.OutFlow,
+			"num":           u.Num,
+			"flowResetTime": u.FlowResetTime,
+			"usedBilled":    usedMap[u.ID],
+			"forwardCount":  fMap[u.ID],
+			"tunnelCount":   tMap[u.ID],
+			"nodeCount":     nMap[u.ID],
+		}
+		out = append(out, m)
+	}
+	c.JSON(http.StatusOK, response.Ok(out))
 }
 
 // POST /api/v1/user/update
@@ -272,24 +305,24 @@ func UserPackage(c *gin.Context) {
 		return
 	}
 
-    // build userInfo payload (camelCase)
-    // compute billed used (sum over forwards by tunnel.flow rule)
-    type agg struct{ Used int64 }
-    var a agg
-    dbpkg.DB.Table("forward f").
-        Select("SUM(CASE WHEN t.flow = 1 THEN (CASE WHEN f.in_flow > f.out_flow THEN f.in_flow ELSE f.out_flow END) ELSE (f.in_flow + f.out_flow) END) as used").
-        Joins("left join tunnel t on t.id = f.tunnel_id").
-        Where("f.user_id = ?", uid).Scan(&a)
+	// build userInfo payload (camelCase)
+	// compute billed used (sum over forwards by tunnel.flow rule)
+	type agg struct{ Used int64 }
+	var a agg
+	dbpkg.DB.Table("forward f").
+		Select("SUM(CASE WHEN t.flow = 1 THEN (CASE WHEN f.in_flow > f.out_flow THEN f.in_flow ELSE f.out_flow END) ELSE (f.in_flow + f.out_flow) END) as used").
+		Joins("left join tunnel t on t.id = f.tunnel_id").
+		Where("f.user_id = ?", uid).Scan(&a)
 
-    userInfo := gin.H{
-        "flow":          user.Flow,
-        "inFlow":        user.InFlow,
-        "outFlow":       user.OutFlow,
-        "num":           user.Num,
-        "expTime":       user.ExpTime,
-        "flowResetTime": user.FlowResetTime,
-        "usedBilled":    a.Used,
-    }
+	userInfo := gin.H{
+		"flow":          user.Flow,
+		"inFlow":        user.InFlow,
+		"outFlow":       user.OutFlow,
+		"num":           user.Num,
+		"expTime":       user.ExpTime,
+		"flowResetTime": user.FlowResetTime,
+		"usedBilled":    a.Used,
+	}
 
 	// tunnel permissions with names and tunnelFlow
 	var tunnelPermissions []struct {
@@ -318,8 +351,7 @@ func UserPackage(c *gin.Context) {
 		Scan(&forwards)
 
 	// recent statistics flows (optional; return whatever exists)
-	var statisticsFlows []model.StatisticsFlow
-	dbpkg.DB.Where("user_id = ?", uid).Order("created_time desc").Limit(200).Find(&statisticsFlows)
+	statisticsFlows := recentFlowSeries(uid)
 
 	c.JSON(http.StatusOK, response.Ok(gin.H{
 		"userInfo":          userInfo,
@@ -327,6 +359,42 @@ func UserPackage(c *gin.Context) {
 		"forwards":          forwards,
 		"statisticsFlows":   statisticsFlows,
 	}))
+}
+
+// recentFlowSeries aggregates last 24h per-hour billed bytes using flow_timeseries
+func recentFlowSeries(userID int64) []struct {
+	Time string `json:"time"`
+	Flow int64  `json:"flow"`
+} {
+	cst := time.FixedZone("UTC+8", 8*3600)
+	now := time.Now().In(cst)
+	from := now.Add(-24 * time.Hour)
+	var rows []model.FlowTimeseries
+	dbpkg.DB.Where("user_id = ? AND time_ms >= ?", userID, from.UnixMilli()).
+		Order("time_ms asc").Find(&rows)
+
+	buckets := map[string]int64{}
+	for _, r := range rows {
+		t := time.UnixMilli(r.TimeMs).In(cst)
+		key := t.Format("01-02 15:00")
+		buckets[key] += r.BilledBytes
+	}
+	labels := make([]string, 0, 24)
+	for i := 23; i >= 0; i-- {
+		t := now.Add(-time.Duration(i) * time.Hour)
+		labels = append(labels, t.Format("01-02 15:00"))
+	}
+	out := make([]struct {
+		Time string `json:"time"`
+		Flow int64  `json:"flow"`
+	}, 0, len(labels))
+	for _, k := range labels {
+		out = append(out, struct {
+			Time string `json:"time"`
+			Flow int64  `json:"flow"`
+		}{Time: k, Flow: buckets[k]})
+	}
+	return out
 }
 
 // POST /api/v1/user/updatePassword

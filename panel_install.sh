@@ -27,6 +27,7 @@ DOT_ENV_FILE="/opt/network-panel/.env"
 STATIC_BASE="https://panel-static.199028.xyz/network-panel"
 INSTALL_SERVER_RAW="$STATIC_BASE/scripts/install_server.sh"
 COMPOSE_MYSQL_RAW="$STATIC_BASE/docker-compose-v4_mysql.yml"
+GITHUB_RAW_BASE="https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main"
 
 proxy_prefix=""
 detect_cn() {
@@ -116,8 +117,16 @@ install_binary() {
   detect_cn
   echo "下载并执行服务端安装脚本..."
   local tmp=install_server.sh
-  if ! download "$INSTALL_SERVER_RAW" "$tmp"; then
-    echo "下载失败：$INSTALL_SERVER_RAW" >&2
+  local ok=0
+  for url in \
+    "$INSTALL_SERVER_RAW" \
+    "$GITHUB_RAW_BASE/scripts/install_server.sh"
+  do
+    if download "$url" "$tmp"; then ok=1; break; fi
+    echo "从 $url 下载失败，尝试下一个..." >&2
+  done
+  if (( ok == 0 )); then
+    echo "下载 install_server.sh 失败（静态源和 GitHub 均不可用）" >&2
     exit 1
   fi
   chmod +x "$tmp"
@@ -149,13 +158,17 @@ install_compose() {
   pushd "$dir" >/dev/null
   echo "下载 docker-compose 配置 (MySQL 版)..."
   if ! download "$COMPOSE_MYSQL_RAW" docker-compose.yaml; then
-    # 退化：如本地仓库存在同名文件则复制
-    if [[ -f "../docker-compose-v4_mysql.yml" ]]; then
-      cp ../docker-compose-v4_mysql.yml docker-compose.yaml
-    else
-      echo "下载失败，且未找到本地 docker-compose-v4_mysql.yml" >&2
-      popd >/dev/null
-      exit 1
+    local gh_url="$GITHUB_RAW_BASE/docker-compose-v4_mysql.yml"
+    echo "静态源下载失败，尝试 GitHub: $gh_url"
+    if ! download "$gh_url" docker-compose.yaml; then
+      # 退化：如本地仓库存在同名文件则复制
+      if [[ -f "../docker-compose-v4_mysql.yml" ]]; then
+        cp ../docker-compose-v4_mysql.yml docker-compose.yaml
+      else
+        echo "下载失败，且未找到本地 docker-compose-v4_mysql.yml" >&2
+        popd >/dev/null
+        exit 1
+      fi
     fi
   fi
   echo "启动容器..."

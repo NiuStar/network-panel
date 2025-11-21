@@ -27,7 +27,8 @@ import {
   getExitNode,
   restartGost,
   agentReconcileNode,
-  enableGostApi
+  enableGostApi,
+  getGostConfig
 } from "@/api";
 
 interface Node {
@@ -115,6 +116,7 @@ export default function NodePage() {
   const [installCommandModal, setInstallCommandModal] = useState(false);
   const [installCommand, setInstallCommand] = useState('');
   const [currentNodeName, setCurrentNodeName] = useState('');
+  const [gostConfigModal, setGostConfigModal] = useState<{open:boolean; loading:boolean; content:string; title:string}>({open:false, loading:false, content:'', title:''});
   
   const websocketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -527,6 +529,23 @@ export default function NodePage() {
       toast.error('触发失败');
     } finally {
       setReapplyLoading(prev=>({ ...prev, [nodeId]: false }));
+    }
+  };
+
+  const showGostConfig = async (node: Node) => {
+    setGostConfigModal({open:true, loading:true, content:'', title:`${node.name} - GOST 配置`});
+    try{
+      const res:any = await getGostConfig(node.id);
+      if(res.code===0){
+        const content = (res.data?.content as string) || '无返回内容';
+        setGostConfigModal({open:true, loading:false, content, title:`${node.name} - GOST 配置`});
+      }else{
+        toast.error(res.msg || '获取配置失败');
+        setGostConfigModal(prev => ({...prev, loading:false}));
+      }
+    }catch(e:any){
+      toast.error(e?.message || '获取配置失败');
+      setGostConfigModal(prev => ({...prev, loading:false}));
     }
   };
 
@@ -1003,19 +1022,11 @@ export default function NodePage() {
                         : '-'}
                     </span>
                   </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-default-600">GOST API</span>
-                    <span className="text-xs">
-                      {node.connectionStatus === 'online' && node.systemInfo
-                        ? (node.systemInfo.gostApi ? '已启用' : '未启用')
-                        : '-'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-sm">
+                  <div className="flex justify-between text-sm items-center">
                     <span className="text-default-600">API 配置</span>
-                    <span className="text-xs">
-                      {node.connectionStatus === 'online' && node.systemInfo
-                        ? (node.systemInfo as any).gostApiConfigured === false ? (
+                    <span className="text-xs flex items-center gap-2">
+                      {node.connectionStatus === 'online' && node.systemInfo ? (
+                        (node.systemInfo as any).gostApiConfigured === false ? (
                           <Button size="sm" color="primary" variant="flat" onPress={async()=>{
                             try {
                               await enableGostApi(node.id);
@@ -1024,8 +1035,14 @@ export default function NodePage() {
                               toast.error(e?.message || '指令发送失败');
                             }
                           }}>开启 GOST API</Button>
-                        ) : ((node.systemInfo as any).gostApiConfigured === true ? '已配置' : '检测中…')
-                        : '-'}
+                        ) : (node.systemInfo as any).gostApiConfigured === true ? (
+                          <Button size="sm" color="secondary" variant="flat" onPress={()=>showGostConfig(node)}>查看 GOST 配置</Button>
+                        ) : (
+                          '检测中…'
+                        )
+                      ) : (
+                        '-'
+                      )}
                     </span>
                   </div>
                     <div className="flex justify-between items-center text-sm">
@@ -1417,6 +1434,32 @@ export default function NodePage() {
                 </ModalFooter>
               </>
             )}
+          </ModalContent>
+        </Modal>
+
+        {/* GOST 配置查看 */}
+        <Modal
+          isOpen={gostConfigModal.open}
+          onClose={()=>setGostConfigModal(prev=>({...prev, open:false}))}
+          size="3xl"
+          scrollBehavior="outside"
+          backdrop="blur"
+          placement="center"
+        >
+          <ModalContent>
+            <ModalHeader>{gostConfigModal.title}</ModalHeader>
+            <ModalBody>
+              {gostConfigModal.loading ? (
+                <div className="text-sm text-default-500">读取中...</div>
+              ) : (
+                <pre className="bg-default-50 dark:bg-default-100/10 rounded-lg p-4 text-xs whitespace-pre-wrap break-all">
+{gostConfigModal.content || '无配置内容'}
+                </pre>
+              )}
+            </ModalBody>
+            <ModalFooter>
+              <Button variant="light" onPress={()=>setGostConfigModal(prev=>({...prev, open:false}))}>关闭</Button>
+            </ModalFooter>
           </ModalContent>
         </Modal>
 

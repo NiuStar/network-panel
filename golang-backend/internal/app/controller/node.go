@@ -1,18 +1,18 @@
 package controller
 
 import (
-    "net/http"
-    "time"
-    "fmt"
-    "strings"
-    "sort"
+	"fmt"
+	"net/http"
+	"sort"
+	"strings"
+	"time"
 
-    "github.com/gin-gonic/gin"
-    "network-panel/golang-backend/internal/app/dto"
-    "network-panel/golang-backend/internal/app/model"
-    "network-panel/golang-backend/internal/app/response"
-    dbpkg "network-panel/golang-backend/internal/db"
-    "strconv"
+	"github.com/gin-gonic/gin"
+	"network-panel/golang-backend/internal/app/dto"
+	"network-panel/golang-backend/internal/app/model"
+	"network-panel/golang-backend/internal/app/response"
+	dbpkg "network-panel/golang-backend/internal/db"
+	"strconv"
 )
 
 // POST /api/v1/node/create
@@ -28,19 +28,23 @@ func NodeCreate(c *gin.Context) {
 	}
 	now := time.Now().UnixMilli()
 	status := 0
-    var owner *int64
-    if uidInf, ok := c.Get("user_id"); ok {
-        uid := uidInf.(int64); owner = &uid
-    }
-    n := model.Node{BaseEntity: model.BaseEntity{CreatedTime: now, UpdatedTime: now, Status: &status}, Name: req.Name, IP: req.IP, ServerIP: req.ServerIP, PortSta: req.PortSta, PortEnd: req.PortEnd, OwnerID: owner}
-    n.PriceCents = req.PriceCents
-    // prefer cycleMonths, fallback to cycleDays
-    if req.CycleMonths != nil {
-        if d := monthsToDays(*req.CycleMonths); d > 0 { tmp := d; n.CycleDays = &tmp }
-    } else {
-        n.CycleDays = req.CycleDays
-    }
-    n.StartDateMs = req.StartDateMs
+	var owner *int64
+	if uidInf, ok := c.Get("user_id"); ok {
+		uid := uidInf.(int64)
+		owner = &uid
+	}
+	n := model.Node{BaseEntity: model.BaseEntity{CreatedTime: now, UpdatedTime: now, Status: &status}, Name: req.Name, IP: req.IP, ServerIP: req.ServerIP, PortSta: req.PortSta, PortEnd: req.PortEnd, OwnerID: owner}
+	n.PriceCents = req.PriceCents
+	// prefer cycleMonths, fallback to cycleDays
+	if req.CycleMonths != nil {
+		if d := monthsToDays(*req.CycleMonths); d > 0 {
+			tmp := d
+			n.CycleDays = &tmp
+		}
+	} else {
+		n.CycleDays = req.CycleDays
+	}
+	n.StartDateMs = req.StartDateMs
 	// simple secret
 	n.Secret = RandUUID()
 	if err := dbpkg.DB.Create(&n).Error; err != nil {
@@ -52,74 +56,93 @@ func NodeCreate(c *gin.Context) {
 
 // POST /api/v1/node/list
 func NodeList(c *gin.Context) {
-    var nodes []model.Node
-    if roleInf, ok := c.Get("role_id"); ok && roleInf != 0 {
-        if uidInf, ok2 := c.Get("user_id"); ok2 { dbpkg.DB.Where("owner_id=?", uidInf.(int64)).Find(&nodes) } else { nodes = []model.Node{} }
-    } else {
-        dbpkg.DB.Find(&nodes)
-    }
-    // build last-seen map from node_sysinfo (latest sample per node)
-    type rec struct{ NodeID int64; TimeMs int64 }
-    var recs []rec
-    // table name is node_sysinfo (no extra underscore)
-    _ = dbpkg.DB.Raw("select node_id, max(time_ms) as time_ms from node_sysinfo group by node_id").Scan(&recs)
-    lastSeen := map[int64]int64{}
-    for _, r := range recs { lastSeen[r.NodeID] = r.TimeMs }
-    now := time.Now().UnixMilli()
-    // consider offline if no sysinfo within threshold
-    thresholdMs := int64(30 * 1000) // 30s
-    if v := c.Request.URL.Query().Get("offline_threshold_ms"); v != "" {
-        if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 { thresholdMs = n }
-    }
-    // map to output adding cycleMonths for clarity; keep other fields
-    outs := make([]map[string]any, 0, len(nodes))
-    for _, n := range nodes {
-        // read last known health flags (in-memory)
-        healthMu.RLock()
-        hf, ok := nodeHealth[n.ID]
-        healthMu.RUnlock()
-        m := map[string]any{
-            "id": n.ID,
-            "name": n.Name,
-            "ip": n.IP,
-            "serverIp": n.ServerIP,
-            "portSta": n.PortSta,
-            "portEnd": n.PortEnd,
-            "version": n.Version,
-            "status": n.Status,
-            "priceCents": n.PriceCents,
-            "startDateMs": n.StartDateMs,
-            // health flags
-            "gostApi":     ifThen(ok && hf.GostAPI, 1, 0),
-            "gostRunning": ifThen(ok && hf.GostRunning, 1, 0),
-        }
-        // override status by last-seen if stale
-        if ts, ok2 := lastSeen[n.ID]; ok2 {
-            if now-ts > thresholdMs {
-                m["status"] = 0
-            }
-        }
-        // derive cycleMonths from stored cycleDays
-        if n.CycleDays != nil {
-            cd := *n.CycleDays
-            var cm *int
-            switch cd {
-            case 30:
-                x := 1; cm = &x
-            case 90:
-                x := 3; cm = &x
-            case 180:
-                x := 6; cm = &x
-            case 365:
-                x := 12; cm = &x
-            default:
-                // leave nil
-            }
-            if cm != nil { m["cycleMonths"] = *cm } else { m["cycleDays"] = cd }
-        }
-        outs = append(outs, m)
-    }
-    c.JSON(http.StatusOK, response.Ok(outs))
+	var nodes []model.Node
+	if roleInf, ok := c.Get("role_id"); ok && roleInf != 0 {
+		if uidInf, ok2 := c.Get("user_id"); ok2 {
+			dbpkg.DB.Where("owner_id=?", uidInf.(int64)).Find(&nodes)
+		} else {
+			nodes = []model.Node{}
+		}
+	} else {
+		dbpkg.DB.Find(&nodes)
+	}
+	// build last-seen map from node_sysinfo (latest sample per node)
+	type rec struct {
+		NodeID int64
+		TimeMs int64
+	}
+	var recs []rec
+	// table name is node_sysinfo (no extra underscore)
+	_ = dbpkg.DB.Raw("select node_id, max(time_ms) as time_ms from node_sysinfo group by node_id").Scan(&recs)
+	lastSeen := map[int64]int64{}
+	for _, r := range recs {
+		lastSeen[r.NodeID] = r.TimeMs
+	}
+	now := time.Now().UnixMilli()
+	// consider offline if no sysinfo within threshold
+	thresholdMs := int64(30 * 1000) // 30s
+	if v := c.Request.URL.Query().Get("offline_threshold_ms"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			thresholdMs = n
+		}
+	}
+	// map to output adding cycleMonths for clarity; keep other fields
+	outs := make([]map[string]any, 0, len(nodes))
+	for _, n := range nodes {
+		// read last known health flags (in-memory)
+		healthMu.RLock()
+		hf, ok := nodeHealth[n.ID]
+		healthMu.RUnlock()
+		m := map[string]any{
+			"id":          n.ID,
+			"name":        n.Name,
+			"ip":          n.IP,
+			"serverIp":    n.ServerIP,
+			"portSta":     n.PortSta,
+			"portEnd":     n.PortEnd,
+			"version":     n.Version,
+			"status":      n.Status,
+			"priceCents":  n.PriceCents,
+			"startDateMs": n.StartDateMs,
+			// health flags
+			"gostApi":     ifThen(ok && hf.GostAPI, 1, 0),
+			"gostRunning": ifThen(ok && hf.GostRunning, 1, 0),
+		}
+		// override status by last-seen if stale
+		if ts, ok2 := lastSeen[n.ID]; ok2 {
+			if now-ts > thresholdMs {
+				m["status"] = 0
+			}
+		}
+		// derive cycleMonths from stored cycleDays
+		if n.CycleDays != nil {
+			cd := *n.CycleDays
+			var cm *int
+			switch cd {
+			case 30:
+				x := 1
+				cm = &x
+			case 90:
+				x := 3
+				cm = &x
+			case 180:
+				x := 6
+				cm = &x
+			case 365:
+				x := 12
+				cm = &x
+			default:
+				// leave nil
+			}
+			if cm != nil {
+				m["cycleMonths"] = *cm
+			} else {
+				m["cycleDays"] = cd
+			}
+		}
+		outs = append(outs, m)
+	}
+	c.JSON(http.StatusOK, response.Ok(outs))
 }
 
 // POST /api/v1/node/update
@@ -129,35 +152,43 @@ func NodeUpdate(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
 		return
 	}
-    var n model.Node
-    if err := dbpkg.DB.First(&n, req.ID).Error; err != nil {
-        c.JSON(http.StatusOK, response.ErrMsg("节点不存在"))
-        return
-    }
-    if roleInf, ok := c.Get("role_id"); ok && roleInf != 0 {
-        if uidInf, ok2 := c.Get("user_id"); ok2 { if n.OwnerID == nil || *n.OwnerID != uidInf.(int64) { c.JSON(http.StatusForbidden, response.ErrMsg("无权限")); return } }
-    }
+	var n model.Node
+	if err := dbpkg.DB.First(&n, req.ID).Error; err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("节点不存在"))
+		return
+	}
+	if roleInf, ok := c.Get("role_id"); ok && roleInf != 0 {
+		if uidInf, ok2 := c.Get("user_id"); ok2 {
+			if n.OwnerID == nil || *n.OwnerID != uidInf.(int64) {
+				c.JSON(http.StatusForbidden, response.ErrMsg("无权限"))
+				return
+			}
+		}
+	}
 	if req.PortSta < 1 || req.PortSta > 65535 || req.PortEnd < 1 || req.PortEnd > 65535 || req.PortEnd < req.PortSta {
 		c.JSON(http.StatusOK, response.ErrMsg("端口范围无效"))
 		return
 	}
 	n.Name, n.IP, n.ServerIP, n.PortSta, n.PortEnd = req.Name, req.IP, req.ServerIP, req.PortSta, req.PortEnd
-    if req.PriceCents != nil {
-        n.PriceCents = req.PriceCents
-    }
-    if req.CycleMonths != nil {
-        if d := monthsToDays(*req.CycleMonths); d > 0 { tmp := d; n.CycleDays = &tmp }
-    } else if req.CycleDays != nil {
-        n.CycleDays = req.CycleDays
-    }
+	if req.PriceCents != nil {
+		n.PriceCents = req.PriceCents
+	}
+	if req.CycleMonths != nil {
+		if d := monthsToDays(*req.CycleMonths); d > 0 {
+			tmp := d
+			n.CycleDays = &tmp
+		}
+	} else if req.CycleDays != nil {
+		n.CycleDays = req.CycleDays
+	}
 	if req.StartDateMs != nil {
 		n.StartDateMs = req.StartDateMs
 	}
 	n.UpdatedTime = time.Now().UnixMilli()
-    if err := dbpkg.DB.Save(&n).Error; err != nil {
-        c.JSON(http.StatusOK, response.ErrMsg("节点更新失败"))
-        return
-    }
+	if err := dbpkg.DB.Save(&n).Error; err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("节点更新失败"))
+		return
+	}
 	// update tunnels referencing IPs
 	dbpkg.DB.Model(&model.Tunnel{}).Where("in_node_id = ?", n.ID).Update("in_ip", n.IP)
 	dbpkg.DB.Model(&model.Tunnel{}).Where("out_node_id = ?", n.ID).Update("out_ip", n.ServerIP)
@@ -165,51 +196,61 @@ func NodeUpdate(c *gin.Context) {
 }
 
 func monthsToDays(m int) int {
-    switch m {
-    case 1:
-        return 30
-    case 3:
-        return 90
-    case 6:
-        return 180
-    case 12:
-        return 365
-    default:
-        if m <= 0 { return 0 }
-        return m * 30
-    }
+	switch m {
+	case 1:
+		return 30
+	case 3:
+		return 90
+	case 6:
+		return 180
+	case 12:
+		return 365
+	default:
+		if m <= 0 {
+			return 0
+		}
+		return m * 30
+	}
 }
 
 // POST /api/v1/node/delete
 func NodeDelete(c *gin.Context) {
-    var p struct {
-        ID         int64 `json:"id"`
-        Uninstall  bool  `json:"uninstall"`
-    }
+	var p struct {
+		ID        int64 `json:"id"`
+		Uninstall bool  `json:"uninstall"`
+	}
 	if err := c.ShouldBindJSON(&p); err != nil {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
 		return
 	}
-    // usage checks
-    var cnt int64
-    dbpkg.DB.Model(&model.Tunnel{}).Where("in_node_id = ?", p.ID).Or("out_node_id = ?", p.ID).Count(&cnt)
-    if cnt > 0 {
-        c.JSON(http.StatusOK, response.ErrMsg("该节点仍被隧道使用"))
-        return
-    }
-    // permission
-    if roleInf, ok := c.Get("role_id"); ok && roleInf != 0 {
-        var node model.Node; if dbpkg.DB.First(&node, p.ID).Error==nil { if uidInf, ok2 := c.Get("user_id"); ok2 { if node.OwnerID == nil || *node.OwnerID != uidInf.(int64) { c.JSON(http.StatusForbidden, response.ErrMsg("无权限")); return } } }
-    }
-    // best-effort uninstall agent on node if requested
-    if p.Uninstall {
-        _ = sendWSCommand(p.ID, "UninstallAgent", map[string]any{"reason": "node_deleted"})
-    }
-    if err := dbpkg.DB.Delete(&model.Node{}, p.ID).Error; err != nil {
-        c.JSON(http.StatusOK, response.ErrMsg("节点删除失败"))
-        return
-    }
-    c.JSON(http.StatusOK, response.OkMsg("节点删除成功"))
+	// usage checks
+	var cnt int64
+	dbpkg.DB.Model(&model.Tunnel{}).Where("in_node_id = ?", p.ID).Or("out_node_id = ?", p.ID).Count(&cnt)
+	if cnt > 0 {
+		c.JSON(http.StatusOK, response.ErrMsg("该节点仍被隧道使用"))
+		return
+	}
+	// permission
+	if roleInf, ok := c.Get("role_id"); ok && roleInf != 0 {
+		var node model.Node
+		if dbpkg.DB.First(&node, p.ID).Error == nil {
+			if uidInf, ok2 := c.Get("user_id"); ok2 {
+				if node.OwnerID == nil || *node.OwnerID != uidInf.(int64) {
+					c.JSON(http.StatusForbidden, response.ErrMsg("无权限"))
+					return
+				}
+			}
+		}
+	}
+	// best-effort uninstall agent on node if requested
+	if p.Uninstall {
+		_ = sendWSCommand(p.ID, "UninstallAgent", map[string]any{"reason": "node_deleted"})
+	}
+	if err := dbpkg.DB.Delete(&model.Node{}, p.ID).Error; err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("节点删除失败"))
+		return
+	}
+	c.JSON(http.StatusOK, response.OkMsg("节点删除成功"))
 }
 
 // POST /api/v1/node/install
@@ -242,96 +283,168 @@ func NodeInstallCmd(c *gin.Context) {
 
 // POST /api/v1/node/ops {nodeId, limit}
 func NodeOps(c *gin.Context) {
-    var p struct{ NodeID int64 `json:"nodeId"`; Limit int `json:"limit"`; RequestID string `json:"requestId"` }
-    if err := c.ShouldBindJSON(&p); err != nil { c.JSON(http.StatusOK, response.ErrMsg("参数错误")); return }
-    if p.Limit <= 0 || p.Limit > 1000 { p.Limit = 200 }
-    // If requestId provided, return all logs for this diagnosis across nodes (ignore nodeId), and include nodeName
-    if strings.TrimSpace(p.RequestID) != "" {
-        type item struct {
-            model.NodeOpLog
-            NodeName string `json:"nodeName"`
-        }
-        var list []model.NodeOpLog
-        dbpkg.DB.Where("request_id = ?", p.RequestID).Order("time_ms asc").Limit(p.Limit).Find(&list)
-        if extra := readBufferedOpLogsByReq(p.RequestID); len(extra) > 0 {
-            // merge and sort asc
-            list = append(list, extra...)
-            sort.Slice(list, func(i,j int) bool { return list[i].TimeMs < list[j].TimeMs })
-            if len(list) > p.Limit { list = list[:p.Limit] }
-        }
-        // build nodeId -> name map
-        var nodes []model.Node
-        dbpkg.DB.Find(&nodes)
-        names := map[int64]string{}
-        for _, n := range nodes { names[n.ID] = n.Name }
-        out := make([]item, 0, len(list))
-        for _, it := range list {
-            out = append(out, item{NodeOpLog: it, NodeName: names[it.NodeID]})
-        }
-        c.JSON(http.StatusOK, response.Ok(map[string]any{"ops": out}))
-        return
-    }
-    // else fallback: by node or recent
-    var list []model.NodeOpLog
-    if p.NodeID > 0 {
-        dbpkg.DB.Where("node_id = ?", p.NodeID).Order("time_ms desc").Limit(p.Limit).Find(&list)
-        if extra := readBufferedOpLogsByNode(p.NodeID, p.Limit); len(extra) > 0 {
-            list = append(extra, list...)
-            if len(list) > p.Limit { list = list[:p.Limit] }
-        }
-    } else {
-        dbpkg.DB.Order("time_ms desc").Limit(p.Limit).Find(&list)
-        if extra := readBufferedOpLogsByNode(0, p.Limit); len(extra) > 0 {
-            list = append(extra, list...)
-            if len(list) > p.Limit { list = list[:p.Limit] }
-        }
-    }
-    c.JSON(http.StatusOK, response.Ok(map[string]any{"ops": list}))
+	var p struct {
+		NodeID    int64  `json:"nodeId"`
+		Limit     int    `json:"limit"`
+		RequestID string `json:"requestId"`
+	}
+	if err := c.ShouldBindJSON(&p); err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+		return
+	}
+	if p.Limit <= 0 || p.Limit > 1000 {
+		p.Limit = 200
+	}
+	// If requestId provided, return all logs for this diagnosis across nodes (ignore nodeId), and include nodeName
+	if strings.TrimSpace(p.RequestID) != "" {
+		type item struct {
+			model.NodeOpLog
+			NodeName string `json:"nodeName"`
+		}
+		var list []model.NodeOpLog
+		dbpkg.DB.Where("request_id = ?", p.RequestID).Order("time_ms asc").Limit(p.Limit).Find(&list)
+		if extra := readBufferedOpLogsByReq(p.RequestID); len(extra) > 0 {
+			// merge and sort asc
+			list = append(list, extra...)
+			sort.Slice(list, func(i, j int) bool { return list[i].TimeMs < list[j].TimeMs })
+			if len(list) > p.Limit {
+				list = list[:p.Limit]
+			}
+		}
+		// build nodeId -> name map
+		var nodes []model.Node
+		dbpkg.DB.Find(&nodes)
+		names := map[int64]string{}
+		for _, n := range nodes {
+			names[n.ID] = n.Name
+		}
+		out := make([]item, 0, len(list))
+		for _, it := range list {
+			out = append(out, item{NodeOpLog: it, NodeName: names[it.NodeID]})
+		}
+		c.JSON(http.StatusOK, response.Ok(map[string]any{"ops": out}))
+		return
+	}
+	// else fallback: by node or recent
+	var list []model.NodeOpLog
+	if p.NodeID > 0 {
+		dbpkg.DB.Where("node_id = ?", p.NodeID).Order("time_ms desc").Limit(p.Limit).Find(&list)
+		if extra := readBufferedOpLogsByNode(p.NodeID, p.Limit); len(extra) > 0 {
+			list = append(extra, list...)
+			if len(list) > p.Limit {
+				list = list[:p.Limit]
+			}
+		}
+	} else {
+		dbpkg.DB.Order("time_ms desc").Limit(p.Limit).Find(&list)
+		if extra := readBufferedOpLogsByNode(0, p.Limit); len(extra) > 0 {
+			list = append(extra, list...)
+			if len(list) > p.Limit {
+				list = list[:p.Limit]
+			}
+		}
+	}
+	c.JSON(http.StatusOK, response.Ok(map[string]any{"ops": list}))
 }
 
 // POST /api/v1/node/restart-gost {nodeId}
 // Ask agent to restart gost service and wait for result if supported.
 func NodeRestartGost(c *gin.Context) {
-    var p struct{ NodeID int64 `json:"nodeId"` }
-    if err := c.ShouldBindJSON(&p); err != nil { c.JSON(http.StatusOK, response.ErrMsg("参数错误")); return }
-    if p.NodeID <= 0 { c.JSON(http.StatusOK, response.ErrMsg("参数错误")); return }
-    // ensure node exists
-    var n model.Node
-    if err := dbpkg.DB.First(&n, p.NodeID).Error; err != nil { c.JSON(http.StatusOK, response.ErrMsg("节点不存在")); return }
-    // Prefer RestartService with name=gost to get explicit success/failure
-    req := map[string]interface{}{"requestId": RandUUID(), "name": "gost"}
-    if res, ok := RequestOp(p.NodeID, "RestartService", req, 8*time.Second); ok {
-        // parse result
-        data, _ := res["data"].(map[string]interface{})
-        succ := false
-        msg := ""
-        if data != nil {
-            if v, ok := data["success"].(bool); ok { succ = v }
-            if v, ok := data["message"].(string); ok { msg = v }
-        }
-        c.JSON(http.StatusOK, response.Ok(map[string]any{"success": succ, "message": msg}))
-        return
-    }
-    // Fallback: fire-and-forget old command; return timeout message
-    _ = sendWSCommand(p.NodeID, "RestartGost", map[string]any{"reason": "manual_from_ui"})
-    c.JSON(http.StatusOK, response.Ok(map[string]any{"success": false, "message": "agent未回执，已下发重启命令"}))
+	var p struct {
+		NodeID int64 `json:"nodeId"`
+	}
+	if err := c.ShouldBindJSON(&p); err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+		return
+	}
+	if p.NodeID <= 0 {
+		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+		return
+	}
+	// ensure node exists
+	var n model.Node
+	if err := dbpkg.DB.First(&n, p.NodeID).Error; err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("节点不存在"))
+		return
+	}
+	// Prefer RestartService with name=gost to get explicit success/failure
+	req := map[string]interface{}{"requestId": RandUUID(), "name": "gost"}
+	if res, ok := RequestOp(p.NodeID, "RestartService", req, 8*time.Second); ok {
+		// parse result
+		data, _ := res["data"].(map[string]interface{})
+		succ := false
+		msg := ""
+		if data != nil {
+			if v, ok := data["success"].(bool); ok {
+				succ = v
+			}
+			if v, ok := data["message"].(string); ok {
+				msg = v
+			}
+		}
+		c.JSON(http.StatusOK, response.Ok(map[string]any{"success": succ, "message": msg}))
+		return
+	}
+	// Fallback: fire-and-forget old command; return timeout message
+	_ = sendWSCommand(p.NodeID, "RestartGost", map[string]any{"reason": "manual_from_ui"})
+	c.JSON(http.StatusOK, response.Ok(map[string]any{"success": false, "message": "agent未回执，已下发重启命令"}))
 }
 
 // POST /api/v1/node/enable-gost-api {nodeId}
 // Ask agent to enable top-level GOST Web API (write api{} then restart gost)
 func NodeEnableGostAPI(c *gin.Context) {
-    var p struct{ NodeID int64 `json:"nodeId" binding:"required"` }
-    if err := c.ShouldBindJSON(&p); err != nil {
-        c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
-        return
-    }
-    var node model.Node
-    if err := dbpkg.DB.First(&node, p.NodeID).Error; err != nil {
-        c.JSON(http.StatusOK, response.ErrMsg("节点不存在"))
-        return
-    }
-    _ = sendWSCommand(node.ID, "EnableGostAPI", map[string]any{"from": "manual"})
-    c.JSON(http.StatusOK, response.OkNoData())
+	var p struct {
+		NodeID int64 `json:"nodeId" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&p); err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+		return
+	}
+	var node model.Node
+	if err := dbpkg.DB.First(&node, p.NodeID).Error; err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("节点不存在"))
+		return
+	}
+	_ = sendWSCommand(node.ID, "EnableGostAPI", map[string]any{"from": "manual"})
+	c.JSON(http.StatusOK, response.OkNoData())
+}
+
+// POST /api/v1/node/gost-config {nodeId}
+// Ask agent to read gost.json content and return
+func NodeGostConfig(c *gin.Context) {
+	var p struct {
+		NodeID int64 `json:"nodeId" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&p); err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+		return
+	}
+	var node model.Node
+	if err := dbpkg.DB.First(&node, p.NodeID).Error; err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("节点不存在"))
+		return
+	}
+	script := "#!/bin/sh\nset +e\nfor p in /etc/gost/gost.json /usr/local/gost/gost.json ./gost.json; do if [ -f \"$p\" ]; then echo \"PATH:$p\"; cat \"$p\"; exit 0; fi; done; echo 'PATH:NOT_FOUND'; exit 0\n"
+	req := map[string]any{"requestId": RandUUID(), "timeoutSec": 8, "content": script}
+	if res, ok := RequestOp(node.ID, "RunScript", req, 10*time.Second); ok {
+		msg := "ok"
+		var so string
+		if d, _ := res["data"].(map[string]any); d != nil {
+			if m, _ := d["message"].(string); m != "" {
+				msg = m
+			}
+			if s, _ := d["stdout"].(string); s != "" {
+				so = s
+			}
+		}
+		_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: node.ID, Cmd: "GostConfigRead", RequestID: req["requestId"].(string), Success: 1, Message: msg, Stdout: &so}).Error
+		c.JSON(http.StatusOK, response.Ok(map[string]any{
+			"message": msg,
+			"content": so,
+		}))
+		return
+	}
+	c.JSON(http.StatusOK, response.ErrMsg("未响应，请稍后重试"))
 }
 
 // utils (local)

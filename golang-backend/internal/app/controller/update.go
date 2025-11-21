@@ -147,34 +147,42 @@ func VersionUpgrade(c *gin.Context) {
 	_ = os.MkdirAll(filepath.Join(installDir, "easytier"), 0o755)
 
 	// Raw files from main branch
-    staticBase := "https://panel-static.199028.xyz/network-panel"
-    rawInstall := staticBase + "/install.sh"
-    rawEtConf := staticBase + "/easytier/default.conf"
-    rawEtInstall := staticBase + "/easytier/install.sh"
+	staticBase := "https://panel-static.199028.xyz/network-panel"
+	ghRawBase := "https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main"
+	rawInstall := staticBase + "/install.sh"
+	rawEtConf := staticBase + "/easytier/default.conf"
+	rawEtInstall := staticBase + "/easytier/install.sh"
+	ghInstall := ghRawBase + "/install.sh"
+	ghEtConf := ghRawBase + "/easytier/default.conf"
+	ghEtInstall := ghRawBase + "/easytier/install.sh"
 	// allow proxyPrefix for these raw downloads
 	ri := rawInstall
 	rc := rawEtConf
 	re := rawEtInstall
+	ghi := ghInstall
+	ghc := ghEtConf
+	ghe := ghEtInstall
 	if p.ProxyPrefix != "" {
 		ri = p.ProxyPrefix + rawInstall
 		rc = p.ProxyPrefix + rawEtConf
 		re = p.ProxyPrefix + rawEtInstall
+		ghi = p.ProxyPrefix + ghInstall
+		ghc = p.ProxyPrefix + ghEtConf
+		ghe = p.ProxyPrefix + ghEtInstall
 	}
-	if err := downloadToPath(ri, filepath.Join(installDir, "install.sh"), 0o755); err != nil {
-		errs = append(errs, fmt.Sprintf("install.sh 下载失败: %v", err))
-	} else {
-		made["install.sh"] = filepath.Join(installDir, "install.sh")
+	tryRaw := func(primary, fallback, dst, key string, mode os.FileMode) {
+		if err := downloadToPath(primary, dst, mode); err != nil {
+			if err2 := downloadToPath(fallback, dst, mode); err2 != nil {
+				errs = append(errs, fmt.Sprintf("%s 下载失败: %v; 兜底失败: %v", key, err, err2))
+				return
+			}
+		}
+		made[key] = dst
 	}
-	if err := downloadToPath(rc, filepath.Join(installDir, "easytier", "default.conf"), 0o644); err != nil {
-		errs = append(errs, fmt.Sprintf("easytier/default.conf 下载失败: %v", err))
-	} else {
-		made["easytier/default.conf"] = filepath.Join(installDir, "easytier", "default.conf")
-	}
-	if err := downloadToPath(re, filepath.Join(installDir, "easytier", "install.sh"), 0o755); err != nil {
-		errs = append(errs, fmt.Sprintf("easytier/install.sh 下载失败: %v", err))
-	} else {
-		made["easytier/install.sh"] = filepath.Join(installDir, "easytier", "install.sh")
-	}
+
+	tryRaw(ri, ghi, filepath.Join(installDir, "install.sh"), "install.sh", 0o755)
+	tryRaw(rc, ghc, filepath.Join(installDir, "easytier", "default.conf"), "easytier/default.conf", 0o644)
+	tryRaw(re, ghe, filepath.Join(installDir, "easytier", "install.sh"), "easytier/install.sh", 0o755)
 
 	out["created"] = made
 	if len(errs) > 0 {

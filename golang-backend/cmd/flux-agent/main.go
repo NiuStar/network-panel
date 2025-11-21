@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -41,7 +42,7 @@ var (
 
 // versionBase is the agent semantic version (without role prefix).
 // final reported version is: go-agent-<versionBase> or go-agent2-<versionBase>
-var versionBase = " 1.0.8.3"
+var versionBase = " 1.0.8.4"
 var version = ""      // computed in main()
 var apiBootDone int32 // 0=not attempted, 1=attempted
 var apiUse int32      // 1=Web API usable
@@ -98,6 +99,96 @@ func getenv(k, def string) string {
 func singleAgentMode() bool {
 	v := strings.ToLower(strings.TrimSpace(getenv("SINGLE_AGENT", "1")))
 	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
+// ensureAgentID returns a stable unique id, preferring machine-id; otherwise persists to /etc/gost/agent_uid.
+func ensureAgentID() string {
+	paths := []string{"/etc/machine-id", "/var/lib/dbus/machine-id"}
+	for _, p := range paths {
+		if b, err := os.ReadFile(p); err == nil {
+			id := strings.TrimSpace(string(b))
+			if id != "" {
+				return "mid-" + id
+			}
+		}
+	}
+	store := "/etc/gost/agent_uid"
+	if b, err := os.ReadFile(store); err == nil && len(b) > 0 {
+		return strings.TrimSpace(string(b))
+	}
+	_ = os.MkdirAll("/etc/gost", 0o755)
+	if ip := fetchExternalIP(); ip != "" {
+		sum := md5.Sum([]byte(ip))
+		id := fmt.Sprintf("hip-%x", sum[:4])
+		_ = os.WriteFile(store, []byte(id), 0o644)
+		return id
+	}
+	id := fmt.Sprintf("uid-%d-%d", time.Now().UnixNano(), rand.Int63())
+	_ = os.WriteFile(store, []byte(id), 0o644)
+	return id
+}
+
+// ensureCreatedAt records first heartbeat time to keep CreatedAtMs stable across restarts.
+func ensureCreatedAt() int64 {
+	store := "/etc/gost/agent_created_ms"
+	if b, err := os.ReadFile(store); err == nil {
+		if ms, err2 := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64); err2 == nil && ms > 0 {
+			return ms
+		}
+	}
+	now := time.Now().UnixMilli()
+	_ = os.WriteFile(store, []byte(fmt.Sprintf("%d", now)), 0o644)
+	return now
+}
+
+// fetchExternalIP attempts to read public IP (used for stable ID and reporting).
+func fetchExternalIP() string {
+	url := getenv("IP_LOOKUP_URL", "https://api.ip.sb/ip")
+	client := &http.Client{Timeout: 3 * time.Second}
+	if resp, err := client.Get(url); err == nil {
+		defer resp.Body.Close()
+		if b, err2 := io.ReadAll(resp.Body); err2 == nil {
+			ip := strings.TrimSpace(string(b))
+			if ip != "" {
+				return ip
+			}
+		}
+	}
+	return ""
+}
+
+// heartbeatLoop posts heartbeat periodically (hourly) to the panel.
+func heartbeatLoop(url, uid, ver string, createdMs int64) {
+	tick := time.NewTicker(1 * time.Hour)
+	defer tick.Stop()
+	client := &http.Client{Timeout: 8 * time.Second, Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}}
+	send := func() {
+		ip := fetchExternalIP()
+		body := map[string]any{
+			"kind":        "agent",
+			"uniqueId":    uid,
+			"version":     ver,
+			"os":          runtime.GOOS,
+			"arch":        runtime.GOARCH,
+			"createdAtMs": createdMs,
+			"installMode": "agent",
+			"ip":          ip,
+		}
+		b, _ := json.Marshal(body)
+		req, _ := http.NewRequest("POST", url, bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err == nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+	}
+	send()
+	for range tick.C {
+		send()
+	}
 }
 
 func disableService(name string) {
@@ -168,6 +259,14 @@ func main() {
 		disableService("flux-agent2")
 		os.Exit(0)
 	}
+
+	agentID := ensureAgentID()
+	createdMs := ensureCreatedAt()
+	heartbeatURL := getenv("HEARTBEAT_ENDPOINT", "")
+	if heartbeatURL == "" {
+		heartbeatURL = "https://flux.529851.xyz/api/v1/stats/heartbeat"
+	}
+	go heartbeatLoop(heartbeatURL, agentID, version, createdMs)
 
 	u := url.URL{Scheme: scheme, Host: addr, Path: "/system-info"}
 	q := u.Query()

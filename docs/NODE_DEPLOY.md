@@ -6,6 +6,8 @@
 ```bash
 curl -fsSL https://panel-static.199028.xyz/network-panel/install.sh -o install.sh \
   && sudo bash install.sh -a <面板地址:端口> -s <节点密钥>
+# 若静态源不可用，可用 GitHub 备用源：
+# curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/install.sh -o install.sh && sudo bash install.sh -a <面板地址:端口> -s <节点密钥>
 ```
 
 节点用于承载入口/出口服务，包含两部分：
@@ -41,6 +43,8 @@ curl -fsSL https://panel-static.199028.xyz/network-panel/install.sh -o install.s
 ```bash
 curl -fsSL https://panel-static.199028.xyz/network-panel/install.sh -o install.sh \
   && sudo bash install.sh -a <面板地址:端口> -s <节点密钥>
+# 若静态源不可用，可用 GitHub 备用源：
+# curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/install.sh -o install.sh && sudo bash install.sh -a <面板地址:端口> -s <节点密钥>
 ```
 
 参数说明：

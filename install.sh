@@ -3,6 +3,7 @@ INSTALL_DIR="/etc/gost"
 AGENT_BIN="/usr/local/bin/flux-agent"
 # Static mirror for all downloadable artifacts (scripts/binaries/configs)
 STATIC_BASE="https://panel-static.199028.xyz/network-panel"
+GITHUB_DL_BASE="https://github.com/NiuStar/network-panel/releases/latest/download"
 COUNTRY=$(curl -s https://ipinfo.io/country)
 # GOST 最新版本 API（自动匹配资产）
 BASE_GOST_REPO_API="https://api.github.com/repos/go-gost/gost/releases/latest"
@@ -250,6 +251,12 @@ install_flux_agent_go_bin() {
   if curl -fsSL "${STATIC_BASE}/flux-agent/${file}" -o "$target"; then
     chmod +x "$target"; return 0
   fi
+  # 2) GitHub release 兜底
+  local gh_base="$GITHUB_DL_BASE"
+  [[ -n "$PROXY_PREFIX" ]] && gh_base="${PROXY_PREFIX}${gh_base}"
+  if curl -fsSL "${gh_base}/${file}" -o "$target"; then
+    chmod +x "$target"; return 0
+  fi
   # 2) 回落到面板后端 /flux-agent
   if curl -fsSL "http://$SERVER_ADDR/flux-agent/$file" -o "$target"; then
     chmod +x "$target"; return 0
@@ -277,12 +284,19 @@ install_flux_agent() {
   if curl -fSL --retry 3 --retry-delay 1 "${STATIC_BASE}/flux-agent/${file}" -o "$tmpfile"; then
     install -m 0755 "$tmpfile" "$AGENT_FILE" && rm -f "$tmpfile"
   else
-    echo "回落面板: http://$SERVER_ADDR/flux-agent/$file"
-    if curl -fSL --retry 3 --retry-delay 1 "http://$SERVER_ADDR/flux-agent/$file" -o "$tmpfile"; then
-    install -m 0755 "$tmpfile" "$AGENT_FILE" && rm -f "$tmpfile"
+    local gh_base="$GITHUB_DL_BASE"
+    [[ -n "$PROXY_PREFIX" ]] && gh_base="${PROXY_PREFIX}${gh_base}"
+    echo "尝试 GitHub 发布页: ${gh_base}/${file}"
+    if curl -fSL --retry 3 --retry-delay 1 "${gh_base}/${file}" -o "$tmpfile"; then
+      install -m 0755 "$tmpfile" "$AGENT_FILE" && rm -f "$tmpfile"
     else
-      echo "❌ 无法下载 flux-agent 二进制"
-      return 1
+      echo "回落面板: http://$SERVER_ADDR/flux-agent/$file"
+      if curl -fSL --retry 3 --retry-delay 1 "http://$SERVER_ADDR/flux-agent/$file" -o "$tmpfile"; then
+        install -m 0755 "$tmpfile" "$AGENT_FILE" && rm -f "$tmpfile"
+      else
+        echo "❌ 无法下载 flux-agent 二进制"
+        return 1
+      fi
     fi
   fi
 

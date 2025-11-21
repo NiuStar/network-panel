@@ -1603,7 +1603,7 @@ export default function NodePage() {
           backdrop="blur"
           placement="center"
         >
-          <ModalContent className="max-w-[60vw]">
+          <ModalContent className="max-w-[60vw] md:max-w-[90vw] lg:max-w-[60vw]">
             <ModalHeader>{nqModal.title}</ModalHeader>
             <ModalBody>
               {nqModal.loading ? (

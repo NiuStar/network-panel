@@ -77,7 +77,7 @@ func RegisterRoutes(r *gin.Engine) {
 	}
 
 	// node
-	node := api.Group("/node")
+    node := api.Group("/node")
     node.Use(middleware.Auth(), middleware.ForbidManagedLimited())
     {
         node.POST("/create", controller.NodeCreate)
@@ -92,6 +92,9 @@ func RegisterRoutes(r *gin.Engine) {
 		node.POST("/get-exit", controller.NodeGetExit)
 		// read gost config content
 		node.POST("/gost-config", controller.NodeGostConfig)
+		// NodeQuality test trigger/result
+		node.POST("/nq-test", controller.NodeNQTest)
+		node.POST("/nq-result", controller.NodeNQResult)
 		// query services on node
         node.POST("/query-services", controller.NodeQueryServices)
 		// network stats for node
@@ -99,10 +102,13 @@ func RegisterRoutes(r *gin.Engine) {
 		node.POST("/network-stats-batch", controller.NodeNetworkStatsBatch)
 		node.POST("/sysinfo", controller.NodeSysinfo)
 		node.POST("/interfaces", controller.NodeInterfaces)
-		node.POST("/ops", controller.NodeOps)
+        node.POST("/ops", controller.NodeOps)
 		node.POST("/restart-gost", controller.NodeRestartGost)
 		node.POST("/enable-gost-api", controller.NodeEnableGostAPI)
 	}
+
+	// streaming log push from agent (auth by secret)
+	api.POST("/nq/stream", controller.NodeNQStreamPush)
 
 	// tunnel
 	tunnel := api.Group("/tunnel")

@@ -28,7 +28,9 @@ import {
   restartGost,
   agentReconcileNode,
   enableGostApi,
-  getGostConfig
+  getGostConfig,
+  runNQTest,
+  getNQResult
 } from "@/api";
 
 interface Node {
@@ -117,6 +119,10 @@ export default function NodePage() {
   const [installCommand, setInstallCommand] = useState('');
   const [currentNodeName, setCurrentNodeName] = useState('');
   const [gostConfigModal, setGostConfigModal] = useState<{open:boolean; loading:boolean; content:string; title:string}>({open:false, loading:false, content:'', title:''});
+  const [nqLoading, setNqLoading] = useState<Record<number, boolean>>({});
+  const [nqResultCache, setNqResultCache] = useState<Record<number, {content:string; timeMs:number|null}>>({});
+  const [nqModal, setNqModal] = useState<{open:boolean; title:string; content:string; timeMs:number|null; loading:boolean}>({open:false, title:'', content:'', timeMs:null, loading:false});
+  const [nqHasResult, setNqHasResult] = useState<Record<number, boolean>>({});
   
   const websocketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -139,6 +145,29 @@ export default function NodePage() {
     };
   }, []);
 
+  const ansiToHtml = (txt: string) => {
+    // normalize换行：将回车视为换行，便于进度条/覆盖输出在网页端换行展示
+    const normalized = txt.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const esc = escapeHtml(normalized);
+    const ansiMap: Record<string, string> = {
+      "0": "</span>",
+      "1": '<span class="font-bold">',
+      "31": '<span class="text-red-400">',
+      "32": '<span class="text-green-400">',
+      "33": '<span class="text-yellow-300">',
+      "34": '<span class="text-blue-400">',
+      "35": '<span class="text-pink-400">',
+      "36": '<span class="text-cyan-300">',
+      "37": '<span class="text-gray-100">',
+    };
+    const replaced = esc.replace(/\x1b\[((?:\d{1,2};?)+)m/g, (_, g1) => {
+      const codes = g1.split(";").map((s:string)=>s.trim());
+      return codes.map((c:string) => ansiMap[c] ?? "").join("");
+    });
+    return replaced.replace(/\n/g, "<br/>");
+  };
+
   // 加载版本信息
   useEffect(() => {
     getVersionInfo().then((res:any)=>{
@@ -155,7 +184,7 @@ export default function NodePage() {
     try {
       const res = await getNodeList();
       if (res.code === 0) {
-        setNodeList(res.data.map((node: any) => {
+        const mappedNodes = res.data.map((node: any) => {
           const online = node.status === 1 ? 'online' : 'offline';
           const base: any = {
             ...node,
@@ -179,7 +208,20 @@ export default function NodePage() {
             base.systemInfo = null;
           }
           return base;
-        }));
+        });
+        setNodeList(mappedNodes);
+        // 预拉取各节点的 NQ 结果存在性
+        mappedNodes.forEach(async (node: any) => {
+          try{
+            const r:any = await getNQResult(node.id);
+            if(r.code===0 && r.data && (r.data.content || r.data.done)){
+              setNqHasResult((prev:Record<number,boolean>)=>({...prev, [node.id]: true}));
+              const content = (r.data.content as string) || '';
+              const timeMs = r.data.timeMs || null;
+              setNqResultCache(prev=>({...prev, [node.id]: {content, timeMs}}));
+            }
+          }catch{}
+        });
         // 批量拉取最近1小时探针概览（按配置可隐藏）
         if (showNetwork) {
           try {
@@ -548,6 +590,84 @@ export default function NodePage() {
       setGostConfigModal(prev => ({...prev, loading:false}));
     }
   };
+
+  const runNQ = async (node: Node) => {
+    setNqLoading(prev=>({...prev, [node.id]: true}));
+    try{
+      const res:any = await runNQTest(node.id);
+      if(res.code===0){
+        const content = (res.data?.content as string) || '无返回内容';
+        setNqResultCache(prev=>({...prev, [node.id]: {content, timeMs: Date.now()}}));
+        toast.success('已开始 NQ 测试，实时结果将自动更新');
+        // 开始轮询结果
+        const poll = async (attempt=0) => {
+          if (attempt > 80) return; // ~4分钟
+          try{
+            const r:any = await getNQResult(node.id);
+            if(r.code===0 && r.data){
+              const ct = (r.data.content as string) || '';
+              const tms = r.data.timeMs || null;
+              setNqResultCache(prev=>({...prev, [node.id]: {content: ct, timeMs: tms}}));
+              if(r.data.done){
+                return;
+              }
+            }
+          }catch{}
+          setTimeout(()=>poll(attempt+1), 3000);
+        };
+        poll();
+      }else{
+        toast.error(res.msg || '测试失败');
+      }
+    }catch(e:any){
+      toast.error(e?.message || '测试失败');
+    }finally{
+      setNqLoading(prev=>({...prev, [node.id]: false}));
+    }
+  };
+
+  const viewNQ = async (node: Node) => {
+    const cached = nqResultCache[node.id];
+    if (cached && cached.content) {
+      setNqModal({open:true, title:`${node.name} - NQ 测试结果`, content: cached.content, timeMs: cached.timeMs, loading:false});
+    } else {
+      setNqModal({open:true, title:`${node.name} - NQ 测试结果`, content:'', timeMs:null, loading:true});
+    }
+    try{
+      const res:any = await getNQResult(node.id);
+      if(res.code===0 && res.data){
+        const content = (res.data.content as string) || '无返回内容';
+        const timeMs = res.data.timeMs || null;
+        setNqResultCache(prev=>({...prev, [node.id]: {content, timeMs}}));
+        setNqModal({open:true, title:`${node.name} - NQ 测试结果`, content, timeMs, loading:false});
+      }else{
+        toast.error(res.msg || '暂无结果');
+        setNqModal(prev=>({...prev, open:false, loading:false}));
+      }
+    }catch(e:any){
+      toast.error(e?.message || '获取结果失败');
+      setNqModal(prev=>({...prev, open:false, loading:false}));
+    }
+  };
+
+  // 自动刷新 NQ 弹窗内容
+  useEffect(() => {
+    if (!nqModal.open) return;
+    const timer = setInterval(async () => {
+      const node = nodeList.find(n => nqModal.title.startsWith(n.name));
+      if (!node) return;
+      try{
+        const res:any = await getNQResult(node.id);
+        if(res.code===0 && res.data){
+          const content = (res.data.content as string) || '';
+          const timeMs = res.data.timeMs || null;
+          setNqResultCache(prev=>({...prev, [node.id]: {content, timeMs}}));
+          setNqModal(prev=>({...prev, content, timeMs, loading:false}));
+        }
+      }catch{}
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [nqModal.open, nodeList]);
 
   // 关闭WebSocket连接
   const closeWebSocket = () => {
@@ -1023,6 +1143,17 @@ export default function NodePage() {
                     </span>
                   </div>
                   <div className="flex justify-between text-sm items-center">
+                    <span className="text-default-600">NQ 测试</span>
+                    <span className="text-xs flex items-center gap-2">
+                      <Button size="sm" color="primary" variant="flat" onPress={()=>runNQ(node)} isLoading={!!nqLoading[node.id]}>
+                        {nqResultCache[node.id] ? '重新测试' : 'NQ 测试'}
+                      </Button>
+                      {(nqResultCache[node.id] || nqHasResult[node.id]) && (
+                        <Button size="sm" variant="flat" onPress={()=>viewNQ(node)}>查看结果</Button>
+                      )}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-sm items-center">
                     <span className="text-default-600">API 配置</span>
                     <span className="text-xs flex items-center gap-2">
                       {node.connectionStatus === 'online' && node.systemInfo ? (
@@ -1459,6 +1590,32 @@ export default function NodePage() {
             </ModalBody>
             <ModalFooter>
               <Button variant="light" onPress={()=>setGostConfigModal(prev=>({...prev, open:false}))}>关闭</Button>
+            </ModalFooter>
+          </ModalContent>
+        </Modal>
+
+        {/* NQ 测试结果 */}
+        <Modal
+          isOpen={nqModal.open}
+          onClose={()=>setNqModal(prev=>({...prev, open:false}))}
+          size="5xl"
+          scrollBehavior="outside"
+          backdrop="blur"
+          placement="center"
+        >
+          <ModalContent className="max-w-[60vw]">
+            <ModalHeader>{nqModal.title}</ModalHeader>
+            <ModalBody>
+              {nqModal.loading ? (
+                <div className="text-sm text-default-500">读取中...</div>
+              ) : (
+                <div className="bg-black text-green-100 rounded-lg p-4 text-xs font-mono leading-relaxed overflow-auto min-h-[200px]" 
+                     dangerouslySetInnerHTML={{__html: ansiToHtml(nqModal.content || '暂无结果')}} />
+              )}
+              {nqModal.timeMs && <div className="text-xs text-default-500">时间：{new Date(nqModal.timeMs).toLocaleString()}</div>}
+            </ModalBody>
+            <ModalFooter>
+              <Button variant="light" onPress={()=>setNqModal(prev=>({...prev, open:false}))}>关闭</Button>
             </ModalFooter>
           </ModalContent>
         </Modal>

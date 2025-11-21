@@ -141,6 +141,20 @@ type FlowTimeseries struct {
 
 func (FlowTimeseries) TableName() string { return "flow_timeseries" }
 
+// NQResult stores streaming NodeQuality test output per request/node
+type NQResult struct {
+	ID          int64  `gorm:"primaryKey;column:id" json:"id"`
+	NodeID      int64  `gorm:"column:node_id;index:nq_node_idx" json:"nodeId"`
+	RequestID   string `gorm:"column:request_id;type:varchar(128);index:nq_node_idx" json:"requestId"`
+	Content     string `gorm:"column:content;type:longtext" json:"content"`
+	Done        bool   `gorm:"column:done" json:"done"`
+	TimeMs      int64  `gorm:"column:time_ms" json:"timeMs"`
+	CreatedTime int64  `gorm:"column:created_time" json:"createdTime"`
+	UpdatedTime int64  `gorm:"column:updated_time" json:"updatedTime"`
+}
+
+func (NQResult) TableName() string { return "nq_result" }
+
 // Ensure models compile with gorm
 var _ *gorm.DB
 

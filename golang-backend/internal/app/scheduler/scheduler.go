@@ -22,6 +22,7 @@ import (
 func Start() {
 	go billingChecker()
 	go controllerHeartbeat()
+	go pruneOldData()
 }
 
 func billingChecker() {
@@ -187,4 +188,22 @@ func postHeartbeat(endpoint, kind, uid, version, osName, arch string, createdAt 
 	defer resp.Body.Close()
 	io.Copy(io.Discard, resp.Body)
 	return nil
+}
+
+// pruneOldData cleans time-series tables older than 3 days
+func pruneOldData() {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	cutoff := func() int64 { return time.Now().Add(-72 * time.Hour).UnixMilli() }
+	clean := func(table any, col string) {
+		_ = dbpkg.DB.Where(col+" < ?", cutoff()).Delete(table).Error
+	}
+	for {
+		clean(&model.NodeOpLog{}, "time_ms")
+		clean(&model.NodeProbeResult{}, "time_ms")
+		clean(&model.NodeSysInfo{}, "time_ms")
+		clean(&model.FlowTimeseries{}, "time_ms")
+		clean(&model.NQResult{}, "time_ms")
+		<-ticker.C
+	}
 }

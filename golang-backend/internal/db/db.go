@@ -110,6 +110,7 @@ func Init() error {
 		&model.ForwardMidPort{},
 		&model.HeartbeatRecord{},
 		&model.FlowTimeseries{},
+		&model.NQResult{},
 	); err != nil {
 		return err
 	}

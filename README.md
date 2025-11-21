@@ -4,6 +4,10 @@
 -  [![vps.town](https://vps.town/static/images/sponsor.png)](https://vps.town)感谢[vps.town](https://vps.town)提供的服务器赞助与支持！
 - [公共体验专区：https://vps.199028.xyz/app/](https://vps.199028.xyz/app/)
 ## 更新记录
+- 2025-11-21 ```增加了查看节点配置文件功能
+                 支持了UDP功能
+                 增加了NQ测试功能，再也不用打开终端跑命令了
+-                1.0.9版本，建议安装```
 - 2025-11-17   ```优化gost服务配置，修改某个服务不再会导致其他服务断流了
                支持远程多个地址负载均衡了```
 

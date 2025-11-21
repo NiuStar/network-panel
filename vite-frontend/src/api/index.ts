@@ -143,6 +143,8 @@ export const deleteProbeTarget = (id: number) => Network.post("/probe/delete", {
 export const getNodeNetworkStats = (nodeId: number, range: string) => Network.post("/node/network-stats", { nodeId, range });
 export const getNodeNetworkStatsBatch = (range: string) => Network.post("/node/network-stats-batch", { range });
 export const getGostConfig = (nodeId: number) => Network.post("/node/gost-config", { nodeId });
+export const runNQTest = (nodeId: number) => Network.post("/node/nq-test", { nodeId });
+export const getNQResult = (nodeId: number) => Network.post("/node/nq-result", { nodeId });
 // 版本信息
 export const getVersionInfo = () => Network.get("/version");
 export const getLatestVersionInfo = () => Network.get("/version/latest");

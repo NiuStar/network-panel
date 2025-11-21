@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/md5"
@@ -29,6 +30,7 @@ import (
 
 	"debug/elf"
 
+	"sync"
 	"sync/atomic"
 
 	"github.com/gorilla/websocket"
@@ -42,7 +44,7 @@ var (
 
 // versionBase is the agent semantic version (without role prefix).
 // final reported version is: go-agent-<versionBase> or go-agent2-<versionBase>
-var versionBase = " 1.0.8.4"
+var versionBase = " 1.0.9"
 var version = ""      // computed in main()
 var apiBootDone int32 // 0=not attempted, 1=attempted
 var apiUse int32      // 1=Web API usable
@@ -621,6 +623,18 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 				if d, ok := res["data"].(map[string]any); ok {
 					_ = c.WriteJSON(map[string]any{"type": "OpLog", "step": "run_script_done", "message": fmt.Sprintf("RunScript done success=%v message=%v stdout=%v stderr=%v", d["success"], d["message"], d["stdout"], d["stderr"])})
 				}
+			}()
+		case "RunStreamScript":
+			var req map[string]any
+			_ = json.Unmarshal(m.Data, &req)
+			go func() {
+				reqID, _ := req["requestId"].(string)
+				content, _ := req["content"].(string)
+				urlStr, _ := req["url"].(string)
+				endpoint, _ := req["endpoint"].(string)
+				secret, _ := req["secret"].(string)
+				log.Printf("{\"event\":\"run_stream_script_recv\",\"hasContent\":%t,\"contentLen\":%d,\"url\":%q,\"endpoint\":%q}", content != "", len(content), urlStr, endpoint)
+				runStreamScript(reqID, content, urlStr, endpoint, secret)
 			}()
 		case "WriteFile":
 			var req map[string]any
@@ -2698,6 +2712,110 @@ func runScript(req map[string]any) map[string]any {
 	return map[string]any{"success": true, "message": "ok", "stdout": string(out)}
 }
 
+// runStreamScript executes a script and streams stdout/stderr chunks to endpoint every ~3s
+func runStreamScript(reqID, content, urlStr, endpoint, secret string) {
+	if endpoint == "" || secret == "" {
+		log.Printf("{\"event\":\"run_stream_script_error\",\"msg\":\"missing endpoint/secret\"}")
+		return
+	}
+	if content == "" && urlStr != "" {
+		if b, err := fetchURL(urlStr); err == nil {
+			content = string(b)
+		}
+	}
+	if content == "" {
+		log.Printf("{\"event\":\"run_stream_script_error\",\"msg\":\"empty content\"}")
+		return
+	}
+	tmp, err := os.CreateTemp("", "np_run_stream_*.sh")
+	if err != nil {
+		return
+	}
+	_ = os.Chmod(tmp.Name(), 0o755)
+	tmp.WriteString(content)
+	tmp.Close()
+	defer os.Remove(tmp.Name())
+
+	cmd := exec.Command("/bin/bash", tmp.Name())
+	stdout, _ := cmd.StdoutPipe()
+	stderr, _ := cmd.StderrPipe()
+	if err := cmd.Start(); err != nil {
+		return
+	}
+
+	type chunk struct{ s string }
+	ch := make(chan chunk, 128)
+	wg := sync.WaitGroup{}
+	reader := func(r io.Reader) {
+		defer wg.Done()
+		sc := bufio.NewScanner(r)
+		for sc.Scan() {
+			ch <- chunk{s: sc.Text()}
+		}
+	}
+	wg.Add(2)
+	go reader(stdout)
+	go reader(stderr)
+
+	doneCh := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(doneCh)
+	}()
+
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	var buf strings.Builder
+	flush := func(done bool) {
+		if buf.Len() == 0 && !done {
+			return
+		}
+		postStreamChunk(endpoint, secret, reqID, buf.String(), done)
+		buf.Reset()
+	}
+
+	for {
+		select {
+		case ck, ok := <-ch:
+			if !ok {
+				ch = nil
+			} else {
+				buf.WriteString(ck.s)
+				buf.WriteString("\n")
+			}
+		case <-ticker.C:
+			flush(false)
+		case <-doneCh:
+			flush(false)
+			cmd.Wait()
+			flush(true)
+			return
+		}
+	}
+}
+
+func postStreamChunk(endpoint, secret, reqID, chunk string, done bool) {
+	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}}
+	body := map[string]any{
+		"secret":    secret,
+		"requestId": reqID,
+		"chunk":     chunk,
+		"done":      done,
+		"timeMs":    time.Now().UnixMilli(),
+	}
+	b, _ := json.Marshal(body)
+	req, _ := http.NewRequest("POST", endpoint, bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err == nil {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+}
+
 func writeFileOp(req map[string]any) map[string]any {
 	path, _ := req["path"].(string)
 	content, _ := req["content"].(string)
@@ -2803,6 +2921,22 @@ func downloadRetry(url, dest string, attempts int) error {
 		time.Sleep(500 * time.Millisecond)
 	}
 	return err
+}
+
+func fetchURL(target string) ([]byte, error) {
+	client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}}
+	resp, err := client.Get(target)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("status %s body=%q", resp.Status, string(b))
+	}
+	return io.ReadAll(resp.Body)
 }
 
 // validateBinary performs a minimal ELF validation and arch check to avoid

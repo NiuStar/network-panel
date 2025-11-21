@@ -409,6 +409,83 @@ func NodeEnableGostAPI(c *gin.Context) {
 	c.JSON(http.StatusOK, response.OkNoData())
 }
 
+// agent stream log push
+type nqStreamReq struct {
+	Secret    string `json:"secret"`
+	RequestID string `json:"requestId"`
+	Chunk     string `json:"chunk"`
+	Done      bool   `json:"done"`
+	TimeMs    *int64 `json:"timeMs"`
+}
+
+// POST /api/v1/nq/stream {secret, requestId, chunk, done?}
+func NodeNQStreamPush(c *gin.Context) {
+	var p nqStreamReq
+	if err := c.ShouldBindJSON(&p); err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+		return
+	}
+	if strings.TrimSpace(p.Secret) == "" {
+		c.JSON(http.StatusOK, response.ErrMsg("secret 不能为空"))
+		return
+	}
+	var node model.Node
+	if err := dbpkg.DB.Where("secret = ?", p.Secret).First(&node).Error; err != nil {
+		c.JSON(http.StatusForbidden, response.ErrMsg("节点未授权"))
+		return
+	}
+	now := time.Now().UnixMilli()
+	if p.TimeMs != nil && *p.TimeMs > 0 {
+		now = *p.TimeMs
+	}
+	msg := "chunk"
+	if p.Done {
+		msg = "done"
+	}
+	_ = dbpkg.DB.Create(&model.NodeOpLog{
+		TimeMs:    now,
+		NodeID:    node.ID,
+		Cmd:       "NQStream",
+		RequestID: p.RequestID,
+		Success:   1,
+		Message:   msg,
+		Stdout:    &p.Chunk,
+	}).Error
+	// append to nq_result
+	var res model.NQResult
+	if err := dbpkg.DB.Where("node_id = ? AND request_id = ?", node.ID, p.RequestID).First(&res).Error; err != nil || res.ID == 0 {
+		res = model.NQResult{
+			NodeID:      node.ID,
+			RequestID:   p.RequestID,
+			Content:     p.Chunk,
+			Done:        p.Done,
+			TimeMs:      now,
+			CreatedTime: now,
+			UpdatedTime: now,
+		}
+		_ = dbpkg.DB.Create(&res).Error
+	} else {
+		content := res.Content
+		if p.Chunk != "" {
+			if content != "" && !strings.HasSuffix(content, "\n") {
+				content += "\n"
+			}
+			content += p.Chunk
+		}
+		res.Content = content
+		res.Done = p.Done
+		res.TimeMs = now
+		res.UpdatedTime = now
+		_ = dbpkg.DB.Model(&model.NQResult{}).Where("id = ?", res.ID).Updates(map[string]any{
+			"content":      res.Content,
+			"done":         res.Done,
+			"time_ms":      res.TimeMs,
+			"updated_time": res.UpdatedTime,
+		})
+	}
+	c.JSON(http.StatusOK, response.OkNoData())
+}
+
 // POST /api/v1/node/gost-config {nodeId}
 // Ask agent to read gost.json content and return
 func NodeGostConfig(c *gin.Context) {
@@ -445,6 +522,64 @@ func NodeGostConfig(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, response.ErrMsg("未响应，请稍后重试"))
+}
+
+// POST /api/v1/node/nq-test {nodeId}
+// Trigger NodeQuality test on agent via script
+func NodeNQTest(c *gin.Context) {
+	var p struct {
+		NodeID int64 `json:"nodeId" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&p); err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+		return
+	}
+	var node model.Node
+	if err := dbpkg.DB.First(&node, p.NodeID).Error; err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("节点不存在"))
+		return
+	}
+	script := "#!/bin/bash\nset -e\nCMD=\"bash <(curl -fsSL https://run.NodeQuality.com)\"\nif command -v yes >/dev/null 2>&1; then\n  yes | eval \"$CMD\" || eval \"$CMD\"\nelse\n  printf 'y\\n' | eval \"$CMD\" || eval \"$CMD\"\nfi\n"
+	reqID := RandUUID()
+	scheme := "http"
+	if c.Request.TLS != nil {
+		scheme = "https"
+	}
+	endpoint := fmt.Sprintf("%s://%s/api/v1/nq/stream", scheme, c.Request.Host)
+	payload := map[string]any{
+		"requestId": reqID,
+		"content":   script,
+		"endpoint":  endpoint,
+		"secret":    node.Secret,
+	}
+	if err := sendWSCommand(node.ID, "RunStreamScript", payload); err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("未响应，请稍后重试"))
+		return
+	}
+	c.JSON(http.StatusOK, response.Ok(map[string]any{"requestId": reqID}))
+}
+
+// POST /api/v1/node/nq-result {nodeId}
+func NodeNQResult(c *gin.Context) {
+	var p struct {
+		NodeID int64 `json:"nodeId" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&p); err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+		return
+	}
+	// latest result
+	var last model.NQResult
+	if err := dbpkg.DB.Where("node_id = ?", p.NodeID).Order("time_ms desc").First(&last).Error; err != nil || last.ID == 0 {
+		c.JSON(http.StatusOK, response.Ok(map[string]any{"content": "", "timeMs": nil, "done": false, "requestId": ""}))
+		return
+	}
+	c.JSON(http.StatusOK, response.Ok(map[string]any{
+		"content":   last.Content,
+		"timeMs":    last.TimeMs,
+		"done":      last.Done,
+		"requestId": last.RequestID,
+	}))
 }
 
 // utils (local)

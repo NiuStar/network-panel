@@ -121,8 +121,9 @@ export default function NodePage() {
   const [gostConfigModal, setGostConfigModal] = useState<{open:boolean; loading:boolean; content:string; title:string}>({open:false, loading:false, content:'', title:''});
   const [nqLoading, setNqLoading] = useState<Record<number, boolean>>({});
   const [nqResultCache, setNqResultCache] = useState<Record<number, {content:string; timeMs:number|null}>>({});
-  const [nqModal, setNqModal] = useState<{open:boolean; title:string; content:string; timeMs:number|null; loading:boolean}>({open:false, title:'', content:'', timeMs:null, loading:false});
+  const [nqModal, setNqModal] = useState<{open:boolean; title:string; content:string; timeMs:number|null; loading:boolean; nodeId:number|null; done?:boolean}>({open:false, title:'', content:'', timeMs:null, loading:false, nodeId:null, done:false});
   const [nqHasResult, setNqHasResult] = useState<Record<number, boolean>>({});
+  const logScrollRef = useRef<HTMLDivElement | null>(null);
   
   const websocketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -145,9 +146,43 @@ export default function NodePage() {
     };
   }, []);
 
+  // 模拟终端：处理 \r 覆盖、保留 ANSI 颜色
+  const normalizeTerminal = (txt: string) => {
+    const lines: string[] = [];
+    let line = "";
+    for (let i = 0; i < txt.length; i++) {
+      const ch = txt[i];
+      if (ch === "\r") {
+        line = "";
+      } else if (ch === "\n") {
+        lines.push(line);
+        line = "";
+      } else {
+        line += ch;
+      }
+    }
+    if (line) lines.push(line);
+    // 合并同一进度行（同百分比、去掉转圈符号后的前缀一致）
+    const merged: string[] = [];
+    const pctRe = /(.*?)(\d{1,3})%/;
+    const cleanSpinner = (s:string) => s.replace(/[\u2800-\u28FF]/g, "").trim();
+    lines.forEach(l => {
+      if (merged.length > 0) {
+        const prev = merged[merged.length-1];
+        const m1 = pctRe.exec(prev);
+        const m2 = pctRe.exec(l);
+        if (m1 && m2 && m1[2] === m2[2] && cleanSpinner(m1[1]) === cleanSpinner(m2[1])) {
+          merged[merged.length-1] = l;
+          return;
+        }
+      }
+      merged.push(l);
+    });
+    return merged.join('\n');
+  };
+
   const ansiToHtml = (txt: string) => {
-    // normalize换行：将回车视为换行，便于进度条/覆盖输出在网页端换行展示
-    const normalized = txt.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    const normalized = normalizeTerminal(txt);
     const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const esc = escapeHtml(normalized);
     const ansiMap: Record<string, string> = {
@@ -165,7 +200,7 @@ export default function NodePage() {
       const codes = g1.split(";").map((s:string)=>s.trim());
       return codes.map((c:string) => ansiMap[c] ?? "").join("");
     });
-    return replaced.replace(/\n/g, "<br/>");
+    return replaced.replace(/\n/g, "\n");
   };
 
   // 加载版本信息
@@ -629,17 +664,18 @@ export default function NodePage() {
   const viewNQ = async (node: Node) => {
     const cached = nqResultCache[node.id];
     if (cached && cached.content) {
-      setNqModal({open:true, title:`${node.name} - NQ 测试结果`, content: cached.content, timeMs: cached.timeMs, loading:false});
+      setNqModal({open:true, title:`${node.name} - NQ 测试结果`, content: cached.content, timeMs: cached.timeMs, loading:false, nodeId: node.id, done:false});
     } else {
-      setNqModal({open:true, title:`${node.name} - NQ 测试结果`, content:'', timeMs:null, loading:true});
+      setNqModal({open:true, title:`${node.name} - NQ 测试结果`, content:'', timeMs:null, loading:true, nodeId: node.id, done:false});
     }
     try{
       const res:any = await getNQResult(node.id);
       if(res.code===0 && res.data){
         const content = (res.data.content as string) || '无返回内容';
         const timeMs = res.data.timeMs || null;
+        const done = !!res.data.done;
         setNqResultCache(prev=>({...prev, [node.id]: {content, timeMs}}));
-        setNqModal({open:true, title:`${node.name} - NQ 测试结果`, content, timeMs, loading:false});
+        setNqModal({open:true, title:`${node.name} - NQ 测试结果`, content, timeMs, loading:false, nodeId: node.id, done});
       }else{
         toast.error(res.msg || '暂无结果');
         setNqModal(prev=>({...prev, open:false, loading:false}));
@@ -652,22 +688,60 @@ export default function NodePage() {
 
   // 自动刷新 NQ 弹窗内容
   useEffect(() => {
-    if (!nqModal.open) return;
+    if (!nqModal.open || !nqModal.nodeId) return;
     const timer = setInterval(async () => {
-      const node = nodeList.find(n => nqModal.title.startsWith(n.name));
-      if (!node) return;
+      const nodeId = nqModal.nodeId!;
       try{
-        const res:any = await getNQResult(node.id);
+        const res:any = await getNQResult(nodeId);
         if(res.code===0 && res.data){
           const content = (res.data.content as string) || '';
           const timeMs = res.data.timeMs || null;
-          setNqResultCache(prev=>({...prev, [node.id]: {content, timeMs}}));
-          setNqModal(prev=>({...prev, content, timeMs, loading:false}));
+          const done = !!res.data.done;
+          // 增量合并：如果新内容以旧内容开头，只追加差异
+          setNqResultCache(prev=>{
+            const prevContent = prev[nodeId]?.content || '';
+            let merged = content;
+            if (content.startsWith(prevContent)) {
+              merged = prevContent + content.slice(prevContent.length);
+            }
+            return {...prev, [nodeId]: {content: merged, timeMs}};
+          });
+          setNqModal(prev=>{
+            const prevContent = prev.content || '';
+            let merged = content;
+            if (content.startsWith(prevContent)) {
+              merged = prevContent + content.slice(prevContent.length);
+            }
+            return {...prev, content: merged, timeMs, loading:false, done};
+          });
+          // 滚动到底部
+          requestAnimationFrame(()=>{
+            if(logScrollRef.current){
+              logScrollRef.current.scrollTop = logScrollRef.current.scrollHeight;
+            }
+          });
+          if (done) {
+            clearInterval(timer);
+          }
         }
       }catch{}
     }, 2000);
     return () => clearInterval(timer);
-  }, [nqModal.open, nodeList]);
+  }, [nqModal.open, nqModal.nodeId]);
+
+  useEffect(() => {
+    if (nqModal.open && logScrollRef.current) {
+      logScrollRef.current.scrollTop = logScrollRef.current.scrollHeight;
+    }
+  }, [nqModal.content, nqModal.open]);
+
+  const getProgress = (txt:string) => {
+    const match = txt.match(/(\d{1,3})%/);
+    if (!match) return null;
+    const val = parseInt(match[1], 10);
+    if (isNaN(val)) return null;
+    return Math.min(Math.max(val, 0), 100);
+  };
 
   // 关闭WebSocket连接
   const closeWebSocket = () => {
@@ -1603,14 +1677,28 @@ export default function NodePage() {
           backdrop="blur"
           placement="center"
         >
-          <ModalContent className="max-w-[60vw] md:max-w-[90vw] lg:max-w-[60vw]">
+          <ModalContent className="w-full max-w-[95vw] md:max-w-[95vw] lg:max-w-[60vw] h-[80vh]">
             <ModalHeader>{nqModal.title}</ModalHeader>
             <ModalBody>
               {nqModal.loading ? (
                 <div className="text-sm text-default-500">读取中...</div>
               ) : (
-                <div className="bg-black text-green-100 rounded-lg p-4 text-xs font-mono leading-relaxed overflow-auto min-h-[200px]" 
-                     dangerouslySetInnerHTML={{__html: ansiToHtml(nqModal.content || '暂无结果')}} />
+                <>
+                  {!nqModal.done && (
+                    <div className="flex items-center gap-3 text-xs text-default-500 mb-2">
+                      <Spinner size="sm" />
+                      <span>实时更新中...</span>
+                      {getProgress(nqModal.content) !== null && (
+                        <span className="text-default-600 font-mono">{getProgress(nqModal.content)}%</span>
+                      )}
+                    </div>
+                  )}
+                  <div className="h-[60vh] overflow-y-auto" ref={logScrollRef}>
+                    <pre
+                      className="bg-black text-green-100 rounded-lg p-4 text-xs font-mono leading-relaxed min-h-[200px] whitespace-pre-wrap break-words"
+                      dangerouslySetInnerHTML={{__html: ansiToHtml(nqModal.content || '暂无结果')}} />
+                  </div>
+                </>
               )}
               {nqModal.timeMs && <div className="text-xs text-default-500">时间：{new Date(nqModal.timeMs).toLocaleString()}</div>}
             </ModalBody>

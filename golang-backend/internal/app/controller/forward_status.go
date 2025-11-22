@@ -228,6 +228,8 @@ func ForwardStatusDetail(c *gin.Context) {
 		inIface = &tmp
 	}
 	expEntry := buildServiceConfig(name, f.InPort, f.RemoteAddr, inIface)
+	expEntryMeta := map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false}
+	expEntry["metadata"] = expEntryMeta
 	expEntryPort := f.InPort
 	okEntry := false
 	act := map[string]any(nil)
@@ -256,7 +258,7 @@ func ForwardStatusDetail(c *gin.Context) {
 		if haveL {
 			listeningPtr = &l
 		}
-		okEntry = (p == expEntryPort) && (listeningPtr != nil && *listeningPtr)
+		okEntry = (p == expEntryPort) && (listeningPtr != nil && *listeningPtr) && metadataMatches(act, expEntryMeta)
 	}
 	out.Nodes = append(out.Nodes, nodeItem{NodeID: t.InNodeID, NodeName: nodeName(t.InNodeID), Role: "entry", Ok: okEntry, ExpectedPort: &expEntryPort, ActualPort: intPtrOrNil(actPort), Listening: listeningPtr, Expected: expEntry, Actual: act})
 
@@ -395,6 +397,65 @@ func getListeningFlag(m map[string]any) (bool, bool) {
 	}
 	if b, ok := m["listening"].(float64); ok {
 		return b != 0, true
+	}
+	return false, false
+}
+
+// metadataMatches checks that actual.metadata contains all key/values from expected.
+func metadataMatches(actual map[string]any, expected map[string]any) bool {
+	if len(expected) == 0 {
+		return true
+	}
+	metaRaw, ok := actual["metadata"]
+	if !ok {
+		return false
+	}
+	var meta map[string]any
+	switch t := metaRaw.(type) {
+	case map[string]any:
+		meta = t
+	default:
+		return false
+	}
+	for k, v := range expected {
+		if mv, ok := meta[k]; ok {
+			switch exp := v.(type) {
+			case bool:
+				if vb, ok2 := toBool(mv); !ok2 || vb != exp {
+					return false
+				}
+			case string:
+				if fmt.Sprint(mv) != exp {
+					return false
+				}
+			default:
+				if fmt.Sprint(mv) != fmt.Sprint(exp) {
+					return false
+				}
+			}
+		} else {
+			return false
+		}
+	}
+	return true
+}
+
+func toBool(v any) (bool, bool) {
+	switch x := v.(type) {
+	case bool:
+		return x, true
+	case float64:
+		return x != 0, true
+	case int:
+		return x != 0, true
+	case string:
+		l := strings.ToLower(strings.TrimSpace(x))
+		if l == "true" || l == "1" || l == "yes" || l == "on" {
+			return true, true
+		}
+		if l == "false" || l == "0" || l == "no" || l == "off" {
+			return false, true
+		}
 	}
 	return false, false
 }

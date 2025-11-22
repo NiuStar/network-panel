@@ -539,7 +539,7 @@ func NodeNQTest(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("节点不存在"))
 		return
 	}
-	script := "#!/bin/bash\nset -e\nCMD=\"bash <(curl -fsSL https://run.NodeQuality.com)\"\nif command -v yes >/dev/null 2>&1; then\n  yes | eval \"$CMD\" || eval \"$CMD\"\nelse\n  printf 'y\\n' | eval \"$CMD\" || eval \"$CMD\"\nfi\n"
+	script := "#!/bin/bash\nset -e\nCMD=\"bash <(curl -fsSL https://run.NodeQuality.com)\"\nif command -v yes >/dev/null 2>&1; then\n  yes | eval \"$CMD\"\nelse\n  printf 'y\\n' | eval \"$CMD\"\nfi\n"
 	reqID := RandUUID()
 	scheme := "http"
 	if c.Request.TLS != nil {

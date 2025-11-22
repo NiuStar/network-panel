@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/md5"
@@ -44,7 +43,7 @@ var (
 
 // versionBase is the agent semantic version (without role prefix).
 // final reported version is: go-agent-<versionBase> or go-agent2-<versionBase>
-var versionBase = " 1.0.9"
+var versionBase = " 1.0.9.2"
 var version = ""      // computed in main()
 var apiBootDone int32 // 0=not attempted, 1=attempted
 var apiUse int32      // 1=Web API usable
@@ -2746,16 +2745,22 @@ func runStreamScript(reqID, content, urlStr, endpoint, secret string) {
 	type chunk struct{ s string }
 	ch := make(chan chunk, 128)
 	wg := sync.WaitGroup{}
-	reader := func(r io.Reader) {
+	readPipe := func(r io.Reader) {
 		defer wg.Done()
-		sc := bufio.NewScanner(r)
-		for sc.Scan() {
-			ch <- chunk{s: sc.Text()}
+		buf := make([]byte, 2048)
+		for {
+			n, err := r.Read(buf)
+			if n > 0 {
+				ch <- chunk{s: string(buf[:n])}
+			}
+			if err != nil {
+				return
+			}
 		}
 	}
 	wg.Add(2)
-	go reader(stdout)
-	go reader(stderr)
+	go readPipe(stdout)
+	go readPipe(stderr)
 
 	doneCh := make(chan struct{})
 	go func() {
@@ -2782,7 +2787,6 @@ func runStreamScript(reqID, content, urlStr, endpoint, secret string) {
 				ch = nil
 			} else {
 				buf.WriteString(ck.s)
-				buf.WriteString("\n")
 			}
 		case <-ticker.C:
 			flush(false)

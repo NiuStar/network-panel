@@ -7,7 +7,7 @@ import { toast } from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 import { isWebViewFunc } from '@/utils/panel';
 import { siteConfig } from '@/config/site';
-import { updatePassword } from '@/api';
+import { updatePassword, getVersionInfo } from '@/api';
 import { safeLogout } from '@/utils/logout';
 interface PasswordForm {
   newUsername: string;
@@ -31,6 +31,7 @@ export default function ProfilePage() {
   const [username, setUsername] = useState('');
   const [isAdmin, setIsAdmin] = useState(false);
   const [passwordLoading, setPasswordLoading] = useState(false);
+  const [centerOn, setCenterOn] = useState(false);
   const [passwordForm, setPasswordForm] = useState<PasswordForm>({
     newUsername: '',
     currentPassword: '',
@@ -53,6 +54,12 @@ export default function ProfilePage() {
     
     setUsername(name);
     setIsAdmin(adminFlag);
+    // center flag
+    getVersionInfo().then((res:any)=>{
+      if(res.code===0 && res.data){
+        setCenterOn(res.data.centerOn===true || res.data.center === 'true');
+      }
+    }).catch(()=>{});
   }, []);
 
   // 管理员菜单项
@@ -89,7 +96,18 @@ export default function ProfilePage() {
       ),
       color: 'bg-purple-100 dark:bg-purple-500/20 text-purple-600 dark:text-purple-400',
       description: '配置网站设置'
-    }
+    },
+    ...(centerOn ? [{
+      path: '/center',
+      label: '心跳中心',
+      icon: (
+        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M3 10a1 1 0 011-1h2.586l1.707-1.707a1 1 0 011.414 0L10.414 9H13l2-2 3 3-3 3-2-2h-1.586l-1.707 1.707a1 1 0 01-1.414 0L6.414 13H4a1 1 0 01-1-1v-2z" />
+        </svg>
+      ),
+      color: 'bg-green-100 dark:bg-green-500/20 text-green-600 dark:text-green-300',
+      description: '查看节点心跳统计'
+    }] : [])
   ];
 
   // 退出登录

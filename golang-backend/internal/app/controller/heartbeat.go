@@ -99,7 +99,7 @@ func HeartbeatSummary(c *gin.Context) {
 	collect := func(kind string) heartbeatSummary {
 		var rows []model.HeartbeatRecord
 		_ = db.DB.Where("kind = ?", kind).
-			Order("first_seen_ms asc").
+			Order("first_seen_ms desc").
 			Find(&rows).Error
 		s := heartbeatSummary{Total: len(rows)}
 		day2Ms := int64((48 * time.Hour) / time.Millisecond)

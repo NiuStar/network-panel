@@ -41,6 +41,10 @@ const fmt = (ms?: number) => {
 };
 
 const Section = ({ title, data, showIP }: { title: string; data: HBSummary | null; showIP: boolean }) => {
+  const items = useMemo(()=> {
+    if (!data) return [];
+    return [...data.items].sort((a,b)=>b.firstSeenMs - a.firstSeenMs);
+  }, [data]);
   return (
     <Card className="w-full">
       <CardHeader className="flex flex-col items-start gap-1">
@@ -56,7 +60,7 @@ const Section = ({ title, data, showIP }: { title: string; data: HBSummary | nul
           <div className="flex items-center gap-2 text-sm text-gray-500">
             <Spinner size="sm" /> 读取中...
           </div>
-        ) : !data.items || data.items.length === 0 ? (
+        ) : !items || items.length === 0 ? (
           <div className="text-sm text-gray-500">暂无数据</div>
         ) : (
           <table className="min-w-full text-sm">
@@ -75,7 +79,7 @@ const Section = ({ title, data, showIP }: { title: string; data: HBSummary | nul
               </tr>
             </thead>
             <tbody>
-              {data.items.map((item) => (
+              {items.map((item) => (
                 <tr key={`${item.uniqueId}`} className="border-b border-gray-100 dark:border-gray-800">
                   <td className="py-2 pr-2 font-mono text-xs max-w-[240px] break-all">{item.uniqueId}</td>
                   <td className="py-2 pr-2">{item.version || "-"}</td>

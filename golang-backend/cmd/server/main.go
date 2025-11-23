@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 
@@ -14,6 +15,7 @@ import (
 )
 
 func main() {
+	fmt.Println("version:", appver.Get())
 	// load .env if present
 	util.LoadEnv()
 	if err := dbpkg.Init(); err != nil {

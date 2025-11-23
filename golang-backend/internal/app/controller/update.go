@@ -52,13 +52,67 @@ func VersionUpgrade(c *gin.Context) {
 		ProxyPrefix string `json:"proxyPrefix"`
 	}
 	_ = c.ShouldBindJSON(&p)
+	logs, out, errs, post := runUpgradeWithRestart(p.ProxyPrefix, nil)
+	resp := map[string]any{
+		"tag":     out["tag"],
+		"created": out["created"],
+		"logs":    logs,
+	}
+	resp["restart"] = out["restart"]
+	if len(errs) > 0 {
+		resp["errors"] = errs
+	}
+	c.JSON(http.StatusOK, response.Ok(resp))
+	if post != nil {
+		go post()
+	}
+}
+
+// doVersionUpgradeWithProxy performs upgrade and collects logs; returns logs, data map, errs.
+// Kept for reuse in both JSON和流模式。
+func doVersionUpgradeWithProxy(proxyPrefix string) ([]string, map[string]any, []string) {
+	logs, out, errs, _ := runUpgradeWithRestart(proxyPrefix, nil)
+	return logs, out, errs
+}
+
+// runUpgradeWithRestart runs the full upgrade flow (download, unpack, fallback assets) and prepares restart.
+// externalLog will receive real-time messages; logs slice always collected for API response.
+func runUpgradeWithRestart(proxyPrefix string, externalLog func(string, ...any)) ([]string, map[string]any, []string, func()) {
+	logs := []string{}
+	emit := func(format string, a ...any) {
+		msg := fmt.Sprintf("%s "+format, append([]any{time.Now().Format("15:04:05.000")}, a...)...)
+		logs = append(logs, msg)
+		if externalLog != nil {
+			externalLog(msg)
+		}
+	}
+
+	out, errs := performUpgrade(proxyPrefix, emit)
+	if len(errs) > 0 && len(out) == 0 {
+		return logs, out, errs, nil
+	}
+	restartMode, restartErrs, post := attemptRestart(out, proxyPrefix, emit)
+	if restartMode != "" {
+		out["restart"] = restartMode
+	}
+	if len(restartErrs) > 0 {
+		errs = append(errs, restartErrs...)
+	}
+	return logs, out, errs, post
+}
+
+// performUpgrade executes downloads/unzip/fallback copies and returns metadata + errs.
+func performUpgrade(proxyPrefix string, logf func(string, ...any)) (map[string]any, []string) {
+	errs := []string{}
+
 	rel, err := fetchLatestRelease()
 	if err != nil {
-		c.JSON(http.StatusOK, response.ErrMsg("获取最新版本失败: "+err.Error()))
-		return
+		msg := "获取最新版本失败: " + err.Error()
+		logf(msg)
+		return map[string]any{}, []string{msg}
 	}
+	logf("最新版本: %s (%s)", rel.TagName, rel.Name)
 	assets := classifyAssets(rel)
-	errs := []string{}
 	made := map[string]string{}
 
 	// Ensure directories
@@ -66,52 +120,65 @@ func VersionUpgrade(c *gin.Context) {
 	_ = os.MkdirAll("public/flux-agent", 0o755)
 	_ = os.MkdirAll("public/server", 0o755)
 
+	downloadAssets := func(name, url, dst string, mode os.FileMode) {
+		start := time.Now()
+		if err := downloadToPathLogged(url, dst, mode, logf); err != nil {
+			msg := fmt.Sprintf("%s 下载失败: %v", name, err)
+			errs = append(errs, msg)
+			logf(msg)
+			return
+		}
+		made[name] = dst
+		logf("%s 已更新，耗时 %.2fs", name, time.Since(start).Seconds())
+	}
+
 	// 1) Frontend
 	if url, _ := assets["frontendZip"].(string); url != "" {
-		if p.ProxyPrefix != "" {
-			url = p.ProxyPrefix + url
+		if proxyPrefix != "" {
+			url = proxyPrefix + url
 		}
-		if file, err := downloadToTmp(url); err != nil {
-			errs = append(errs, fmt.Sprintf("frontend-dist.zip 下载失败: %v", err))
+		start := time.Now()
+		if file, err := downloadToTmpLogged(url, logf); err != nil {
+			msg := fmt.Sprintf("frontend-dist.zip 下载失败: %v", err)
+			errs = append(errs, msg)
+			logf(msg)
 		} else {
+			logf("frontend-dist.zip 下载完成，开始解压到 public/")
 			if err := unzipTo(file, "public"); err != nil {
-				errs = append(errs, fmt.Sprintf("frontend-dist.zip 解压失败: %v", err))
+				msg := fmt.Sprintf("frontend-dist.zip 解压失败: %v", err)
+				errs = append(errs, msg)
+				logf(msg)
 			} else {
 				made["frontend"] = "public/"
+				logf("frontend-dist.zip 解压到 public/ (耗时 %.2fs)", time.Since(start).Seconds())
 			}
 			_ = os.Remove(file)
 		}
 	} else {
-		errs = append(errs, "未找到前端资源(frontend-dist.zip)")
+		msg := "未找到前端资源(frontend-dist.zip)"
+		errs = append(errs, msg)
+		logf(msg)
 	}
 
 	// 2) install.sh
 	if url, _ := assets["installSh"].(string); url != "" {
-		if p.ProxyPrefix != "" {
-			url = p.ProxyPrefix + url
+		if proxyPrefix != "" {
+			url = proxyPrefix + url
 		}
-		if err := downloadToPath(url, "install.sh", 0o755); err != nil {
-			errs = append(errs, fmt.Sprintf("install.sh 下载失败: %v", err))
-		} else {
-			made["install.sh"] = "install.sh"
-		}
+		downloadAssets("install.sh", url, "install.sh", 0o755)
 	} else {
-		errs = append(errs, "未找到 install.sh 资源")
+		logf("release 未包含 install.sh，后续使用仓库原始文件覆盖")
 	}
 
 	// 3) flux-agent binaries
 	if m, ok := assets["agents"].(map[string]string); ok {
 		for name, url := range m {
 			u := url
-			if p.ProxyPrefix != "" {
-				u = p.ProxyPrefix + url
+			if proxyPrefix != "" {
+				u = proxyPrefix + url
 			}
 			dst := filepath.Join("public/flux-agent", name)
-			if err := downloadToPath(u, dst, 0o755); err != nil {
-				errs = append(errs, fmt.Sprintf("%s 下载失败: %v", name, err))
-			} else {
-				made[name] = dst
-			}
+			downloadAssets(name, u, dst, 0o755)
 		}
 	}
 
@@ -119,25 +186,20 @@ func VersionUpgrade(c *gin.Context) {
 	if m, ok := assets["servers"].(map[string]string); ok {
 		for name, url := range m {
 			u := url
-			if p.ProxyPrefix != "" {
-				u = p.ProxyPrefix + url
+			if proxyPrefix != "" {
+				u = proxyPrefix + url
 			}
 			dst := filepath.Join("public/server", name)
-			if err := downloadToPath(u, dst, 0o755); err != nil {
-				errs = append(errs, fmt.Sprintf("%s 下载失败: %v", name, err))
-			} else {
-				made[name] = dst
-			}
+			downloadAssets(name, u, dst, 0o755)
 		}
 	}
 
 	out := map[string]any{
-		"tag":     rel.TagName,
-		"created": made,
+		"tag":           rel.TagName,
+		"created":       made,
+		"assetsServers": assets["servers"],
 	}
-	if len(errs) > 0 {
-		out["errors"] = errs
-	}
+
 	// Extra step: fetch install assets from main branch and place into install dir
 	installDir := detectInstallDir()
 	if installDir == "" {
@@ -162,87 +224,135 @@ func VersionUpgrade(c *gin.Context) {
 	ghi := ghInstall
 	ghc := ghEtConf
 	ghe := ghEtInstall
-	if p.ProxyPrefix != "" {
-		ri = p.ProxyPrefix + rawInstall
-		rc = p.ProxyPrefix + rawEtConf
-		re = p.ProxyPrefix + rawEtInstall
-		ghi = p.ProxyPrefix + ghInstall
-		ghc = p.ProxyPrefix + ghEtConf
-		ghe = p.ProxyPrefix + ghEtInstall
+	if proxyPrefix != "" {
+		ri = proxyPrefix + rawInstall
+		rc = proxyPrefix + rawEtConf
+		re = proxyPrefix + rawEtInstall
+		ghi = proxyPrefix + ghInstall
+		ghc = proxyPrefix + ghEtConf
+		ghe = proxyPrefix + ghEtInstall
 	}
 	tryRaw := func(primary, fallback, dst, key string, mode os.FileMode) {
-		if err := downloadToPath(primary, dst, mode); err != nil {
-			if err2 := downloadToPath(fallback, dst, mode); err2 != nil {
-				errs = append(errs, fmt.Sprintf("%s 下载失败: %v; 兜底失败: %v", key, err, err2))
+		logf("%s 下载：主线路=%s 兜底=%s", key, primary, fallback)
+		if err := downloadToPathLogged(primary, dst, mode, logf); err != nil {
+			logf("%s 主线路失败，尝试兜底: %v", key, err)
+			if err2 := downloadToPathLogged(fallback, dst, mode, logf); err2 != nil {
+				msg := fmt.Sprintf("%s 下载失败: %v; 兜底失败: %v", key, err, err2)
+				errs = append(errs, msg)
+				logf(msg)
 				return
 			}
 		}
 		made[key] = dst
+		logf("%s 写入 %s", key, dst)
 	}
 
 	tryRaw(ri, ghi, filepath.Join(installDir, "install.sh"), "install.sh", 0o755)
-	tryRaw(rc, ghc, filepath.Join(installDir, "easytier", "default.conf"), "easytier/default.conf", 0o644)
-	tryRaw(re, ghe, filepath.Join(installDir, "easytier", "install.sh"), "easytier/install.sh", 0o755)
+	tryRaw(rc, ghc, filepath.Join(installDir, "easytier/default.conf"), "easytier/default.conf", 0o644)
+	tryRaw(re, ghe, filepath.Join(installDir, "easytier/install.sh"), "easytier/install.sh", 0o755)
 
 	out["created"] = made
 	if len(errs) > 0 {
 		out["errors"] = errs
 	}
+	return out, errs
+}
 
-	// Try to restart service/process
+// attemptRestart tries to refresh running service and returns restart mode + errors and optional post action.
+func attemptRestart(out map[string]any, proxyPrefix string, logf func(string, ...any)) (string, []string, func()) {
+	errs := []string{}
+	assetsServers, _ := out["assetsServers"].(map[string]string)
+
 	if isDocker() {
-		// attempt to replace /app/server with arch-matched binary and exec-replace
-		if m, ok := assets["servers"].(map[string]string); ok {
-			if url := pickServerAsset(m); url != "" {
-				u := url
-				if p.ProxyPrefix != "" {
-					u = p.ProxyPrefix + url
-				}
-				dst := "/app/server.new"
-				if err := downloadToPath(u, dst, 0o755); err != nil {
-					errs = append(errs, fmt.Sprintf("server binary 下载失败: %v", err))
+		usingLauncher := os.Getenv("NP_LAUNCHER") != ""
+		if usingLauncher {
+			logf("检测到 launcher 环境，将通过信号触发重启")
+		}
+		if url := pickServerAsset(assetsServers); url != "" {
+			u := url
+			if proxyPrefix != "" {
+				u = proxyPrefix + url
+			}
+			logf("Docker 环境，准备拉取匹配的 server 二进制: %s", u)
+			dst := "/app/server.new"
+			if err := downloadToPathLogged(u, dst, 0o755, logf); err != nil {
+				msg := fmt.Sprintf("server binary 下载失败: %v", err)
+				errs = append(errs, msg)
+				logf(msg)
+			} else {
+				_ = os.Chmod(dst, 0o755)
+				if err := os.Rename(dst, "/app/server"); err != nil {
+					msg := fmt.Sprintf("server 覆盖失败: %v", err)
+					errs = append(errs, msg)
+					logf(msg)
 				} else {
-					_ = os.Chmod(dst, 0o755)
-					if err := os.Rename(dst, "/app/server"); err != nil {
-						errs = append(errs, fmt.Sprintf("server 覆盖失败: %v", err))
-					} else {
-						made["server"] = "/app/server"
-						out["created"] = made
-						if len(errs) > 0 {
-							out["errors"] = errs
+					logf("server 已覆盖")
+					if usingLauncher {
+						if notifyLauncherRestart(logf) {
+							return "launcher-signal", errs, nil
 						}
-						out["restart"] = "exec"
-						c.JSON(http.StatusOK, response.Ok(out))
-						go func() {
-							time.Sleep(500 * time.Millisecond)
+						logf("未能通知 launcher（ppid=%d），使用自重启兜底", os.Getppid())
+					} else {
+						logf("未检测到 launcher，准备直接 exec 重启")
+						return "exec", errs, func() {
+							time.Sleep(800 * time.Millisecond)
 							_ = syscall.Exec("/app/server", os.Args, os.Environ())
 							_ = exec.Command("/app/server", os.Args[1:]...).Start()
 							os.Exit(0)
-						}()
-						return
+						}
 					}
 				}
-			} else {
-				errs = append(errs, "未匹配到当前架构的 server 资产")
 			}
 		}
-		out["restart"] = "docker-exit"
-		if len(errs) > 0 {
-			out["errors"] = errs
+		// 无法直接通知 launcher 或下载失败时，兜底自我重启
+		exe, _ := os.Executable()
+		logf("Docker 环境无法直接替换二进制，尝试自我重启: %s", exe)
+		return "docker-exit", errs, func() {
+			time.Sleep(800 * time.Millisecond)
+			_ = syscall.Exec(exe, os.Args, os.Environ())
+			_ = exec.Command(exe, os.Args[1:]...).Start()
+			os.Exit(0)
 		}
-		c.JSON(http.StatusOK, response.Ok(out))
-		go func() { time.Sleep(1 * time.Second); os.Exit(0) }()
-		return
 	}
+
 	// binary install: attempt systemctl restart network-panel
+	logf("尝试 systemctl restart network-panel")
 	if err := exec.Command("systemctl", "restart", "network-panel").Run(); err != nil {
-		errs = append(errs, fmt.Sprintf("重启服务失败: %v", err))
-		out["errors"] = errs
-		out["restart"] = "manual"
-	} else {
-		out["restart"] = "systemctl"
+		msg := fmt.Sprintf("重启服务失败: %v", err)
+		errs = append(errs, msg)
+		logf(msg)
+		// 兜底：尝试自我重启
+		exe, _ := os.Executable()
+		logf("尝试自我重启: %s", exe)
+		return "self-exec", errs, func() {
+			time.Sleep(800 * time.Millisecond)
+			_ = syscall.Exec(exe, os.Args, os.Environ())
+			_ = exec.Command(exe, os.Args[1:]...).Start()
+			os.Exit(0)
+		}
 	}
-	c.JSON(http.StatusOK, response.Ok(out))
+	logf("systemctl restart network-panel 成功")
+	return "systemctl", errs, nil
+}
+
+// notifyLauncherRestart sends SIGHUP to parent (launcher) to trigger a restart.
+func notifyLauncherRestart(logf func(string, ...any)) bool {
+	ppid := os.Getppid()
+	if ppid <= 1 {
+		logf("launcher 重启失败：父进程无效(ppid=%d)", ppid)
+		return false
+	}
+	proc, err := os.FindProcess(ppid)
+	if err != nil {
+		logf("launcher 重启失败：%v", err)
+		return false
+	}
+	if err := proc.Signal(syscall.SIGHUP); err != nil {
+		logf("launcher 重启信号发送失败: %v", err)
+		return false
+	}
+	logf("已向 launcher(ppid=%d) 发送 SIGHUP 请求重启", ppid)
+	return true
 }
 
 func fetchLatestRelease() (*ghRelease, error) {
@@ -291,6 +401,93 @@ func classifyAssets(rel *ghRelease) map[string]any {
 		out["servers"] = servers
 	}
 	return out
+}
+
+type countingWriter struct {
+	n int64
+}
+
+func (w *countingWriter) Write(p []byte) (int, error) {
+	w.n += int64(len(p))
+	return len(p), nil
+}
+
+func downloadToTmpLogged(url string, logf func(string, ...any)) (string, error) {
+	start := time.Now()
+	logf("GET %s -> 临时文件 开始", url)
+	cli := &http.Client{Timeout: 45 * time.Second}
+	resp, err := cli.Get(url)
+	if err != nil {
+		logf("GET %s 失败: %v", url, err)
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		err = fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(b))
+		logf("GET %s 失败: %v", url, err)
+		return "", err
+	}
+	f, err := os.CreateTemp("", "np_dl_")
+	if err != nil {
+		logf("创建临时文件失败: %v", err)
+		return "", err
+	}
+	cw := &countingWriter{}
+	if _, err := io.Copy(io.MultiWriter(f, cw), resp.Body); err != nil {
+		f.Close()
+		logf("GET %s 传输失败: %v", url, err)
+		return "", err
+	}
+	f.Close()
+	logf("GET %s 成功 status=%d bytes=%d 耗时=%.2fs", url, resp.StatusCode, cw.n, time.Since(start).Seconds())
+	return f.Name(), nil
+}
+
+func downloadToPathLogged(url, dst string, mode os.FileMode, logf func(string, ...any)) error {
+	start := time.Now()
+	logf("GET %s -> %s 开始", url, dst)
+	cli := &http.Client{Timeout: 45 * time.Second}
+	resp, err := cli.Get(url)
+	if err != nil {
+		logf("GET %s 失败: %v", url, err)
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		err = fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(b))
+		logf("GET %s 失败: %v", url, err)
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		logf("创建目录失败 %s: %v", filepath.Dir(dst), err)
+		return err
+	}
+	tmp := dst + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		logf("写入临时文件失败 %s: %v", tmp, err)
+		return err
+	}
+	cw := &countingWriter{}
+	if _, err := io.Copy(io.MultiWriter(f, cw), resp.Body); err != nil {
+		f.Close()
+		logf("GET %s 传输失败: %v", url, err)
+		return err
+	}
+	f.Close()
+	if err := os.Chmod(tmp, mode); err != nil {
+		_ = os.Remove(tmp)
+		logf("chmod %s 失败: %v", tmp, err)
+		return err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		logf("替换 %s 失败: %v", dst, err)
+		return err
+	}
+	logf("GET %s 成功 status=%d bytes=%d 耗时=%.2fs", url, resp.StatusCode, cw.n, time.Since(start).Seconds())
+	return nil
 }
 
 func downloadToTmp(url string) (string, error) {
@@ -425,6 +622,12 @@ func detectInstallDir() string {
 // isDocker tries to detect if running inside a Docker container
 func isDocker() bool {
 	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+	if _, err := os.Stat("/run/.containerenv"); err == nil {
+		return true
+	}
+	if v := os.Getenv("container"); v != "" {
 		return true
 	}
 	// best-effort: check cgroup info

@@ -43,7 +43,7 @@ var (
 
 // versionBase is the agent semantic version (without role prefix).
 // final reported version is: go-agent-<versionBase> or go-agent2-<versionBase>
-var versionBase = " 1.0.9.2"
+var versionBase = "1.0.9.3"
 var version = ""      // computed in main()
 var apiBootDone int32 // 0=not attempted, 1=attempted
 var apiUse int32      // 1=Web API usable
@@ -3013,18 +3013,24 @@ func uninstallSelf() error {
 	if _, err := exec.LookPath("systemctl"); err == nil {
 		_ = exec.Command("systemctl", "stop", svc).Run()
 		_ = exec.Command("systemctl", "disable", svc).Run()
-		// remove service file
 		_ = os.Remove("/etc/systemd/system/" + svc + ".service")
 		_ = exec.Command("systemctl", "daemon-reload").Run()
 	} else if _, err := exec.LookPath("service"); err == nil {
 		_ = exec.Command("service", svc, "stop").Run()
 	}
+	// remove service files even if managers unavailable
+	_ = os.Remove("/etc/systemd/system/" + svc + ".service")
+	_ = os.Remove("/etc/init.d/" + svc)
 	// remove target binary and env file
 	_ = os.Remove(target)
 	if svc == "flux-agent" {
 		_ = os.Remove("/etc/default/flux-agent")
 	} else {
 		_ = os.Remove("/etc/default/flux-agent2")
+	}
+	// attempt to remove current executable path as well
+	if exe, err := os.Executable(); err == nil {
+		_ = os.Remove(exe)
 	}
 	log.Printf("{\"event\":\"agent_uninstalled\",\"service\":%q}", svc)
 	// exit process

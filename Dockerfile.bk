@@ -14,7 +14,7 @@ COPY vite-frontend/ .
 RUN npm run build
 
 # --- Backend build ---
-FROM golang:1.25-bookworm AS be
+FROM golang:1.25-alpine AS be
 WORKDIR /app
 # 关键：禁用 CGO、禁用远程 toolchain、使用 vendor，避免外网与编译链依赖
 ENV CGO_ENABLED=0 \
@@ -27,8 +27,6 @@ COPY . ./
 # 不再执行 apk add（避免拉取索引失败）
 # 构建 server（纯 Go）
 RUN go build -trimpath -mod=vendor -ldflags "-w -s" -o /app/server ./golang-backend/cmd/server
-# 构建 launcher
-RUN go build -trimpath -mod=vendor -ldflags "-w -s" -o /app/launcher ./golang-backend/cmd/launcher
 
 # 多架构构建 flux-agent 与 flux-agent2（纯 Go 跨平台）
 RUN GOOS=linux GOARCH=amd64 go build -trimpath -mod=vendor -ldflags "-w -s" -o /app/flux-agent-linux-amd64   ./golang-backend/cmd/flux-agent && \
@@ -39,13 +37,12 @@ RUN GOOS=linux GOARCH=amd64 go build -trimpath -mod=vendor -ldflags "-w -s" -o /
     GOOS=linux GOARCH=arm   GOARM=7 go build -trimpath -mod=vendor -ldflags "-w -s" -o /app/flux-agent2-linux-armv7 ./golang-backend/cmd/flux-agent
 
 # --- Final runtime ---
-FROM debian:12-slim AS final
+FROM alpine:3.19 AS final
 WORKDIR /app
 ENV PORT=6365
 
 # 不在运行期做 apk add，避免同类问题（若应用需要 HTTPS 出站，建议单独准备带 CA 的基础镜像或手动拷贝证书）
 COPY --from=be /app/server /app/server
-COPY --from=be /app/launcher /app/launcher
 COPY --from=fe_build /fe/dist /app/public
 
 # 发布多架构 agent
@@ -64,19 +61,14 @@ RUN mkdir -p /app/easytier
 COPY easytier/ /app/easytier/
 
 EXPOSE 6365
-CMD ["/app/launcher"]
+CMD ["/app/server"]
 
 # --- Final runtime (use local prebuilt frontend) ---
-FROM debian:12-slim AS final-local
-
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
-
+FROM alpine:3.19 AS final-local
 WORKDIR /app
 ENV PORT=6365
 
 COPY --from=be /app/server /app/server
-COPY --from=be /app/launcher /app/launcher
 COPY --from=fe_local /fe/dist /app/public
 
 # 发布多架构 agent
@@ -94,4 +86,4 @@ RUN mkdir -p /app/easytier
 COPY easytier/ /app/easytier/
 
 EXPOSE 6365
-CMD ["/app/launcher"]
+CMD ["/app/server"]

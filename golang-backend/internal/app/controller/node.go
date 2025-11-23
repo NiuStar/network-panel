@@ -242,10 +242,8 @@ func NodeDelete(c *gin.Context) {
 			}
 		}
 	}
-	// best-effort uninstall agent on node if requested
-	if p.Uninstall {
-		_ = sendWSCommand(p.ID, "UninstallAgent", map[string]any{"reason": "node_deleted"})
-	}
+	// best-effort notify agent to self-uninstall when node is removed
+	_ = sendWSCommand(p.ID, "UninstallAgent", map[string]any{"reason": "node_deleted"})
 	if err := dbpkg.DB.Delete(&model.Node{}, p.ID).Error; err != nil {
 		c.JSON(http.StatusOK, response.ErrMsg("节点删除失败"))
 		return

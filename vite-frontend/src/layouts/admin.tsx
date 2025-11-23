@@ -7,7 +7,7 @@ import { Input } from "@heroui/input";
 import { toast } from 'react-hot-toast';
 
 import { Logo } from '@/components/icons';
-import { updatePassword, getVersionInfo, getLatestVersionInfo, upgradeToLatest } from '@/api';
+import { updatePassword, getVersionInfo, getLatestVersionInfo } from '@/api';
 import { safeLogout } from '@/utils/logout';
 import { siteConfig, getCachedConfig } from '@/config/site';
 
@@ -51,6 +51,8 @@ export default function AdminLayout({
   const [serverVersion, setServerVersion] = useState<string>("");
   const [latestTag, setLatestTag] = useState<string>("");
   const [upgradeBusy, setUpgradeBusy] = useState(false);
+  const [upgradeLog, setUpgradeLog] = useState<string[]>([]);
+  const [upgradeLogOpen, setUpgradeLogOpen] = useState(false);
   // 菜单显示开关（来自网站配置）
   const [showProbe, setShowProbe] = useState(false);
   const [showNetworkMenu, setShowNetworkMenu] = useState(false);
@@ -242,16 +244,60 @@ export default function AdminLayout({
     }).catch(()=>{});
   }, []);
 
-  const normalizeVer = (v:string) => (v||"").replace(/^server-/,'').replace(/^v/, '');
+  const normalizeVer = (v:string) => {
+    const s = (v || "").trim().replace(/^server-/i, "").replace(/^v/i, "");
+    const m = s.match(/\d+(?:\.\d+)*/);
+    return m ? m[0] : s;
+  };
   const showUpgrade = !!serverVersion && !!latestTag && normalizeVer(serverVersion) !== normalizeVer(latestTag);
 
+  const [upgradeDoneFlag, setUpgradeDoneFlag] = useState(false);
+
   const doUpgrade = async () => {
+    setUpgradeLog(["开始升级..."]);
+    setUpgradeLogOpen(true);
     setUpgradeBusy(true);
+    setUpgradeDoneFlag(false);
+    let upgradeCompleted = false;
     try {
-      const r:any = await upgradeToLatest();
-      if (r.code===0){ toast.success(`资源已更新到 ${latestTag}，请刷新页面`); }
-      else { toast.error(r.msg||'更新失败'); }
-    } catch(e){ toast.error('更新失败'); } finally { setUpgradeBusy(false); }
+      const token = localStorage.getItem("token") || "";
+      const headers: Record<string, string> = { "Accept": "text/event-stream" };
+      if (token) headers["Authorization"] = token;
+      const res = await fetch("/api/v1/version/upgrade-stream", { method: "GET", headers, credentials: "include" });
+      if (!res.ok) {
+        throw new Error(`获取升级日志失败: HTTP ${res.status}`);
+      }
+      if (!res.body) throw new Error("无法获取升级日志流");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      const appendLog = (line:string) => setUpgradeLog(prev=>[...prev, line]);
+      const pump = async () => {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          chunk.split("\n\n").forEach((blk) => {
+            const line = blk.trim();
+            if (!line.startsWith("data:")) return;
+            const payload = line.slice(5).trim();
+            try {
+              const evt = JSON.parse(payload);
+              if (evt.event === "log") appendLog(evt.data);
+              if (evt.event === "done") { appendLog("升级完成"); upgradeCompleted = true; } 
+              if (evt.event === "error") { appendLog("错误: "+evt.data); toast.error(evt.data); }
+            } catch {
+              appendLog(payload);
+            }
+          });
+        }
+      };
+      await pump();
+      toast.success(`升级流程已结束`);
+    } catch(e:any){
+      const msg = e?.message || '升级失败';
+      setUpgradeLog(prev=>[...prev, `升级失败: ${msg}`]);
+      toast.error(msg);
+    } finally { setUpgradeBusy(false); setUpgradeDoneFlag(upgradeCompleted); }
   };
 
   // 退出登录
@@ -472,6 +518,9 @@ export default function AdminLayout({
                 升级到 {latestTag}
               </Button>
             )}
+            <Button size="sm" variant="flat" onPress={()=>setUpgradeLogOpen(true)}>
+              升级日志
+            </Button>
             {/* 用户菜单 */}
              <Dropdown placement="bottom-end">
                <DropdownTrigger>
@@ -517,6 +566,37 @@ export default function AdminLayout({
           {children}
         </main>
       </div>
+
+      {/* 升级日志弹窗 */}
+      <Modal 
+        isOpen={upgradeLogOpen} 
+        onClose={()=>{
+          setUpgradeLogOpen(false);
+          if (upgradeDoneFlag) {
+            setTimeout(()=>window.location.reload(), 200);
+          }
+        }}
+        size="3xl"
+        scrollBehavior="outside"
+        placement="center"
+      >
+        <ModalContent>
+          <ModalHeader>升级日志</ModalHeader>
+          <ModalBody>
+            <pre className="bg-default-50 dark:bg-default-100/10 rounded-lg p-4 text-xs whitespace-pre-wrap break-words max-h-[60vh] overflow-auto">
+{upgradeLog.length ? upgradeLog.join('\n') : '暂无日志'}
+            </pre>
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="light" onPress={()=>{
+              setUpgradeLogOpen(false);
+              if (upgradeDoneFlag) {
+                setTimeout(()=>window.location.reload(), 200);
+              }
+            }}>关闭</Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
 
       {/* 修改密码弹窗 */}
       <Modal 

@@ -66,7 +66,7 @@ const Section = ({ title, data, showIP }: { title: string; data: HBSummary | nul
           <table className="min-w-full text-sm">
             <thead>
               <tr className="text-left text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-800">
-                <th className="py-2 pr-2 font-medium">ID</th>
+                <th className="py-2 pr-2 font-medium">序号</th>
                 <th className="py-2 pr-2 font-medium">版本</th>
                 <th className="py-2 pr-2 font-medium">安装方式</th>
                 {showIP && <th className="py-2 pr-2 font-medium">IP</th>}
@@ -79,9 +79,9 @@ const Section = ({ title, data, showIP }: { title: string; data: HBSummary | nul
               </tr>
             </thead>
             <tbody>
-              {items.map((item) => (
-                <tr key={`${item.uniqueId}`} className="border-b border-gray-100 dark:border-gray-800">
-                  <td className="py-2 pr-2 font-mono text-xs max-w-[240px] break-all">{item.uniqueId}</td>
+              {items.map((item, idx) => (
+                <tr key={`${item.uniqueId || idx}`} className="border-b border-gray-100 dark:border-gray-800">
+                  <td className="py-2 pr-2 font-mono text-xs max-w-[240px] break-all">#{idx + 1}</td>
                   <td className="py-2 pr-2">{item.version || "-"}</td>
                   <td className="py-2 pr-2">{item.installMode || "-"}</td>
                   {showIP && (

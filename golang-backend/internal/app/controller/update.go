@@ -192,6 +192,27 @@ func performUpgrade(proxyPrefix string, logf func(string, ...any)) (map[string]a
 			dst := filepath.Join("public/server", name)
 			downloadAssets(name, u, dst, 0o755)
 		}
+		// 对于二进制部署，尝试直接覆盖系统安装路径
+		if !isDocker() {
+			if url := pickServerAsset(m); url != "" {
+				u := url
+				if proxyPrefix != "" {
+					u = proxyPrefix + url
+				}
+				dst := "/usr/local/bin/network-panel-server"
+				logf("检测到二进制部署，尝试更新主程序: %s", dst)
+				if err := downloadToPathLogged(u, dst, 0o755, logf); err != nil {
+					msg := fmt.Sprintf("二进制部署更新失败: %v", err)
+					errs = append(errs, msg)
+					logf(msg)
+				} else {
+					made["server-bin"] = dst
+					logf("二进制部署主程序已更新: %s", dst)
+				}
+			} else {
+				logf("未匹配到当前架构的 server 资产，跳过覆盖二进制路径")
+			}
+		}
 	}
 
 	out := map[string]any{
@@ -316,23 +337,13 @@ func attemptRestart(out map[string]any, proxyPrefix string, logf func(string, ..
 	}
 
 	// binary install: attempt systemctl restart network-panel
-	logf("尝试 systemctl restart network-panel")
-	if err := exec.Command("systemctl", "restart", "network-panel").Run(); err != nil {
-		msg := fmt.Sprintf("重启服务失败: %v", err)
-		errs = append(errs, msg)
-		logf(msg)
-		// 兜底：尝试自我重启
-		exe, _ := os.Executable()
-		logf("尝试自我重启: %s", exe)
-		return "self-exec", errs, func() {
-			time.Sleep(800 * time.Millisecond)
-			_ = syscall.Exec(exe, os.Args, os.Environ())
-			_ = exec.Command(exe, os.Args[1:]...).Start()
-			os.Exit(0)
+	logf("计划使用 systemctl restart network-panel（完成后触发）")
+	return "systemctl", errs, func() {
+		logf("执行 systemctl restart network-panel")
+		if err := exec.Command("systemctl", "restart", "network-panel").Run(); err != nil {
+			logf("重启服务失败: %v", err)
 		}
 	}
-	logf("systemctl restart network-panel 成功")
-	return "systemctl", errs, nil
 }
 
 // notifyLauncherRestart sends SIGHUP to parent (launcher) to trigger a restart.

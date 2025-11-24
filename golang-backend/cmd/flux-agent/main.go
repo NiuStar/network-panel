@@ -32,6 +32,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
 )
 
@@ -43,10 +44,28 @@ var (
 
 // versionBase is the agent semantic version (without role prefix).
 // final reported version is: go-agent-<versionBase> or go-agent2-<versionBase>
-var versionBase = "1.0.9.4"
+var versionBase = "1.0.9.11"
 var version = ""      // computed in main()
 var apiBootDone int32 // 0=not attempted, 1=attempted
 var apiUse int32      // 1=Web API usable
+
+// terminal session (single) state
+type shellSession struct {
+	id     string
+	cmd    *exec.Cmd
+	ptmx   *os.File
+	buf    bytes.Buffer
+	closed bool
+	mu     sync.Mutex
+}
+
+var (
+	shellMu       sync.Mutex
+	activeShell   *shellSession
+	defaultRows   = 24
+	defaultCols   = 80
+	shellBufLimit = 256 * 1024 // 256KB history
+)
 
 func isAgent2Binary() bool {
 	base := filepath.Base(os.Args[0])
@@ -608,6 +627,35 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 			go func() {
 				_ = uninstallSelf()
 			}()
+		case "ShellStart":
+			var req struct {
+				SessionID string `json:"sessionId"`
+				Rows      int    `json:"rows"`
+				Cols      int    `json:"cols"`
+			}
+			_ = json.Unmarshal(m.Data, &req)
+			go startShellSession(req.SessionID, req.Rows, req.Cols, c)
+		case "ShellInput":
+			var req struct {
+				SessionID string `json:"sessionId"`
+				Data      string `json:"data"`
+			}
+			_ = json.Unmarshal(m.Data, &req)
+			go shellInput(req.SessionID, req.Data, c)
+		case "ShellResize":
+			var req struct {
+				SessionID string `json:"sessionId"`
+				Rows      int    `json:"rows"`
+				Cols      int    `json:"cols"`
+			}
+			_ = json.Unmarshal(m.Data, &req)
+			go shellResize(req.SessionID, req.Rows, req.Cols, c)
+		case "ShellStop":
+			var req struct {
+				SessionID string `json:"sessionId"`
+			}
+			_ = json.Unmarshal(m.Data, &req)
+			go shellStop(req.SessionID, c)
 		case "RunScript":
 			var req map[string]any
 			_ = json.Unmarshal(m.Data, &req)
@@ -2857,6 +2905,164 @@ func firstN(s string, n int) string {
 		return s
 	}
 	return s[:n]
+}
+
+// ---- interactive shell support ----
+
+func startShellSession(sessionID string, rows, cols int, c *websocket.Conn) {
+	if sessionID == "" {
+		sessionID = "default"
+	}
+	if rows <= 0 {
+		rows = defaultRows
+	}
+	if cols <= 0 {
+		cols = defaultCols
+	}
+	shellMu.Lock()
+	defer shellMu.Unlock()
+	if activeShell != nil && !activeShell.closed {
+		// already running; just send ready
+		_ = c.WriteJSON(map[string]any{"type": "ShellReady", "sessionId": activeShell.id})
+		return
+	}
+	cmd := exec.Command("/bin/bash", "--login")
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "PS1=\\u@\\h:\\w$ ")
+	ws := &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)}
+	ptmx, err := pty.StartWithSize(cmd, ws)
+	if err != nil {
+		_ = c.WriteJSON(map[string]any{"type": "ShellExit", "sessionId": sessionID, "code": -1, "message": err.Error()})
+		return
+	}
+	sess := &shellSession{id: sessionID, cmd: cmd, ptmx: ptmx}
+	activeShell = sess
+
+	// reader goroutine
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			n, err := ptmx.Read(buf)
+			if n > 0 {
+				chunk := string(buf[:n])
+				sess.append(chunk)
+				_ = c.WriteJSON(map[string]any{"type": "ShellData", "sessionId": sessionID, "data": chunk, "timeMs": time.Now().UnixMilli()})
+			}
+			if err != nil {
+				break
+			}
+		}
+		waitErr := cmd.Wait()
+		code := 0
+		if exitErr, ok := waitErr.(*exec.ExitError); ok {
+			if status, ok2 := exitErr.Sys().(syscall.WaitStatus); ok2 {
+				code = status.ExitStatus()
+			} else {
+				code = -1
+			}
+		}
+		sess.markClosed()
+		_ = c.WriteJSON(map[string]any{"type": "ShellExit", "sessionId": sessionID, "code": code})
+		shellMu.Lock()
+		if activeShell == sess {
+			activeShell = nil
+		}
+		shellMu.Unlock()
+	}()
+
+	_ = c.WriteJSON(map[string]any{"type": "ShellReady", "sessionId": sessionID})
+}
+
+func shellInput(sessionID, data string, c *websocket.Conn) {
+	shellMu.Lock()
+	sess := activeShell
+	shellMu.Unlock()
+	if sess == nil || sess.closed || (sessionID != "" && sess.id != sessionID) {
+		_ = c.WriteJSON(map[string]any{"type": "ShellExit", "sessionId": sessionID, "code": -1, "message": "session not running"})
+		return
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if sess.closed || sess.ptmx == nil {
+		return
+	}
+	_, _ = sess.ptmx.Write([]byte(data))
+}
+
+func shellResize(sessionID string, rows, cols int, c *websocket.Conn) {
+	shellMu.Lock()
+	sess := activeShell
+	shellMu.Unlock()
+	if sess == nil || sess.closed || (sessionID != "" && sess.id != sessionID) {
+		return
+	}
+	if rows <= 0 || cols <= 0 {
+		return
+	}
+	if sess.ptmx != nil {
+		_ = pty.Setsize(sess.ptmx, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+	}
+}
+
+func shellStop(sessionID string, c *websocket.Conn) {
+	shellMu.Lock()
+	sess := activeShell
+	shellMu.Unlock()
+	if sess == nil || sess.closed || (sessionID != "" && sess.id != sessionID) {
+		return
+	}
+	sess.mu.Lock()
+	if sess.closed {
+		sess.mu.Unlock()
+		return
+	}
+	sess.closed = true
+	if sess.ptmx != nil {
+		_ = sess.ptmx.Close()
+	}
+	_ = killProc(sess.cmd)
+	sess.mu.Unlock()
+	shellMu.Lock()
+	if activeShell == sess {
+		activeShell = nil
+	}
+	shellMu.Unlock()
+	_ = c.WriteJSON(map[string]any{"type": "ShellExit", "sessionId": sess.id, "code": 0})
+}
+
+func killProc(cmd *exec.Cmd) error {
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	_ = cmd.Process.Signal(syscall.SIGTERM)
+	time.Sleep(300 * time.Millisecond)
+	return cmd.Process.Kill()
+}
+
+func (s *shellSession) append(chunk string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.buf.WriteString(chunk)
+	// trim history if too large
+	if s.buf.Len() > shellBufLimit {
+		b := s.buf.Bytes()
+		if len(b) > shellBufLimit {
+			b = b[len(b)-shellBufLimit:]
+		}
+		s.buf.Reset()
+		s.buf.Write(b)
+	}
+}
+
+func (s *shellSession) markClosed() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	if s.ptmx != nil {
+		_ = s.ptmx.Close()
+	}
 }
 
 func getExpectedVersions(addr, scheme string) (agent1, agent2 string) {

@@ -10,6 +10,9 @@ import { Chip } from "@heroui/chip";
 import { Spinner } from "@heroui/spinner";
 import { Alert } from "@heroui/alert";
 import { Progress } from "@heroui/progress";
+import { Tooltip } from "@heroui/tooltip";
+import { Terminal } from "xterm";
+import "xterm/css/xterm.css";
 import OpsLogModal from '@/components/OpsLogModal';
 import { Divider } from "@heroui/divider";
 import { queryNodeServices, getNodeNetworkStatsBatch, getVersionInfo } from "@/api";
@@ -124,7 +127,16 @@ export default function NodePage() {
   const [nqModal, setNqModal] = useState<{open:boolean; title:string; content:string; timeMs:number|null; loading:boolean; nodeId:number|null; done?:boolean}>({open:false, title:'', content:'', timeMs:null, loading:false, nodeId:null, done:false});
   const [nqHasResult, setNqHasResult] = useState<Record<number, boolean>>({});
   const logScrollRef = useRef<HTMLDivElement | null>(null);
-  
+  const termContainerRef = useRef<HTMLDivElement | null>(null);
+  const termWSRef = useRef<WebSocket | null>(null);
+  const termRef = useRef<Terminal | null>(null);
+  const [termModal, setTermModal] = useState<{open:boolean; nodeId:number|null; nodeName:string; content:string; running:boolean; connecting:boolean}>({open:false, nodeId:null, nodeName:'', content:'', running:false, connecting:false});
+  const isAdmin = (() => {
+    const rid = localStorage.getItem('role_id') || localStorage.getItem('roleId');
+    const adminFlag = localStorage.getItem('admin');
+    return adminFlag === 'true' || rid === '0';
+  })();
+
   const websocketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
@@ -143,65 +155,355 @@ export default function NodePage() {
     
     return () => {
       closeWebSocket();
+      closeTermWS();
     };
   }, []);
 
   // 模拟终端：处理 \r 覆盖、保留 ANSI 颜色
-  const normalizeTerminal = (txt: string) => {
-    const lines: string[] = [];
-    let line = "";
-    for (let i = 0; i < txt.length; i++) {
-      const ch = txt[i];
-      if (ch === "\r") {
-        line = "";
-      } else if (ch === "\n") {
-        lines.push(line);
-        line = "";
-      } else {
-        line += ch;
-      }
+  // 终端相关
+  const closeTermWS = () => {
+    if (termWSRef.current) {
+      termWSRef.current.close();
+      termWSRef.current = null;
     }
-    if (line) lines.push(line);
-    // 合并同一进度行（同百分比、去掉转圈符号后的前缀一致）
-    const merged: string[] = [];
-    const pctRe = /(.*?)(\d{1,3})%/;
-    const cleanSpinner = (s:string) => s.replace(/[\u2800-\u28FF]/g, "").trim();
-    lines.forEach(l => {
-      if (merged.length > 0) {
-        const prev = merged[merged.length-1];
-        const m1 = pctRe.exec(prev);
-        const m2 = pctRe.exec(l);
-        if (m1 && m2 && m1[2] === m2[2] && cleanSpinner(m1[1]) === cleanSpinner(m2[1])) {
-          merged[merged.length-1] = l;
-          return;
-        }
-      }
-      merged.push(l);
-    });
-    return merged.join('\n');
   };
 
-  const ansiToHtml = (txt: string) => {
-    const normalized = normalizeTerminal(txt);
-    const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    const esc = escapeHtml(normalized);
-    const ansiMap: Record<string, string> = {
-      "0": "</span>",
-      "1": '<span class="font-bold">',
-      "31": '<span class="text-red-400">',
-      "32": '<span class="text-green-400">',
-      "33": '<span class="text-yellow-300">',
-      "34": '<span class="text-blue-400">',
-      "35": '<span class="text-pink-400">',
-      "36": '<span class="text-cyan-300">',
-      "37": '<span class="text-gray-100">',
+  const openTerminalWindow = (node: Node) => {
+    const token = localStorage.getItem("token") || "";
+    const proto = window.location.protocol === "https:" ? "wss" : "ws";
+    const wsUrl = `${proto}://${window.location.host}/api/v1/node/${node.id}/terminal?token=${encodeURIComponent(token)}`;
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>终端 - ${node.name}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+  <style>
+    html, body { margin:0; padding:0; width:100%; height:100%; background:#000; color:#d1d5db; font-family: monospace; }
+    #layout { display:flex; width:100%; height:100%; padding:0; box-sizing:border-box; gap:6px; }
+    #term-wrap { flex: 1 1 90%; background: ${localStorage.getItem("term_bg")||"#151729"}; border-radius:6px; overflow:hidden; }
+    #term, .xterm { width:100% !important; height:100% !important; padding:4px; box-sizing:border-box; }
+    #side { flex: 0 0 10%; min-width:200px; background:#111; color:#d1d5db; padding:10px; box-sizing:border-box; border-left:1px solid #222; font-size:12px; display:flex; flex-direction:column; gap:10px; transition: width 0.2s ease; }
+    #side.hidden { display:none; }
+    #side-toggle { position:absolute; top:8px; right:8px; z-index:10; padding:4px 6px; font-size:12px; }
+    #log { margin-top:4px; max-height:60%; overflow:auto; white-space:pre-wrap; }
+    .status-ok { color:#22c55e; }
+    .status-bad { color:#ef4444; }
+    .btn { background:#1e293b; color:#e5e7eb; border:1px solid #334155; padding:6px 10px; border-radius:4px; cursor:pointer; }
+    .btn:hover { background:#0f172a; }
+    .key-btn { background:#1f2937; color:#e5e7eb; border:1px solid #374151; padding:4px 6px; border-radius:4px; cursor:pointer; font-size:11px; }
+    .key-btn:hover { background:#0f172a; }
+    @media (max-width: 768px) {
+      #layout { width:98%; height:98%; padding:1%; gap:6px; }
+      #side { min-width:120px; font-size:11px; }
+    }
+  </style>
+</head>
+  <body>
+  <div id="layout">
+    <button id="side-toggle" class="btn" style="position:absolute; top:10px; right:10px;">》</button>
+    <div id="term-wrap"><div id="term"></div></div>
+    <div id="side">
+      <div>
+        <div><strong>连接状态</strong></div>
+        <div id="status" class="status-bad">连接中...</div>
+        <div style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap;">
+          <button id="btn-reconnect" class="btn">重连 WS</button>
+          <button id="btn-restart" class="btn">重开会话</button>
+        </div>
+      </div>
+      <div>
+        <div><strong>节点</strong></div>
+        <div>${node.name}</div>
+      </div>
+      <div>
+        <div><strong>资源</strong></div>
+        <div id="stats">CPU -- | 内存 -- | 上行 -- | 下行 --</div>
+      </div>
+      <div style="flex:1 1 auto; display:flex; flex-direction:column;">
+        <div><strong>日志</strong></div>
+        <div id="log"></div>
+      </div>
+      <div>
+        <div><strong>快捷键</strong></div>
+        <div id="hotkeys" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:6px;">
+          <button class="key-btn" data-key="ctrl+c">Ctrl+C</button>
+          <button class="key-btn" data-key="ctrl+v">Ctrl+V</button>
+          <button class="key-btn" data-key="ctrl+d">Ctrl+D</button>
+          <button class="key-btn" data-key="ctrl+z">Ctrl+Z</button>
+          <button class="key-btn" data-key="ctrl+alt+a">Ctrl+Alt+A</button>
+          <button class="key-btn" data-key="ctrl+l">Ctrl+L</button>
+          <button class="key-btn" data-key="esc">Esc</button>
+          <button class="key-btn" data-key="tab">Tab</button>
+        </div>
+      </div>
+      <div>
+        <div><strong>字号</strong></div>
+        <div style="display:flex; gap:6px; margin-top:6px;">
+          <button id="font-dec" class="btn" title="减小字体">A-</button>
+          <button id="font-inc" class="btn" title="增大字体">A+</button>
+        </div>
+        <div id="font-info" style="margin-top:4px;">--</div>
+      </div>
+    </div>
+  </div>
+  <script type="module">
+    import { Terminal } from "https://cdn.jsdelivr.net/npm/xterm@5.3.0/+esm";
+    import { FitAddon } from "https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.7.0/+esm";
+    const logEl = document.getElementById("log");
+    const statusEl = document.getElementById("status");
+    const sideEl = document.getElementById("side");
+    const statsEl = document.getElementById("stats");
+    const fontInfoEl = document.getElementById("font-info");
+    const setStatus = (msg, ok=false) => {
+      statusEl.textContent = msg;
+      statusEl.className = ok ? "status-ok" : "status-bad";
     };
-    const replaced = esc.replace(/\x1b\[((?:\d{1,2};?)+)m/g, (_, g1) => {
-      const codes = g1.split(";").map((s:string)=>s.trim());
-      return codes.map((c:string) => ansiMap[c] ?? "").join("");
+    const addLog = (msg) => {
+      const line = document.createElement("div");
+      line.textContent = msg;
+      logEl.appendChild(line);
+      logEl.scrollTop = logEl.scrollHeight;
+    };
+    const fitAddon = new FitAddon();
+    const isMobile = window.innerWidth <= 768;
+    let fontSize = isMobile ? 16 : 13;
+    let lineHeight = isMobile ? 2.2 : 1.2;
+    const term = new Terminal({
+      convertEol:true,
+      cursorBlink:true,
+      fontSize: fontSize,
+      lineHeight: lineHeight,
+      rendererType: isMobile ? "dom" : "canvas",
+      fontFamily: 'Menlo, Consolas, "Courier New", monospace',
+      theme:{
+        background: "${(localStorage.getItem("term_bg")||"#151729")}",
+        foreground: "${(localStorage.getItem("term_fg")||"#209d5f")}"
+      },
+      scrollback:2000
     });
-    return replaced.replace(/\n/g, "\n");
+    term.loadAddon(fitAddon);
+    const termEl = document.getElementById("term");
+    termEl.style.padding = "6px 6px";
+    term.open(termEl);
+    fitAddon.fit();
+    term.focus();
+    const applyFont = () => {
+      term.options.fontSize = fontSize;
+      term.options.lineHeight = lineHeight;
+      fontInfoEl.textContent = fontSize + "px / " + lineHeight.toFixed(2);
+      fitAddon.fit();
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({type:"resize", rows: term.rows, cols: term.cols}));
+      }
+      // persist config
+      fetch("/api/v1/config/update", {
+        method:"POST",
+        headers: {"Content-Type":"application/json","Authorization": ${JSON.stringify(token)}},
+        body: JSON.stringify({
+          "term_font_size": String(fontSize),
+          "term_line_height": String(lineHeight)
+        })
+      }).catch(()=>{});
+    };
+    const fetchConfigVal = async (name, defVal) => {
+      try{
+        const resp = await fetch("/api/v1/config/get", {
+          method:"POST",
+          headers: {"Content-Type":"application/json","Authorization": ${JSON.stringify(token)}},
+          body: JSON.stringify({name})
+        });
+        const data = await resp.json();
+        if (data.code === 0 && data.data) return data.data;
+      }catch(e){}
+      return defVal;
+    };
+    const loadFontConfig = async () => {
+      const fv = await fetchConfigVal("term_font_size", fontSize);
+      const lv = await fetchConfigVal("term_line_height", lineHeight);
+      const fNum = parseInt(fv,10);
+      const lNum = parseFloat(lv);
+      if (!isNaN(fNum) && fNum>0) fontSize = fNum;
+      if (!isNaN(lNum) && lNum>0) lineHeight = lNum;
+      applyFont();
+    };
+    let ws = null;
+    let onDataDispose = null;
+    const sendResize = () => {
+      fitAddon.fit();
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({type:"resize", rows: term.rows, cols: term.cols}));
+      }
+    };
+    new ResizeObserver(()=>sendResize()).observe(document.getElementById("term-wrap"));
+    const openWS = () => {
+      if (ws) { try{ ws.close(); }catch(e){} }
+      if (onDataDispose) { try{ onDataDispose.dispose(); }catch(e){} onDataDispose = null; }
+      term.reset();
+      setStatus("连接中...", false);
+      ws = new WebSocket(${JSON.stringify(wsUrl)});
+      ws.addEventListener("open", ()=>{ setStatus("已连接", true); addLog("WS 已连接"); sendResize(); ws.send(JSON.stringify({type:"start", rows: term.rows, cols: term.cols})); });
+      ws.addEventListener("message", (ev)=>{
+        try{
+          const msg = JSON.parse(ev.data);
+          if (msg.type === "history") { term.reset(); term.write(msg.data || ""); }
+          else if (msg.type === "data") { term.write(msg.data || ""); }
+          else if (msg.type === "ShellExit") { term.write("\\r\\n[会话结束 code="+(msg.code??"") +"]"); addLog("会话结束 code="+(msg.code??"")); setStatus("已断开", false); }
+        }catch(e){}
+      });
+      onDataDispose = term.onData((d)=>{ if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:"input", data:d})); });
+      ws.addEventListener("close", ()=>{ addLog("WS 已关闭"); setStatus("已断开", false); });
+      ws.addEventListener("error", ()=>{ addLog("WS 错误"); setStatus("连接错误", false); });
+    };
+    loadFontConfig().then(()=>openWS());
+    window.addEventListener("resize", ()=>{ sendResize(); });
+    window.addEventListener("beforeunload", ()=>{ try{ ws.close(); }catch(e){} });
+    document.getElementById("btn-reconnect").addEventListener("click", ()=>{ addLog("手动重连"); openWS(); });
+    document.getElementById("btn-restart").addEventListener("click", ()=>{ addLog("重开会话"); if (ws && ws.readyState===WebSocket.OPEN){ ws.send(JSON.stringify({type:"stop"})); } openWS(); });
+    // toggle side
+    const toggleSide = ()=> {
+      if (sideEl.style.display === "none") {
+        sideEl.style.display = "flex";
+        document.getElementById("side-toggle").textContent = "》";
+      } else {
+        sideEl.style.display = "none";
+        document.getElementById("side-toggle").textContent = "《";
+      }
+    };
+    document.getElementById("side-toggle").addEventListener("click", toggleSide);
+    document.addEventListener("keydown", (e)=>{ if (e.key === "F2") toggleSide(); });
+    document.getElementById("font-inc").addEventListener("click", ()=>{
+      fontSize = Math.min(32, fontSize + 1);
+      if (isMobile) { lineHeight = Math.max(1.4, lineHeight + 0.05); }
+      applyFont();
+    });
+    document.getElementById("font-dec").addEventListener("click", ()=>{
+      fontSize = Math.max(10, fontSize - 1);
+      if (isMobile) { lineHeight = Math.max(1.4, lineHeight - 0.05); }
+      applyFont();
+    });
+    // hotkeys
+    const keyMap = {
+      "ctrl+c": "\\u0003",
+      "ctrl+v": "\\u0016",
+      "ctrl+d": "\\u0004",
+      "ctrl+z": "\\u001a",
+      "ctrl+alt+a": "\\u001b\\u0001",
+      "ctrl+l": "\\u000c",
+      "esc": "\\u001b",
+      "tab": "\\t"
+    };
+    const sendRaw = (s) => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        const raw = s.replace(/\\\\u([0-9a-fA-F]{4})/g, (_, hex)=>String.fromCharCode(parseInt(hex,16)));
+        ws.send(JSON.stringify({type:"input", data: raw}));
+      }
+    };
+    document.getElementById("hotkeys").querySelectorAll("button").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const k = btn.getAttribute("data-key");
+        if (k && keyMap[k]) {
+          addLog("发送快捷键 "+k);
+          sendRaw(keyMap[k]);
+        }
+      });
+    });
+    // stats poll
+    let lastRx = null, lastTx = null, lastTime = null;
+    const fetchStats = async () => {
+      try{
+        const resp = await fetch("/api/v1/node/sysinfo", {
+          method:"POST",
+          headers: {
+            "Content-Type":"application/json",
+            "Authorization": ${JSON.stringify(token)}
+          },
+          body: JSON.stringify({ nodeId: ${node.id}, limit: 1 })
+        });
+        const data = await resp.json();
+        if (data.code === 0 && Array.isArray(data.data) && data.data.length > 0) {
+          const s = data.data[data.data.length-1];
+          let cpu = (s.cpu ?? 0).toFixed(1) + "%";
+          let mem = (s.mem ?? 0).toFixed(1) + "%";
+          let up = "--", down = "--";
+          if (lastRx !== null && lastTx !== null && lastTime !== null) {
+            const dt = (s.timeMs - lastTime)/1000;
+            if (dt > 0) {
+              const rxBps = (s.bytesRx - lastRx)/dt;
+              const txBps = (s.bytesTx - lastTx)/dt;
+              const fmt = (v)=> {
+                if (v >= 1e9) return (v/1e9).toFixed(2)+" GB/s";
+                if (v >= 1e6) return (v/1e6).toFixed(2)+" MB/s";
+                if (v >= 1e3) return (v/1e3).toFixed(2)+" KB/s";
+                return v.toFixed(0)+" B/s";
+              };
+              down = fmt(rxBps);
+              up = fmt(txBps);
+            }
+          }
+          lastRx = s.bytesRx; lastTx = s.bytesTx; lastTime = s.timeMs;
+          statsEl.textContent = "CPU " + cpu + " | 内存 " + mem + " | 上行 " + up + " | 下行 " + down;
+        }
+      }catch(e){}
+    };
+    fetchStats();
+    setInterval(fetchStats, 5000);
+  </script>
+</body>
+</html>`;
+    const w = window.open("", "_blank");
+    if (w) {
+      w.document.write(html);
+      w.document.close();
+    } else {
+      toast.error("请允许弹窗以打开终端");
+    }
   };
+
+  const openTerminal = (node: Node) => {
+    if (!isAdmin) return;
+    // 默认改为新标签页
+    openTerminalWindow(node);
+  };
+
+  const sendTermInput = (data: string) => {
+    if (!termWSRef.current || termWSRef.current.readyState !== WebSocket.OPEN) return;
+    termWSRef.current.send(JSON.stringify({type:"input", data}));
+  };
+
+  useEffect(() => {
+    if (!termModal.open) {
+      return;
+    }
+    if (termContainerRef.current && !termRef.current) {
+      const term = new Terminal({
+        convertEol: true,
+        cursorBlink: true,
+        disableStdin: false,
+        fontSize: 13,
+        theme: { background: "#000000", foreground: "#d1d5db" },
+        scrollback: 2000,
+      });
+      term.open(termContainerRef.current);
+      term.focus();
+      term.onData((d: string) => sendTermInput(d));
+      termRef.current = term;
+      if (termModal.content) {
+        term.write(termModal.content);
+      }
+    } else if (termRef.current) {
+      termRef.current.focus();
+    }
+  }, [termModal.open]);
+
+  useEffect(() => {
+    if (termRef.current) {
+      // ensure latest content visible
+      termRef.current.scrollToBottom();
+    }
+  }, [termModal.content, termModal.running]);
 
   // 加载版本信息
   useEffect(() => {
@@ -1149,6 +1451,22 @@ export default function NodePage() {
                       <p className="text-xs text-default-500 truncate">{node.serverIp}</p>
                     </div>
                     <div className="flex items-center gap-1.5 ml-2">
+                      {isAdmin && (
+                        <Tooltip content="终端">
+                          <Button
+                            isIconOnly
+                            size="sm"
+                            variant="light"
+                            onPress={()=>openTerminal(node)}
+                            isDisabled={node.connectionStatus !== 'online'}
+                          >
+                            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M4 17l6-6-6-6" />
+                              <path d="M12 19h8" />
+                            </svg>
+                          </Button>
+                        </Tooltip>
+                      )}
                       <Chip 
                         color={node.connectionStatus === 'online' ? 'success' : 'danger'} 
                         variant="flat" 
@@ -1412,6 +1730,39 @@ export default function NodePage() {
             ))}
           </div>
           <OpsLogModal isOpen={opsOpen} onOpenChange={setOpsOpen} />
+          <Modal 
+            isOpen={termModal.open}
+            onOpenChange={(open)=>{
+              if (!open) {
+                closeTermWS();
+                setTermModal({open:false, nodeId:null, nodeName:'', content:'', running:false, connecting:false});
+              }
+            }}
+            size="5xl"
+            scrollBehavior="inside"
+            placement="center"
+          >
+            <ModalContent>
+              <ModalHeader>
+                终端 · {termModal.nodeName}
+                <span className="text-xs text-default-500 ml-2">
+                  {termModal.connecting ? '连接中...' : termModal.running ? '运行中' : '已断开'}
+                </span>
+              </ModalHeader>
+              <ModalBody>
+            <div className="bg-black rounded-md h-[60vh] min-h-[300px] overflow-hidden">
+              <div ref={termContainerRef} className="w-full h-full" />
+            </div>
+            <div className="text-xs text-default-500">按键直接发送到节点 /bin/bash，关闭弹窗不会终止会话。</div>
+              </ModalBody>
+              <ModalFooter>
+                <Button variant="light" onPress={()=>{
+                  closeTermWS();
+                  setTermModal({open:false, nodeId:null, nodeName:'', content:'', running:false, connecting:false});
+                }}>关闭</Button>
+              </ModalFooter>
+            </ModalContent>
+          </Modal>
           </>
         )}
 
@@ -1696,7 +2047,7 @@ export default function NodePage() {
                   <div className="h-[60vh] overflow-y-auto" ref={logScrollRef}>
                     <pre
                       className="bg-black text-green-100 rounded-lg p-4 text-xs font-mono leading-relaxed min-h-[200px] whitespace-pre-wrap break-words"
-                      dangerouslySetInnerHTML={{__html: ansiToHtml(nqModal.content || '暂无结果')}} />
+                      dangerouslySetInnerHTML={{__html: nqModal.content || '暂无结果'}} />
                   </div>
                 </>
               )}

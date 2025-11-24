@@ -77,13 +77,13 @@ func RegisterRoutes(r *gin.Engine) {
 	}
 
 	// node
-    node := api.Group("/node")
-    node.Use(middleware.Auth(), middleware.ForbidManagedLimited())
-    {
-        node.POST("/create", controller.NodeCreate)
-        node.POST("/list", controller.NodeList)
-        node.POST("/update", controller.NodeUpdate)
-        node.POST("/delete", controller.NodeDelete)
+	node := api.Group("/node")
+	node.Use(middleware.Auth(), middleware.ForbidManagedLimited())
+	{
+		node.POST("/create", controller.NodeCreate)
+		node.POST("/list", controller.NodeList)
+		node.POST("/update", controller.NodeUpdate)
+		node.POST("/delete", controller.NodeDelete)
 		node.POST("/install", controller.NodeInstallCmd)
 		node.GET("/connections", controller.NodeConnections)
 		// create/update exit node SS service
@@ -96,16 +96,18 @@ func RegisterRoutes(r *gin.Engine) {
 		node.POST("/nq-test", controller.NodeNQTest)
 		node.POST("/nq-result", controller.NodeNQResult)
 		// query services on node
-        node.POST("/query-services", controller.NodeQueryServices)
+		node.POST("/query-services", controller.NodeQueryServices)
 		// network stats for node
 		node.POST("/network-stats", controller.NodeNetworkStats)
 		node.POST("/network-stats-batch", controller.NodeNetworkStatsBatch)
 		node.POST("/sysinfo", controller.NodeSysinfo)
 		node.POST("/interfaces", controller.NodeInterfaces)
-        node.POST("/ops", controller.NodeOps)
+		node.POST("/ops", controller.NodeOps)
 		node.POST("/restart-gost", controller.NodeRestartGost)
 		node.POST("/enable-gost-api", controller.NodeEnableGostAPI)
 	}
+	// Terminal WS: 自带 token/admin 校验，不使用 Auth 中间件
+	api.GET("/node/:id/terminal", controller.NodeTerminalWS)
 
 	// streaming log push from agent (auth by secret)
 	api.POST("/nq/stream", controller.NodeNQStreamPush)

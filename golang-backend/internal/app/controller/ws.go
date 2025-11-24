@@ -293,6 +293,7 @@ func SystemInfoWS(c *gin.Context) {
 						broadcastTerm(node.ID, map[string]any{"type": "ready", "sessionId": sid})
 					case "ShellExit":
 						setTermRunning(node.ID, false)
+						resetTermSession(node.ID)
 						broadcastTerm(node.ID, generic)
 					}
 					continue

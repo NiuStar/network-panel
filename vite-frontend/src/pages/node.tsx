@@ -344,18 +344,60 @@ export default function NodePage() {
       term.reset();
       setStatus("连接中...", false);
       ws = new WebSocket(${JSON.stringify(wsUrl)});
-      ws.addEventListener("open", ()=>{ setStatus("已连接", true); addLog("WS 已连接"); sendResize(); ws.send(JSON.stringify({type:"start", rows: term.rows, cols: term.cols})); });
+      ws.addEventListener("open", ()=>{ 
+        setStatus("已连接", true); addLog("WS 已连接"); 
+        sendResize(); 
+        ws.send(JSON.stringify({type:"start", rows: term.rows, cols: term.cols})); 
+      });
+      let restartPending = false;
+      let dataReceived = false;
+      let timerCleared = false;
+      const stopAndMaybeClose = () => {
+        restartPending = true;
+        try{ ws.send(JSON.stringify({type:"stop"})); }catch(e){}
+        setTimeout(()=>{ if (restartPending && ws && ws.readyState === WebSocket.OPEN) { ws.close(); } }, 500);
+      };
+      const clearTimer = () => {
+        if (!timerCleared) {
+          clearTimeout(timer);
+          timerCleared = true;
+        }
+      };
+      const timer = setTimeout(()=>{
+        if (!dataReceived) {
+          stopAndMaybeClose();
+        }
+      }, 3000);
+      // heartbeat ping to keep WS alive
+      const hb = setInterval(()=>{
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try{ ws.send(JSON.stringify({type:"ping"})); }catch(e){}
+        }
+      }, 20000);
       ws.addEventListener("message", (ev)=>{
         try{
           const msg = JSON.parse(ev.data);
           if (msg.type === "history") { term.reset(); term.write(msg.data || ""); }
-          else if (msg.type === "data") { term.write(msg.data || ""); }
-          else if (msg.type === "ShellExit") { term.write("\\r\\n[会话结束 code="+(msg.code??"") +"]"); addLog("会话结束 code="+(msg.code??"")); setStatus("已断开", false); }
+          else if (msg.type === "data") { dataReceived = true; clearTimer(); term.write(msg.data || ""); }
+          else if (msg.type === "ShellExit") { 
+            term.write("\\r\\n[会话结束 code="+(msg.code??"") +"]"); 
+            addLog("会话结束 code="+(msg.code??"")); 
+            setStatus("已断开", false); 
+            if (restartPending) {
+              // close and let close handler reopen
+              ws.close();
+              return;
+            }
+          }
         }catch(e){}
       });
       onDataDispose = term.onData((d)=>{ if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:"input", data:d})); });
-      ws.addEventListener("close", ()=>{ addLog("WS 已关闭"); setStatus("已断开", false); });
-      ws.addEventListener("error", ()=>{ addLog("WS 错误"); setStatus("连接错误", false); });
+      ws.addEventListener("close", ()=>{ 
+        clearTimer(); clearInterval(hb); 
+        addLog("WS 已关闭"); setStatus("已断开", false); 
+        if (restartPending) { restartPending = false; setTimeout(()=>openWS(), 200); }
+      });
+      ws.addEventListener("error", ()=>{ clearTimer(); clearInterval(hb); addLog("WS 错误"); setStatus("连接错误", false); });
     };
     loadFontConfig().then(()=>openWS());
     window.addEventListener("resize", ()=>{ sendResize(); });

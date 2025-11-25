@@ -649,6 +649,9 @@ export default function NodePage() {
         if (typeof data.rlimiter === 'string') dRLimiter = data.rlimiter || '';
         if (data.metadata && typeof data.metadata === 'object') {
           dMetaItems = Object.entries(data.metadata).map(([k,v])=>({id: Date.now()+Math.random(), key: String(k), value: String(v)}));
+          if (typeof (data.metadata as any).interface === 'string') {
+            setExitIfaceSel(String((data.metadata as any).interface));
+          }
         }
       }
     } catch {}
@@ -660,7 +663,7 @@ export default function NodePage() {
       const ips = (rr && rr.code === 0 && Array.isArray(rr.data?.ips)) ? rr.data.ips as string[] : [];
       setExitIfaces(ips);
     } catch { setExitIfaces([]); }
-    setExitIfaceSel('');
+    if (!exitIfaceSel) setExitIfaceSel('');
 
     setExitPort(dPort);
     setExitPassword(dPwd);
@@ -1958,13 +1961,23 @@ export default function NodePage() {
                     <Input label="加密方法" value={exitMethod} onChange={(e:any)=>setExitMethod(e.target.value)} description="默认 AEAD_CHACHA20_POLY1305" />
                     <div>
                       <div className="text-sm text-default-600 mb-1">出口IP（metadata.interface，可选）</div>
-                      <div className="flex gap-2 flex-wrap">
-                        {exitIfaces.map((ip) => (
-                          <Button key={ip} size="sm" variant={exitIfaceSel===ip? 'solid':'flat'} color={exitIfaceSel===ip? 'primary':'default'} onPress={()=>setExitIfaceSel(ip)}>{ip}</Button>
+                      <Select
+                        label="请选择出口IP"
+                        placeholder={exitIfaces.length ? "选择出口IP" : "未获取到出口IP列表"}
+                        selectedKeys={exitIfaceSel ? [exitIfaceSel] : []}
+                        onSelectionChange={(keys)=> {
+                          const val = Array.from(keys as Set<string>)[0] || '';
+                          setExitIfaceSel(val);
+                        }}
+                        isDisabled={exitIfaces.length===0}
+                      >
+                        {exitIfaces.map(ip=>(
+                          <SelectItem key={ip}>{ip}</SelectItem>
                         ))}
-                        {exitIfaces.length===0 && <div className="text-xs text-default-500">未获取到出口IP列表</div>}
-                        {exitIfaceSel && <Button size="sm" variant="light" onPress={()=>setExitIfaceSel('')}>清除选择</Button>}
-                      </div>
+                      </Select>
+                      {exitIfaceSel && (
+                        <Button size="sm" variant="light" className="mt-2" onPress={()=>setExitIfaceSel('')}>清除选择</Button>
+                      )}
                     </div>
                     <Divider />
                     <Input label="观察器(observer)" value={exitObserver} onChange={(e:any)=>setExitObserver(e.target.value)} description="默认 console，可留空" />

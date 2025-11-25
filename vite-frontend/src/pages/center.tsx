@@ -45,6 +45,14 @@ const Section = ({ title, data, showIP }: { title: string; data: HBSummary | nul
     if (!data) return [];
     return [...data.items].sort((a,b)=>b.firstSeenMs - a.firstSeenMs);
   }, [data]);
+  const versionStats = useMemo(() => {
+    const m: Record<string, number> = {};
+    items.forEach(it => {
+      const v = it.version || "未知";
+      m[v] = (m[v] || 0) + 1;
+    });
+    return m;
+  }, [items]);
   return (
     <Card className="w-full">
       <CardHeader className="flex flex-col items-start gap-1">
@@ -52,6 +60,13 @@ const Section = ({ title, data, showIP }: { title: string; data: HBSummary | nul
         {data && (
           <div className="text-sm text-gray-500 dark:text-gray-400">
             总数 {data.total} · 活跃 {data.active} · 离线 {Math.max(data.total - data.active, 0)}
+          </div>
+        )}
+        {items.length > 0 && (
+          <div className="text-xs text-gray-500 flex flex-wrap gap-3">
+            {Object.entries(versionStats).map(([ver, cnt])=>(
+              <span key={ver}>{ver}: {cnt}</span>
+            ))}
           </div>
         )}
       </CardHeader>
@@ -116,6 +131,7 @@ export default function CenterPage() {
     const v = localStorage.getItem("center_show_ip");
     return v === "1";
   });
+  const [tab, setTab] = useState<"agents"|"controllers">("agents");
 
   const fetchData = async () => {
     setLoading(true);
@@ -135,10 +151,10 @@ export default function CenterPage() {
 
   const header = useMemo(() => {
     if (!data) return "节点心跳中心";
-    const a = data.agents;
-    const c = data.controllers;
-    return `节点心跳中心 · Agent ${a.active}/${a.total} · 控制器 ${c.active}/${c.total}`;
-  }, [data]);
+    const cur = tab === "agents" ? data.agents : data.controllers;
+    const label = tab === "agents" ? "Agent" : "控制器";
+    return `节点心跳中心 · ${label} ${cur.active}/${cur.total}`;
+  }, [data, tab]);
 
   return (
     <div className="p-6 space-y-6">
@@ -148,6 +164,16 @@ export default function CenterPage() {
           <p className="text-sm text-gray-500">用于统计 agent / 中控程序的版本、系统、架构与存活状态</p>
         </div>
         <div className="flex items-center gap-3">
+          <div className="flex rounded border border-gray-300 dark:border-gray-700 overflow-hidden">
+            <button
+              className={`px-3 py-1 text-sm ${tab==="agents"?"bg-primary-600 text-white":"bg-transparent text-foreground"}`}
+              onClick={()=>setTab("agents")}
+            >Agent</button>
+            <button
+              className={`px-3 py-1 text-sm ${tab==="controllers"?"bg-primary-600 text-white":"bg-transparent text-foreground"}`}
+              onClick={()=>setTab("controllers")}
+            >中控</button>
+          </div>
           <Switch
             size="sm"
             isSelected={showIP}
@@ -169,8 +195,8 @@ export default function CenterPage() {
       </div>
 
       <div className="grid grid-cols-1 gap-4">
-        <Section title="Agent 节点" data={data?.agents || null} showIP={showIP} />
-        <Section title="中控程序" data={data?.controllers || null} showIP={showIP} />
+        {tab === "agents" && <Section title="Agent 节点" data={data?.agents || null} showIP={showIP} />}
+        {tab === "controllers" && <Section title="中控程序" data={data?.controllers || null} showIP={showIP} />}
       </div>
     </div>
   );

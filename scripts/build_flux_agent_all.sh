@@ -17,6 +17,7 @@ fi
 # Requested targets
 TARGETS=(
   darwin_arm64
+  darwin_amd64
   freebsd_386
   freebsd_amd64
   linux_386

@@ -239,6 +239,11 @@ get_config_params() {
 # 下载并安装 Go 版 flux-agent 二进制
 install_flux_agent_go_bin() {
   local arch="$(uname -m)" os="linux"
+  case "$(uname -s)" in
+    Darwin) os="darwin" ;;
+    Linux) os="linux" ;;
+    FreeBSD) os="freebsd" ;;
+  esac
   local file=""
   case "$arch" in
     x86_64|amd64) file="flux-agent-${os}-amd64" ;;
@@ -271,6 +276,11 @@ install_flux_agent() {
   mkdir -p "$INSTALL_DIR"
   # 下载 agent 二进制到 /usr/local/bin 原子替换
   local arch="$(uname -m)" os="linux" file=""
+  case "$(uname -s)" in
+    Darwin) os="darwin" ;;
+    Linux) os="linux" ;;
+    FreeBSD) os="freebsd" ;;
+  esac
   case "$arch" in
     x86_64|amd64) file="flux-agent-${os}-amd64" ;;
     aarch64|arm64) file="flux-agent-${os}-arm64" ;;

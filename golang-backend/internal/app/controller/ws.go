@@ -297,7 +297,7 @@ func SystemInfoWS(c *gin.Context) {
 						broadcastTerm(node.ID, generic)
 					}
 					continue
-				} else if t, ok := generic["type"].(string); ok && (t == "DiagnoseResult" || t == "QueryServicesResult" || t == "SuggestPortsResult" || t == "ProbePortResult") {
+				} else if t, ok := generic["type"].(string); ok && (t == "DiagnoseResult" || t == "QueryServicesResult" || t == "GetServiceResult" || t == "SuggestPortsResult" || t == "ProbePortResult") {
 					if reqID, ok := generic["requestId"].(string); ok {
 						diagMu.Lock()
 						ch := diagWaiters[reqID]

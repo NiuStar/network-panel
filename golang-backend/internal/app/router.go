@@ -213,6 +213,8 @@ func RegisterRoutes(r *gin.Engine) {
 	r.POST("/flow/config", controller.FlowConfig)
 	r.Any("/flow/test", controller.FlowTest)
 	r.Any("/flow/upload", controller.FlowUpload)
+	// limiter plugin endpoint for gost HTTP plugin data source
+	r.POST("/plugin/limiter", controller.LimiterPlugin)
 	// alerts
 	api.POST("/alerts/recent", middleware.RequireRole(), controller.AlertsRecent)
 

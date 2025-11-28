@@ -30,6 +30,7 @@ func SpeedLimitCreate(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("限速规则创建失败"))
 		return
 	}
+	applyLimiterForTunnel(sl.TunnelID)
 	// Gost limiter add is stubbed
 	c.JSON(http.StatusOK, response.OkNoData())
 }
@@ -64,6 +65,7 @@ func SpeedLimitUpdate(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("限速规则更新失败"))
 		return
 	}
+	applyLimiterForTunnel(sl.TunnelID)
 	c.JSON(http.StatusOK, response.OkMsg("限速规则更新成功"))
 }
 
@@ -94,4 +96,40 @@ func SpeedLimitTunnels(c *gin.Context) {
 	var list []model.Tunnel
 	dbpkg.DB.Find(&list)
 	c.JSON(http.StatusOK, response.Ok(list))
+}
+
+// applyLimiterForTunnel pushes limiter config to all entry services on the tunnel's entry node(s).
+// It updates existing services via UpdateService, safe to call repeatedly.
+func applyLimiterForTunnel(tunnelID int64) {
+	type row struct {
+		ID       int64
+		UserID   int64
+		TunnelID int64
+		InNodeID int64
+	}
+	var rows []row
+	dbpkg.DB.Table("forward f").
+		Select("f.id, f.user_id, f.tunnel_id, t.in_node_id").
+		Joins("left join tunnel t on t.id = f.tunnel_id").
+		Where("f.tunnel_id = ?", tunnelID).
+		Scan(&rows)
+	if len(rows) == 0 {
+		return
+	}
+	byNode := map[int64][]map[string]any{}
+	for _, r := range rows {
+		if r.InNodeID == 0 {
+			continue
+		}
+		svc := fetchServiceByName(r.InNodeID, buildServiceName(r.ID, r.UserID, r.TunnelID))
+		if svc == nil {
+			continue
+		}
+		if mergeLimiterIntoService(svc, r.InNodeID) {
+			byNode[r.InNodeID] = append(byNode[r.InNodeID], svc)
+		}
+	}
+	for nodeID, patches := range byNode {
+		_ = sendWSCommand(nodeID, "UpdateService", expandRUDP(patches))
+	}
 }

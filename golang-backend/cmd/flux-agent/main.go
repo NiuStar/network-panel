@@ -528,6 +528,49 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 			} else {
 				log.Printf("{\"event\":\"svc_cmd_applied\",\"type\":%q,\"count\":%d}", m.Type, len(services))
 			}
+		case "UpsertLimiters":
+			var limiters []map[string]any
+			if err := json.Unmarshal(m.Data, &limiters); err != nil {
+				log.Printf("{\"event\":\"svc_cmd_parse_err\",\"type\":%q,\"error\":%q}", m.Type, err.Error())
+				continue
+			}
+			if err := apiConfigLimiters(limiters, false); err != nil {
+				log.Printf("{\"event\":\"svc_cmd_apply_err\",\"type\":%q,\"error\":%q}", m.Type, err.Error())
+				emitOpLog("gost_api_err", "apply UpsertLimiters failed", map[string]any{"error": err.Error()})
+			} else {
+				log.Printf("{\"event\":\"svc_cmd_applied\",\"type\":%q,\"count\":%d}", m.Type, len(limiters))
+			}
+		case "GetService":
+			var req struct {
+				RequestID string `json:"requestId"`
+				Name      string `json:"name"`
+			}
+			_ = json.Unmarshal(m.Data, &req)
+			go func() {
+				var svc map[string]any
+				if req.Name != "" {
+					if m, _, err := apiGetByName("services", req.Name); err == nil && m != nil {
+						svc = m
+					}
+				}
+				// fallback: scan list
+				if svc == nil {
+					list := queryServices("")
+					for _, it := range list {
+						if n, _ := it["name"].(string); n == req.Name {
+							svc = it
+							break
+						}
+					}
+				}
+				resp := map[string]any{"type": "GetServiceResult", "requestId": req.RequestID}
+				if svc != nil {
+					resp["data"] = svc
+				} else {
+					resp["data"] = nil
+				}
+				_ = c.WriteJSON(resp)
+			}()
 		case "DeleteService":
 			var req struct {
 				Services []string `json:"services"`
@@ -1818,6 +1861,46 @@ func apiConfigObservers(observers []map[string]any, updateOnly bool) error {
 		return nil
 	}
 	return fmt.Errorf("observers api partial/failed: %d/%d", okCount, len(observers))
+}
+
+// apiConfigLimiters upserts limiters via GOST Web API.
+// When updateOnly is true, it will only update existing limiters; otherwise upsert.
+func apiConfigLimiters(limiters []map[string]any, updateOnly bool) error {
+	if len(limiters) == 0 {
+		return nil
+	}
+	okCount := 0
+	for _, lm := range limiters {
+		name, _ := lm["name"].(string)
+		target := normalizeJSONAny(lm)
+		if cur, code, _ := apiGetByName("limiters", name); code == 200 && cur != nil {
+			if equalBySubset(target, cur) {
+				log.Printf(`{"event":"gost_api_skip_put","res":"limiters","name":%q}`, name)
+				okCount++
+				continue
+			}
+			body, _ := json.Marshal(lm)
+			if code2, _, err := apiDo("PUT", "/config/limiters/"+url.PathEscape(name), body); err == nil && code2/100 == 2 {
+				okCount++
+				continue
+			}
+		}
+		if updateOnly {
+			continue
+		}
+		body, _ := json.Marshal(lm)
+		if code2, _, err := apiDo("POST", "/config/limiters", body); err == nil && code2/100 == 2 {
+			okCount++
+			continue
+		}
+	}
+	if okCount == len(limiters) {
+		if err := persistGostConfigServer(); err != nil {
+			log.Printf("{\"event\":\"gost_server_persist_err\",\"error\":%q}", err.Error())
+		}
+		return nil
+	}
+	return fmt.Errorf("limiters api partial/failed: %d/%d", okCount, len(limiters))
 }
 
 // queryServices returns a summary list of services, optionally filtered by handler type.

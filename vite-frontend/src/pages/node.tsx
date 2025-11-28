@@ -581,7 +581,7 @@ export default function NodePage() {
               uptime: 0,
               gostApi: node.gostApi === 1,
               gostRunning: node.gostRunning === 1,
-              gostApiConfigured: undefined
+              gostApiConfigured: node.gostApi === 1 ? true : undefined
             };
           } else {
             base.systemInfo = null;
@@ -899,7 +899,8 @@ export default function NodePage() {
                 uptime: currentUptime,
                 gostApi: !!systemInfo.gost_api,
                 gostRunning: !!systemInfo.gost_running,
-                gostApiConfigured: !!systemInfo.gost_api_configured
+                // Prefer explicit configured flag; fallback to api reachable for agents未上报configured的旧版
+                gostApiConfigured: systemInfo.gost_api_configured !== undefined ? !!systemInfo.gost_api_configured : !!systemInfo.gost_api
               }
             };
           } catch (error) {

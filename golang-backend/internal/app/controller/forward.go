@@ -17,8 +17,8 @@ import (
 	dbpkg "network-panel/golang-backend/internal/db"
 
 	"github.com/gin-gonic/gin"
-    "gorm.io/gorm"
-    "gorm.io/gorm/clause"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // POST /api/v1/forward/create
@@ -44,11 +44,18 @@ func ForwardCreate(c *gin.Context) {
 			return
 		}
 		// forward quota
-		var cfg model.ViteConfig; dbpkg.DB.Where("name=?","registration_default_forward").First(&cfg)
-		limit := 20; if n,err := strconv.Atoi(strings.TrimSpace(cfg.Value)); err==nil && n>0 { limit = n }
+		var cfg model.ViteConfig
+		dbpkg.DB.Where("name=?", "registration_default_forward").First(&cfg)
+		limit := 20
+		if n, err := strconv.Atoi(strings.TrimSpace(cfg.Value)); err == nil && n > 0 {
+			limit = n
+		}
 		var cnt int64
 		dbpkg.DB.Model(&model.Forward{}).Where("user_id=?", uid).Count(&cnt)
-		if int(cnt) >= limit { c.JSON(http.StatusOK, response.ErrMsg("超出转发数量上限")); return }
+		if int(cnt) >= limit {
+			c.JSON(http.StatusOK, response.ErrMsg("超出转发数量上限"))
+			return
+		}
 	}
 	// allocate inPort if nil: find first port in range not used
 	inPort := 0
@@ -116,15 +123,15 @@ func ForwardCreate(c *gin.Context) {
 		// gRPC HTTP 隧道（出口=relay+grpc，入口=http+chain(dialer=grpc, connector=relay)）
 		user := fmt.Sprintf("u-%d", f.ID)
 		pass := util.MD5(fmt.Sprintf("%d:%d", f.ID, f.CreatedTime))[:16]
-        outSvc := map[string]any{
-            "name":     name,
-            "addr":     fmt.Sprintf(":%d", *f.OutPort),
-            "listener": map[string]any{"type": "grpc"},
-            // 出口不再配置 chain，仅作为 relay 服务端
-            "handler":  map[string]any{"type": "relay", "auth": map[string]any{"username": user, "password": pass}},
-            "metadata": map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false},
-        }
-        _ = sendWSCommand(outNodeIDOr0(tun), "AddService", expandRUDP([]map[string]any{outSvc}))
+		outSvc := map[string]any{
+			"name":     name,
+			"addr":     fmt.Sprintf(":%d", *f.OutPort),
+			"listener": map[string]any{"type": "grpc"},
+			// 出口不再配置 chain，仅作为 relay 服务端
+			"handler":  map[string]any{"type": "relay", "auth": map[string]any{"username": user, "password": pass}},
+			"metadata": map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false},
+		}
+		_ = sendWSCommand(outNodeIDOr0(tun), "AddService", expandRUDP([]map[string]any{outSvc}))
 
 		// 计算出口地址：优先使用出口节点的监听IP(在隧道编辑里配置的 inIp/bind)，否则使用隧道/节点出口IP
 		outIP := getOutNodeIP(tun)
@@ -206,11 +213,15 @@ func ForwardCreate(c *gin.Context) {
 						continue
 					}
 					// 优先使用下一跳的入站绑定IP（用户在隧道编辑中选的入口IP），否则回退到节点信息（preferIPv4）
-                nextBind := bindMap[path[i+1]]
-                host := nextBind
-                if host == "" { host = preferIPv4(nx) }
-                if host == "" { host = firstIPAny(nx) }
-                target = safeHostPort(host, midPorts[i+1])
+					nextBind := bindMap[path[i+1]]
+					host := nextBind
+					if host == "" {
+						host = preferIPv4(nx)
+					}
+					if host == "" {
+						host = firstIPAny(nx)
+					}
+					target = safeHostPort(host, midPorts[i+1])
 				} else {
 					// last mid forwards to exit relay (gRPC) address directly
 					target = exitAddr
@@ -226,18 +237,18 @@ func ForwardCreate(c *gin.Context) {
 				/*if bindIP, ok := bindMap[nid]; ok && bindIP != "" {
 					addrStr = safeHostPort(bindIP, thisPort)
 				}*/
-                svc := map[string]any{
-                    "name":      midName,
-                    "addr":      addrStr,
-                    "listener":  map[string]any{"type": "tcp"},
-                    "handler":   map[string]any{"type": "forward"},
-                    "forwarder": map[string]any{"nodes": []map[string]any{{"name": "target", "addr": target}}},
-                    "metadata":  map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false},
-                }
+				svc := map[string]any{
+					"name":      midName,
+					"addr":      addrStr,
+					"listener":  map[string]any{"type": "tcp"},
+					"handler":   map[string]any{"type": "forward"},
+					"forwarder": map[string]any{"nodes": []map[string]any{{"name": "target", "addr": target}}},
+					"metadata":  map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false},
+				}
 				if iface != nil && *iface != "" {
 					svc["metadata"].(map[string]any)["interface"] = *iface
 				}
-                _ = sendWSCommand(nid, "AddService", expandRUDP([]map[string]any{svc}))
+				_ = sendWSCommand(nid, "AddService", expandRUDP([]map[string]any{svc}))
 				if b, err := json.Marshal(svc); err == nil {
 					s := string(b)
 					_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nid, Cmd: "ForwardAddService", RequestID: opId, Success: 1, Message: fmt.Sprintf("create mid svc %s port=%d", midName, thisPort), Stdout: &s}).Error
@@ -246,23 +257,24 @@ func ForwardCreate(c *gin.Context) {
 			// Entry node: forward handler + chain to first mid address using dialer=grpc（负载将被各中间节点逐跳TCP转发）
 			var first model.Node
 			if err := dbpkg.DB.First(&first, path[0]).Error; err == nil {
-            inSvc := map[string]any{
-                "name":     name,
-                "addr":     fmt.Sprintf(":%d", f.InPort),
-                "listener": map[string]any{"type": "tcp"},
-                "handler":  map[string]any{"type": "forward", "chain": "chain_" + name},
-                "metadata": map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false},
-            }
-            if obsName, spec := buildObserverPluginSpec(tun.InNodeID, name); obsName != "" && spec != nil {
-                inSvc["observer"] = obsName
-                inSvc["_observers"] = []any{spec}
-            }
-			// attach interface for entry if configured
-			if ip, ok := ifaceMap[tun.InNodeID]; ok && ip != "" {
-				if meta, ok2 := inSvc["metadata"].(map[string]any); ok2 {
-					meta["interface"] = ip
+				inSvc := map[string]any{
+					"name":     name,
+					"addr":     fmt.Sprintf(":%d", f.InPort),
+					"listener": map[string]any{"type": "tcp"},
+					"handler":  map[string]any{"type": "forward", "chain": "chain_" + name},
+					"metadata": map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false},
 				}
-			}
+				if obsName, spec := buildObserverPluginSpec(tun.InNodeID, name); obsName != "" && spec != nil {
+					inSvc["observer"] = obsName
+					inSvc["_observers"] = []any{spec}
+				}
+				attachLimiter(inSvc, tun.InNodeID)
+				// attach interface for entry if configured
+				if ip, ok := ifaceMap[tun.InNodeID]; ok && ip != "" {
+					if meta, ok2 := inSvc["metadata"].(map[string]any); ok2 {
+						meta["interface"] = ip
+					}
+				}
 				chainName := "chain_" + name
 				hopName := "hop_" + name
 				node := map[string]any{
@@ -277,16 +289,16 @@ func ForwardCreate(c *gin.Context) {
 					"connector": map[string]any{"type": "relay", "auth": map[string]any{"username": user, "password": pass}},
 					"dialer":    map[string]any{"type": "grpc"},
 				}
-        inSvc["_chains"] = []any{map[string]any{"name": chainName, "metadata": map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false}, "hops": []any{map[string]any{"name": hopName, "nodes": []any{node}}}}}
-                // forwarder 目标为多个远程地址（支持逗号分隔）
-                nodes := []map[string]any{}
-                for i, a := range parseRemoteAddrs(f.RemoteAddr) {
-                    nodes = append(nodes, map[string]any{"name": fmt.Sprintf("target_%d", i), "addr": a})
-                }
-                if len(nodes) == 0 {
-                    nodes = []map[string]any{{"name": "target_0", "addr": firstTargetHost(f.RemoteAddr)}}
-                }
-                inSvc["forwarder"] = map[string]any{"nodes": nodes}
+				inSvc["_chains"] = []any{map[string]any{"name": chainName, "metadata": map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false}, "hops": []any{map[string]any{"name": hopName, "nodes": []any{node}}}}}
+				// forwarder 目标为多个远程地址（支持逗号分隔）
+				nodes := []map[string]any{}
+				for i, a := range parseRemoteAddrs(f.RemoteAddr) {
+					nodes = append(nodes, map[string]any{"name": fmt.Sprintf("target_%d", i), "addr": a})
+				}
+				if len(nodes) == 0 {
+					nodes = []map[string]any{{"name": "target_0", "addr": firstTargetHost(f.RemoteAddr)}}
+				}
+				inSvc["forwarder"] = map[string]any{"nodes": nodes}
 				_ = sendWSCommand(tun.InNodeID, "AddService", expandRUDP([]map[string]any{inSvc}))
 				if b, err := json.Marshal(inSvc); err == nil {
 					s := string(b)
@@ -295,17 +307,18 @@ func ForwardCreate(c *gin.Context) {
 			}
 		} else {
 			// Original single-hop: in -> exit relay
-            inSvc := map[string]any{
-                "name":     name,
-                "addr":     fmt.Sprintf(":%d", f.InPort),
-                "listener": map[string]any{"type": "tcp"},
-                "handler":  map[string]any{"type": "forward", "chain": "chain_" + name},
-                "metadata": map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false},
-            }
-            if obsName, spec := buildObserverPluginSpec(tun.InNodeID, name); obsName != "" && spec != nil {
-                inSvc["observer"] = obsName
-                inSvc["_observers"] = []any{spec}
-            }
+			inSvc := map[string]any{
+				"name":     name,
+				"addr":     fmt.Sprintf(":%d", f.InPort),
+				"listener": map[string]any{"type": "tcp"},
+				"handler":  map[string]any{"type": "forward", "chain": "chain_" + name},
+				"metadata": map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false},
+			}
+			if obsName, spec := buildObserverPluginSpec(tun.InNodeID, name); obsName != "" && spec != nil {
+				inSvc["observer"] = obsName
+				inSvc["_observers"] = []any{spec}
+			}
+			attachLimiter(inSvc, tun.InNodeID)
 			chainName := "chain_" + name
 			hopName := "hop_" + name
 			node := map[string]any{
@@ -315,16 +328,16 @@ func ForwardCreate(c *gin.Context) {
 				"connector": map[string]any{"type": "relay", "auth": map[string]any{"username": user, "password": pass}},
 				"dialer":    map[string]any{"type": "grpc"},
 			}
-            inSvc["_chains"] = []any{map[string]any{"name": chainName, "metadata": map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false}, "hops": []any{map[string]any{"name": hopName, "nodes": []any{node}}}}}
-            // forwarder 目标为多个远程地址（支持逗号分隔）
-            nodes := []map[string]any{}
-            for i, a := range parseRemoteAddrs(f.RemoteAddr) {
-                nodes = append(nodes, map[string]any{"name": fmt.Sprintf("target_%d", i), "addr": a})
-            }
-            if len(nodes) == 0 {
-                nodes = []map[string]any{{"name": "target_0", "addr": firstTargetHost(f.RemoteAddr)}}
-            }
-            inSvc["forwarder"] = map[string]any{"nodes": nodes}
+			inSvc["_chains"] = []any{map[string]any{"name": chainName, "metadata": map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false}, "hops": []any{map[string]any{"name": hopName, "nodes": []any{node}}}}}
+			// forwarder 目标为多个远程地址（支持逗号分隔）
+			nodes := []map[string]any{}
+			for i, a := range parseRemoteAddrs(f.RemoteAddr) {
+				nodes = append(nodes, map[string]any{"name": fmt.Sprintf("target_%d", i), "addr": a})
+			}
+			if len(nodes) == 0 {
+				nodes = []map[string]any{{"name": "target_0", "addr": firstTargetHost(f.RemoteAddr)}}
+			}
+			inSvc["forwarder"] = map[string]any{"nodes": nodes}
 			_ = sendWSCommand(tun.InNodeID, "AddService", expandRUDP([]map[string]any{inSvc}))
 			if b, err := json.Marshal(inSvc); err == nil {
 				s := string(b)
@@ -333,7 +346,7 @@ func ForwardCreate(c *gin.Context) {
 			// restart in & out to ensure effect
 			// 使用 Web API 动态变更，无需重启
 		}
-			// 不重启，配置已生效
+		// 不重启，配置已生效
 	} else {
 		// port-forward: support multi-level path
 		path := getTunnelPathNodes(tun.ID)
@@ -349,11 +362,12 @@ func ForwardCreate(c *gin.Context) {
 			} else {
 				iface = preferIface(f.InterfaceName, tun.InterfaceName)
 			}
-            svc := buildServiceConfig(name, f.InPort, f.RemoteAddr, iface)
-            if obsName, spec := buildObserverPluginSpec(tun.InNodeID, name); obsName != "" && spec != nil {
-                svc["observer"] = obsName
-                svc["_observers"] = []any{spec}
-            }
+			svc := buildServiceConfig(name, f.InPort, f.RemoteAddr, iface)
+			if obsName, spec := buildObserverPluginSpec(tun.InNodeID, name); obsName != "" && spec != nil {
+				svc["observer"] = obsName
+				svc["_observers"] = []any{spec}
+			}
+			attachLimiter(svc, tun.InNodeID)
 			_ = sendWSCommand(tun.InNodeID, "AddService", expandRUDP([]map[string]any{svc}))
 			// 不重启，配置已生效
 		} else {
@@ -419,6 +433,9 @@ func ForwardCreate(c *gin.Context) {
 					iface = preferIface(f.InterfaceName, tun.InterfaceName)
 				}
 				svc := buildServiceConfig(name, listenPort, target, iface)
+				if i == 0 {
+					attachLimiter(svc, nodeID)
+				}
 				_ = sendWSCommand(nodeID, "AddService", expandRUDP([]map[string]any{svc}))
 				if b, err := json.Marshal(svc); err == nil {
 					s := string(b)
@@ -442,19 +459,19 @@ func ForwardCreate(c *gin.Context) {
 
 // POST /api/v1/forward/list
 func ForwardList(c *gin.Context) {
-    roleInf, _ := c.Get("role_id")
-    uidInf, _ := c.Get("user_id")
+	roleInf, _ := c.Get("role_id")
+	uidInf, _ := c.Get("user_id")
 	var res []struct {
 		model.Forward
 		TunnelName string `json:"tunnelName"`
 		InIp       string `json:"inIp"`
 	}
-    q := dbpkg.DB.Table("forward f").Select("f.*, t.name as tunnel_name, t.in_ip as in_ip").Joins("left join tunnel t on t.id = f.tunnel_id")
-    if roleInf != 0 {
-        q = q.Where("f.user_id = ?", uidInf)
-    }
-    q.Scan(&res)
-    c.JSON(http.StatusOK, response.Ok(res))
+	q := dbpkg.DB.Table("forward f").Select("f.*, t.name as tunnel_name, t.in_ip as in_ip").Joins("left join tunnel t on t.id = f.tunnel_id")
+	if roleInf != 0 {
+		q = q.Where("f.user_id = ?", uidInf)
+	}
+	q.Scan(&res)
+	c.JSON(http.StatusOK, response.Ok(res))
 }
 
 // POST /api/v1/forward/update
@@ -464,17 +481,20 @@ func ForwardUpdate(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
 		return
 	}
-    var f model.Forward
-    if err := dbpkg.DB.First(&f, req.ID).Error; err != nil {
-        c.JSON(http.StatusOK, response.ErrMsg("转发不存在"))
-        return
-    }
-    // permission: non-admin can only update own forward
-    if roleInf, ok := c.Get("role_id"); ok && roleInf != 0 {
-        if uidInf, ok2 := c.Get("user_id"); ok2 {
-            if f.UserID != uidInf.(int64) { c.JSON(http.StatusForbidden, response.ErrMsg("无权限")); return }
-        }
-    }
+	var f model.Forward
+	if err := dbpkg.DB.First(&f, req.ID).Error; err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("转发不存在"))
+		return
+	}
+	// permission: non-admin can only update own forward
+	if roleInf, ok := c.Get("role_id"); ok && roleInf != 0 {
+		if uidInf, ok2 := c.Get("user_id"); ok2 {
+			if f.UserID != uidInf.(int64) {
+				c.JSON(http.StatusForbidden, response.ErrMsg("无权限"))
+				return
+			}
+		}
+	}
 	// ensure tunnel exists
 	var tun model.Tunnel
 	if err := dbpkg.DB.First(&tun, req.TunnelID).Error; err != nil {
@@ -539,13 +559,13 @@ func ForwardUpdate(c *gin.Context) {
 		if ip, ok := bindMap[outNodeIDOr0(tun)]; ok && ip != "" {
 			addrStr = safeHostPort(ip, *f.OutPort)
 		}
-        outSvc := map[string]any{
-            "name":     name,
-            "addr":     addrStr,
-            "listener": map[string]any{"type": "grpc"},
-            "handler":  map[string]any{"type": "relay", "auth": map[string]any{"username": fmt.Sprintf("u-%d", f.ID), "password": util.MD5(fmt.Sprintf("%d:%d", f.ID, f.CreatedTime))[:16]}},
-            "metadata": map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false},
-        }
+		outSvc := map[string]any{
+			"name":     name,
+			"addr":     addrStr,
+			"listener": map[string]any{"type": "grpc"},
+			"handler":  map[string]any{"type": "relay", "auth": map[string]any{"username": fmt.Sprintf("u-%d", f.ID), "password": util.MD5(fmt.Sprintf("%d:%d", f.ID, f.CreatedTime))[:16]}},
+			"metadata": map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false},
+		}
 		_ = sendWSCommand(outNodeIDOr0(tun), "AddService", expandRUDP([]map[string]any{outSvc}))
 		if b, err := json.Marshal(outSvc); err == nil {
 			s := string(b)
@@ -611,21 +631,25 @@ func ForwardUpdate(c *gin.Context) {
 					if err := dbpkg.DB.First(&nx, path[i+1]).Error; err != nil {
 						continue
 					}
-                host := bindMap[path[i+1]]
-                if host == "" { host = preferIPv4(nx) }
-                if host == "" { host = firstIPAny(nx) }
-                target = safeHostPort(host, midPorts[i+1])
-                } else {
-                    // last mid forwards directly to exit relay (gRPC) on out node
-                    // Use exit bind IP if provided; otherwise fall back to tunnel/Node ServerIP
-                    exHost := ""
-                    if ip, ok := bindMap[outNodeIDOr0(tun)]; ok && ip != "" {
-                        exHost = ip
-                    } else {
-                        exHost = getOutNodeIP(tun)
-                    }
-                    target = safeHostPort(exHost, *f.OutPort)
-                }
+					host := bindMap[path[i+1]]
+					if host == "" {
+						host = preferIPv4(nx)
+					}
+					if host == "" {
+						host = firstIPAny(nx)
+					}
+					target = safeHostPort(host, midPorts[i+1])
+				} else {
+					// last mid forwards directly to exit relay (gRPC) on out node
+					// Use exit bind IP if provided; otherwise fall back to tunnel/Node ServerIP
+					exHost := ""
+					if ip, ok := bindMap[outNodeIDOr0(tun)]; ok && ip != "" {
+						exHost = ip
+					} else {
+						exHost = getOutNodeIP(tun)
+					}
+					target = safeHostPort(exHost, *f.OutPort)
+				}
 				midName := fmt.Sprintf("%s_mid_%d", buildServiceName(f.ID, f.UserID, f.TunnelID), i)
 				var iface *string
 				if ip, ok := ifaceMap[nid]; ok && ip != "" {
@@ -637,14 +661,14 @@ func ForwardUpdate(c *gin.Context) {
 				if bindIP, ok := bindMap[nid]; ok && bindIP != "" {
 					listen = safeHostPort(bindIP, thisPort)
 				}
-                svc := map[string]any{
-                    "name":      midName,
-                    "addr":      listen,
-                    "listener":  map[string]any{"type": "tcp"},
-                    "handler":   map[string]any{"type": "forward"},
-                    "forwarder": map[string]any{"nodes": []map[string]any{{"name": "target", "addr": target}}},
-                    "metadata":  map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false},
-                }
+				svc := map[string]any{
+					"name":      midName,
+					"addr":      listen,
+					"listener":  map[string]any{"type": "tcp"},
+					"handler":   map[string]any{"type": "forward"},
+					"forwarder": map[string]any{"nodes": []map[string]any{{"name": "target", "addr": target}}},
+					"metadata":  map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false},
+				}
 				if iface != nil && *iface != "" {
 					svc["metadata"].(map[string]any)["interface"] = *iface
 				}
@@ -682,11 +706,12 @@ func ForwardUpdate(c *gin.Context) {
 			tmp := ip
 			inIface = &tmp
 		}
-        inSvc := buildServiceConfig(name, f.InPort, f.RemoteAddr, inIface)
-        if obsName, spec := buildObserverPluginSpec(tun.InNodeID, name); obsName != "" && spec != nil {
-            inSvc["observer"] = obsName
-            inSvc["_observers"] = []any{spec}
-        }
+		inSvc := buildServiceConfig(name, f.InPort, f.RemoteAddr, inIface)
+		if obsName, spec := buildObserverPluginSpec(tun.InNodeID, name); obsName != "" && spec != nil {
+			inSvc["observer"] = obsName
+			inSvc["_observers"] = []any{spec}
+		}
+		attachLimiter(inSvc, tun.InNodeID)
 		chainName := "chain_" + name
 		hopName := "hop_" + name
 		// ensure handler is forward and attach chain
@@ -704,104 +729,124 @@ func ForwardUpdate(c *gin.Context) {
 		}
 		node := map[string]any{"name": "node-" + name, "addr": entryTarget, "connector": map[string]any{"type": "relay", "auth": map[string]any{"username": user, "password": pass}}, "dialer": map[string]any{"type": "grpc"}}
 		inSvc["_chains"] = []any{map[string]any{"name": chainName, "hops": []any{map[string]any{"name": hopName, "nodes": []any{node}}}}}
-        _ = sendWSCommand(tun.InNodeID, "AddService", expandRUDP([]map[string]any{inSvc}))
+		_ = sendWSCommand(tun.InNodeID, "AddService", expandRUDP([]map[string]any{inSvc}))
 		if b, err := json.Marshal(inSvc); err == nil {
 			s := string(b)
 			_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: tun.InNodeID, Cmd: "ForwardUpdateService", RequestID: opId, Success: 1, Message: "update entry svc", Stdout: &s}).Error
 		}
 		// 强制重启入口与出口节点的 gost，确保更新立即生效
 		// 不重启，配置已生效
-    } else {
-        // port-forward (type=1): support multi-level path similar to create
-        path := getTunnelPathNodes(tun.ID)
-        ifaceMap := getTunnelIfaceMap(tun.ID)
-        bindMap := getTunnelBindMap(tun.ID)
-        if len(path) == 0 {
-            // single hop: entry forwards directly to remoteAddr
-            var iface *string
-            if ip, ok := ifaceMap[tun.InNodeID]; ok && ip != "" {
-                tmp := ip
-                iface = &tmp
-            } else {
-                iface = preferIface(f.InterfaceName, tun.InterfaceName)
-            }
-            svc := buildServiceConfig(name, f.InPort, f.RemoteAddr, iface)
-            if obsName, spec := buildObserverPluginSpec(tun.InNodeID, name); obsName != "" && spec != nil {
-                svc["observer"] = obsName
-                svc["_observers"] = []any{spec}
-            }
-            _ = sendWSCommand(tun.InNodeID, "AddService", expandRUDP([]map[string]any{svc}))
-            if b, err := json.Marshal(svc); err == nil {
-                s := string(b)
-                _ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: tun.InNodeID, Cmd: "ForwardUpdateService", RequestID: opId, Success: 1, Message: "update entry svc (type1-single)", Stdout: &s}).Error
-            }
-            // 不重启
-        } else {
-            // chain: [inNode -> mid1 -> ... -> last]; entry uses f.InPort
-            hops := append([]int64{tun.InNodeID}, path...)
-            hopPorts := make([]int, len(hops))
-            hopPorts[0] = f.InPort
-            for i := 1; i < len(hops); i++ {
-                prevID := hops[i-1]
-                curID := hops[i]
-                prevOut := ifaceMap[prevID]
-                curIn := bindMap[curID]
-                overlay := isOverlayIP(prevOut) && isOverlayIP(curIn)
-                var n model.Node
-                _ = dbpkg.DB.First(&n, curID).Error
-                if overlay {
-                    p := findFreePortOnNodeAny(curID, 10000, 10000)
-                    if p == 0 { p = 10000 }
-                    hopPorts[i] = p
-                } else {
-                    minP, maxP := 10000, 65535
-                    if n.PortSta > 0 { minP = n.PortSta }
-                    if n.PortEnd > 0 { maxP = n.PortEnd }
-                    p := findFreePortOnNode(curID, minP, minP, maxP)
-                    if p == 0 { p = minP }
-                    hopPorts[i] = p
-                }
-                _ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: curID, Cmd: "ForwardPortPick", RequestID: opId, Success: 1, Message: fmt.Sprintf("hop port=%d", hopPorts[i])}).Error
-            }
-            // deploy services per hop (upsert)
-            for i := 0; i < len(hops); i++ {
-                nodeID := hops[i]
-                listenPort := hopPorts[i]
-                var target string
-                if i < len(hops)-1 {
-                    var n model.Node
-                    if err := dbpkg.DB.First(&n, hops[i+1]).Error; err != nil { continue }
-                    host := bindMap[hops[i+1]]
-                    if host == "" { host = preferIPv4(n) }
-                    if host == "" { host = firstIPAny(n) }
-                    target = safeHostPort(host, hopPorts[i+1])
-                } else {
-                    target = firstTargetHost(f.RemoteAddr)
-                }
-                var iface *string
-                if ip, ok := ifaceMap[nodeID]; ok && ip != "" {
-                    tmp := ip
-                    iface = &tmp
-                } else {
-                    iface = preferIface(f.InterfaceName, tun.InterfaceName)
-                }
-                svc := buildServiceConfig(name, listenPort, target, iface)
-                _ = sendWSCommand(nodeID, "AddService", expandRUDP([]map[string]any{svc}))
-                if b, err := json.Marshal(svc); err == nil {
-                    s := string(b)
-                    _ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nodeID, Cmd: "ForwardAddService", RequestID: opId, Success: 1, Message: fmt.Sprintf("update hop svc port=%d", listenPort), Stdout: &s}).Error
-                }
-            }
-            // restart gost on all hops to apply changes
-            nodesToRestart := make(map[int64]struct{})
-            for _, nid := range hops { nodesToRestart[nid] = struct{}{} }
-            for nid := range nodesToRestart {
-                if nid > 0 {
-                    // 不重启
-                }
-            }
-        }
-    }
+	} else {
+		// port-forward (type=1): support multi-level path similar to create
+		path := getTunnelPathNodes(tun.ID)
+		ifaceMap := getTunnelIfaceMap(tun.ID)
+		bindMap := getTunnelBindMap(tun.ID)
+		if len(path) == 0 {
+			// single hop: entry forwards directly to remoteAddr
+			var iface *string
+			if ip, ok := ifaceMap[tun.InNodeID]; ok && ip != "" {
+				tmp := ip
+				iface = &tmp
+			} else {
+				iface = preferIface(f.InterfaceName, tun.InterfaceName)
+			}
+			svc := buildServiceConfig(name, f.InPort, f.RemoteAddr, iface)
+			if obsName, spec := buildObserverPluginSpec(tun.InNodeID, name); obsName != "" && spec != nil {
+				svc["observer"] = obsName
+				svc["_observers"] = []any{spec}
+			}
+			attachLimiter(svc, tun.InNodeID)
+			_ = sendWSCommand(tun.InNodeID, "AddService", expandRUDP([]map[string]any{svc}))
+			if b, err := json.Marshal(svc); err == nil {
+				s := string(b)
+				_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: tun.InNodeID, Cmd: "ForwardUpdateService", RequestID: opId, Success: 1, Message: "update entry svc (type1-single)", Stdout: &s}).Error
+			}
+			// 不重启
+		} else {
+			// chain: [inNode -> mid1 -> ... -> last]; entry uses f.InPort
+			hops := append([]int64{tun.InNodeID}, path...)
+			hopPorts := make([]int, len(hops))
+			hopPorts[0] = f.InPort
+			for i := 1; i < len(hops); i++ {
+				prevID := hops[i-1]
+				curID := hops[i]
+				prevOut := ifaceMap[prevID]
+				curIn := bindMap[curID]
+				overlay := isOverlayIP(prevOut) && isOverlayIP(curIn)
+				var n model.Node
+				_ = dbpkg.DB.First(&n, curID).Error
+				if overlay {
+					p := findFreePortOnNodeAny(curID, 10000, 10000)
+					if p == 0 {
+						p = 10000
+					}
+					hopPorts[i] = p
+				} else {
+					minP, maxP := 10000, 65535
+					if n.PortSta > 0 {
+						minP = n.PortSta
+					}
+					if n.PortEnd > 0 {
+						maxP = n.PortEnd
+					}
+					p := findFreePortOnNode(curID, minP, minP, maxP)
+					if p == 0 {
+						p = minP
+					}
+					hopPorts[i] = p
+				}
+				_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: curID, Cmd: "ForwardPortPick", RequestID: opId, Success: 1, Message: fmt.Sprintf("hop port=%d", hopPorts[i])}).Error
+			}
+			// deploy services per hop (upsert)
+			for i := 0; i < len(hops); i++ {
+				nodeID := hops[i]
+				listenPort := hopPorts[i]
+				var target string
+				if i < len(hops)-1 {
+					var n model.Node
+					if err := dbpkg.DB.First(&n, hops[i+1]).Error; err != nil {
+						continue
+					}
+					host := bindMap[hops[i+1]]
+					if host == "" {
+						host = preferIPv4(n)
+					}
+					if host == "" {
+						host = firstIPAny(n)
+					}
+					target = safeHostPort(host, hopPorts[i+1])
+				} else {
+					target = firstTargetHost(f.RemoteAddr)
+				}
+				var iface *string
+				if ip, ok := ifaceMap[nodeID]; ok && ip != "" {
+					tmp := ip
+					iface = &tmp
+				} else {
+					iface = preferIface(f.InterfaceName, tun.InterfaceName)
+				}
+				svc := buildServiceConfig(name, listenPort, target, iface)
+				if i == 0 {
+					attachLimiter(svc, nodeID)
+				}
+				_ = sendWSCommand(nodeID, "AddService", expandRUDP([]map[string]any{svc}))
+				if b, err := json.Marshal(svc); err == nil {
+					s := string(b)
+					_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nodeID, Cmd: "ForwardAddService", RequestID: opId, Success: 1, Message: fmt.Sprintf("update hop svc port=%d", listenPort), Stdout: &s}).Error
+				}
+			}
+			// restart gost on all hops to apply changes
+			nodesToRestart := make(map[int64]struct{})
+			for _, nid := range hops {
+				nodesToRestart[nid] = struct{}{}
+			}
+			for nid := range nodesToRestart {
+				if nid > 0 {
+					// 不重启
+				}
+			}
+		}
+	}
 	c.JSON(http.StatusOK, response.Ok(map[string]any{"msg": "端口转发更新成功", "requestId": opId}))
 }
 
@@ -822,29 +867,29 @@ func ForwardDelete(c *gin.Context) {
 	name := buildServiceName(f.ID, f.UserID, f.TunnelID)
 	if tun.Type == 2 && f.OutPort != nil {
 		// 删除入口与出口上的主服务
-        _ = sendWSCommand(tun.InNodeID, "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{name})})
-        _ = sendWSCommand(outNodeIDOr0(tun), "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{name})})
+		_ = sendWSCommand(tun.InNodeID, "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{name})})
+		_ = sendWSCommand(outNodeIDOr0(tun), "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{name})})
 		// 删除多级路径的中间节点 mid 服务（name_mid_i）
 		path := getTunnelPathNodes(tun.ID)
 		for i := 0; i < len(path); i++ {
 			midName := fmt.Sprintf("%s_mid_%d", name, i)
-            _ = sendWSCommand(path[i], "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{midName})})
+			_ = sendWSCommand(path[i], "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{midName})})
 		}
 	} else {
 		// 端口转发：删除入口上的服务
-        _ = sendWSCommand(tun.InNodeID, "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{name})})
+		_ = sendWSCommand(tun.InNodeID, "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{name})})
 		// 若端口转发也采用了多级路径（各 hop 使用相同 name），尝试在中间节点删除同名服务
 		path := getTunnelPathNodes(tun.ID)
-        for _, nid := range path {
-            _ = sendWSCommand(nid, "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{name})})
-        }
+		for _, nid := range path {
+			_ = sendWSCommand(nid, "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{name})})
+		}
 	}
-    // cleanup expected mid ports
-    _ = dbpkg.DB.Where("forward_id = ?", p.ID).Delete(&model.ForwardMidPort{}).Error
-    if err := dbpkg.DB.Delete(&model.Forward{}, p.ID).Error; err != nil {
-        c.JSON(http.StatusOK, response.ErrMsg("端口转发删除失败"))
-        return
-    }
+	// cleanup expected mid ports
+	_ = dbpkg.DB.Where("forward_id = ?", p.ID).Delete(&model.ForwardMidPort{}).Error
+	if err := dbpkg.DB.Delete(&model.Forward{}, p.ID).Error; err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("端口转发删除失败"))
+		return
+	}
 	c.JSON(http.StatusOK, response.OkMsg("端口转发删除成功"))
 }
 
@@ -871,9 +916,9 @@ func ForwardPause(c *gin.Context) {
 	var t model.Tunnel
 	if err := dbpkg.DB.First(&t, f.TunnelID).Error; err == nil {
 		name := buildServiceName(f.ID, f.UserID, f.TunnelID)
-        _ = sendWSCommand(t.InNodeID, "PauseService", map[string]interface{}{"services": expandNamesWithRUDP([]string{name})})
+		_ = sendWSCommand(t.InNodeID, "PauseService", map[string]interface{}{"services": expandNamesWithRUDP([]string{name})})
 		if t.Type == 2 {
-            _ = sendWSCommand(outNodeIDOr0(t), "PauseService", map[string]interface{}{"services": expandNamesWithRUDP([]string{name})})
+			_ = sendWSCommand(outNodeIDOr0(t), "PauseService", map[string]interface{}{"services": expandNamesWithRUDP([]string{name})})
 		}
 	}
 	c.JSON(http.StatusOK, response.OkNoData())
@@ -899,9 +944,9 @@ func ForwardResume(c *gin.Context) {
 	var t model.Tunnel
 	if err := dbpkg.DB.First(&t, f.TunnelID).Error; err == nil {
 		name := buildServiceName(f.ID, f.UserID, f.TunnelID)
-        _ = sendWSCommand(t.InNodeID, "ResumeService", map[string]interface{}{"services": expandNamesWithRUDP([]string{name})})
+		_ = sendWSCommand(t.InNodeID, "ResumeService", map[string]interface{}{"services": expandNamesWithRUDP([]string{name})})
 		if t.Type == 2 {
-            _ = sendWSCommand(outNodeIDOr0(t), "ResumeService", map[string]interface{}{"services": expandNamesWithRUDP([]string{name})})
+			_ = sendWSCommand(outNodeIDOr0(t), "ResumeService", map[string]interface{}{"services": expandNamesWithRUDP([]string{name})})
 		}
 	}
 	c.JSON(http.StatusOK, response.OkNoData())
@@ -916,27 +961,27 @@ func ForwardDiagnose(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
 		return
 	}
-    var f model.Forward
-    if err := dbpkg.DB.First(&f, p.ForwardID).Error; err != nil {
-        c.JSON(http.StatusOK, response.ErrMsg("转发不存在"))
-        return
-    }
-    // auth: admin or owner or user has tunnel permission
-    if roleInf, ok := c.Get("role_id"); ok {
-        if role, _ := roleInf.(int); role != 0 {
-            if uidInf, ok2 := c.Get("user_id"); ok2 {
-                uid := uidInf.(int64)
-                if f.UserID != uid {
-                    var utCnt int64
-                    dbpkg.DB.Model(&model.UserTunnel{}).Where("user_id=? and tunnel_id=?", uid, f.TunnelID).Count(&utCnt)
-                    if utCnt == 0 {
-                        c.JSON(http.StatusForbidden, response.ErrMsg("权限不足"))
-                        return
-                    }
-                }
-            }
-        }
-    }
+	var f model.Forward
+	if err := dbpkg.DB.First(&f, p.ForwardID).Error; err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("转发不存在"))
+		return
+	}
+	// auth: admin or owner or user has tunnel permission
+	if roleInf, ok := c.Get("role_id"); ok {
+		if role, _ := roleInf.(int); role != 0 {
+			if uidInf, ok2 := c.Get("user_id"); ok2 {
+				uid := uidInf.(int64)
+				if f.UserID != uid {
+					var utCnt int64
+					dbpkg.DB.Model(&model.UserTunnel{}).Where("user_id=? and tunnel_id=?", uid, f.TunnelID).Count(&utCnt)
+					if utCnt == 0 {
+						c.JSON(http.StatusForbidden, response.ErrMsg("权限不足"))
+						return
+					}
+				}
+			}
+		}
+	}
 	var t model.Tunnel
 	_ = dbpkg.DB.First(&t, f.TunnelID).Error
 	var inNode model.Node
@@ -982,41 +1027,47 @@ func ForwardDiagnose(c *gin.Context) {
 		"message":     portMsg,
 	})
 
-    // 远端地址格式校验 + 节点侧真实诊断（对每个远端地址逐一测试）
-    addrs := parseRemoteAddrs(f.RemoteAddr)
-    if len(addrs) == 0 { addrs = []string{firstTargetHost(f.RemoteAddr)} }
-    // 选择执行诊断的节点：端口转发在入口节点执行，隧道转发在出口节点执行
-    var runNode model.Node
-    var runNodeID int64
-    if t.Type == 2 { runNode, runNodeID = outNode, outNode.ID } else { runNode, runNodeID = inNode, inNode.ID }
-    for _, hp := range addrs {
-        host, port := splitHostPortSafe(hp)
-        okFmt := host != "" && port > 0
-        results = append(results, map[string]interface{}{
-            "success":     okFmt,
-            "description": "远端地址校验",
-            "nodeName":    ifThen(t.Type == 2, outNode.Name, inNode.Name),
-            "nodeId":      ifThen[int64](t.Type == 2, outNode.ID, inNode.ID),
-            "targetIp":    host,
-            "targetPort":  port,
-            "message":     ifThen(okFmt, "地址格式正确", "远端地址格式无效，需为 host:port 或多地址以逗号分隔"),
-        })
-        if okFmt {
-            avg, loss, ok, msg, rid := diagnoseFromNodeCtx(runNodeID, host, port, 3, 1500, map[string]interface{}{"src": "forward", "step": "nodeRemote", "forwardId": f.ID})
-            results = append(results, map[string]interface{}{
-                "success":     ok,
-                "description": ifThen(t.Type == 2, "出口节点到远端连通性", "入口节点到远端连通性"),
-                "nodeName":    runNode.Name,
-                "nodeId":      runNodeID,
-                "targetIp":    host,
-                "targetPort":  port,
-                "averageTime": avg,
-                "packetLoss":  loss,
-                "message":     msg,
-                "reqId":       rid,
-            })
-        }
-    }
+	// 远端地址格式校验 + 节点侧真实诊断（对每个远端地址逐一测试）
+	addrs := parseRemoteAddrs(f.RemoteAddr)
+	if len(addrs) == 0 {
+		addrs = []string{firstTargetHost(f.RemoteAddr)}
+	}
+	// 选择执行诊断的节点：端口转发在入口节点执行，隧道转发在出口节点执行
+	var runNode model.Node
+	var runNodeID int64
+	if t.Type == 2 {
+		runNode, runNodeID = outNode, outNode.ID
+	} else {
+		runNode, runNodeID = inNode, inNode.ID
+	}
+	for _, hp := range addrs {
+		host, port := splitHostPortSafe(hp)
+		okFmt := host != "" && port > 0
+		results = append(results, map[string]interface{}{
+			"success":     okFmt,
+			"description": "远端地址校验",
+			"nodeName":    ifThen(t.Type == 2, outNode.Name, inNode.Name),
+			"nodeId":      ifThen[int64](t.Type == 2, outNode.ID, inNode.ID),
+			"targetIp":    host,
+			"targetPort":  port,
+			"message":     ifThen(okFmt, "地址格式正确", "远端地址格式无效，需为 host:port 或多地址以逗号分隔"),
+		})
+		if okFmt {
+			avg, loss, ok, msg, rid := diagnoseFromNodeCtx(runNodeID, host, port, 3, 1500, map[string]interface{}{"src": "forward", "step": "nodeRemote", "forwardId": f.ID})
+			results = append(results, map[string]interface{}{
+				"success":     ok,
+				"description": ifThen(t.Type == 2, "出口节点到远端连通性", "入口节点到远端连通性"),
+				"nodeName":    runNode.Name,
+				"nodeId":      runNodeID,
+				"targetIp":    host,
+				"targetPort":  port,
+				"averageTime": avg,
+				"packetLoss":  loss,
+				"message":     msg,
+				"reqId":       rid,
+			})
+		}
+	}
 
 	// 诊断日志：按节点顺序输出服务清单与状态
 	{
@@ -1026,10 +1077,16 @@ func ForwardDiagnose(c *gin.Context) {
 		hops := make([]int64, 0, 2+len(path))
 		hops = append(hops, t.InNodeID)
 		hops = append(hops, path...)
-		if t.Type == 2 && t.OutNodeID != nil { hops = append(hops, *t.OutNodeID) }
+		if t.Type == 2 && t.OutNodeID != nil {
+			hops = append(hops, *t.OutNodeID)
+		}
 		makeRole := func(idx int) string {
-			if idx == 0 { return "entry" }
-			if t.Type == 2 && idx == len(hops)-1 { return "exit" }
+			if idx == 0 {
+				return "entry"
+			}
+			if t.Type == 2 && idx == len(hops)-1 {
+				return "exit"
+			}
 			return "mid"
 		}
 		// 按节点收集
@@ -1049,43 +1106,67 @@ func ForwardDiagnose(c *gin.Context) {
 						addr, _ := s["addr"].(string)
 						port := parsePort(addr)
 						listening := false
-						if b, ok2 := s["listening"].(bool); ok2 { listening = b }
+						if b, ok2 := s["listening"].(bool); ok2 {
+							listening = b
+						}
 						minP, maxP := 0, 0
 						inRange := true
-						if n.PortSta > 0 && n.PortEnd > 0 { minP, maxP = n.PortSta, n.PortEnd; inRange = (port >= minP && port <= maxP) }
+						if n.PortSta > 0 && n.PortEnd > 0 {
+							minP, maxP = n.PortSta, n.PortEnd
+							inRange = (port >= minP && port <= maxP)
+						}
 						msg := ""
 						if !listening {
-							if port == 0 { msg = "服务未配置有效端口或未解析到端口" } else { msg = "服务未监听端口，可能启动失败或被占用" }
+							if port == 0 {
+								msg = "服务未配置有效端口或未解析到端口"
+							} else {
+								msg = "服务未监听端口，可能启动失败或被占用"
+							}
 						}
 						// listener/handler 类型
-						lt := ""; if lst, ok3 := s["listener"].(map[string]any); ok3 { if x, ok4 := lst["type"].(string); ok4 { lt = x } }
-						ht := ""; if h, ok3 := s["handler"].(map[string]any); ok3 { if x, ok4 := h["type"].(string); ok4 { ht = x } }
+						lt := ""
+						if lst, ok3 := s["listener"].(map[string]any); ok3 {
+							if x, ok4 := lst["type"].(string); ok4 {
+								lt = x
+							}
+						}
+						ht := ""
+						if h, ok3 := s["handler"].(map[string]any); ok3 {
+							if x, ok4 := h["type"].(string); ok4 {
+								ht = x
+							}
+						}
 						matched = append(matched, map[string]interface{}{
-							"name": v,
-							"addr": addr,
-							"port": port,
-							"listener": lt,
-							"handler": ht,
+							"name":      v,
+							"addr":      addr,
+							"port":      port,
+							"listener":  lt,
+							"handler":   ht,
 							"listening": listening,
-							"inRange": inRange,
-							"range": func() string { if minP>0 && maxP>0 { return fmt.Sprintf("%d-%d", minP, maxP) } ; return "" }(),
-							"message": msg,
+							"inRange":   inRange,
+							"range": func() string {
+								if minP > 0 && maxP > 0 {
+									return fmt.Sprintf("%d-%d", minP, maxP)
+								}
+								return ""
+							}(),
+							"message":  msg,
 							"metadata": s["metadata"],
 						})
 					}
 				}
 			}
 			hopDetails = append(hopDetails, map[string]interface{}{
-				"nodeId": nid,
+				"nodeId":   nid,
 				"nodeName": n.Name,
-				"role": role,
+				"role":     role,
 				"services": matched,
 			})
 		}
 		results = append(results, map[string]interface{}{
-			"success": true,
+			"success":     true,
 			"description": "节点服务清单",
-			"hops": hopDetails,
+			"hops":        hopDetails,
 		})
 	}
 
@@ -1187,27 +1268,27 @@ func ForwardDiagnoseStep(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
 		return
 	}
-    var f model.Forward
-    if err := dbpkg.DB.First(&f, p.ForwardID).Error; err != nil {
-        c.JSON(http.StatusOK, response.ErrMsg("转发不存在"))
-        return
-    }
-    // auth: admin or owner or user has tunnel permission
-    if roleInf, ok := c.Get("role_id"); ok {
-        if role, _ := roleInf.(int); role != 0 {
-            if uidInf, ok2 := c.Get("user_id"); ok2 {
-                uid := uidInf.(int64)
-                if f.UserID != uid {
-                    var utCnt int64
-                    dbpkg.DB.Model(&model.UserTunnel{}).Where("user_id=? and tunnel_id=?", uid, f.TunnelID).Count(&utCnt)
-                    if utCnt == 0 {
-                        c.JSON(http.StatusForbidden, response.ErrMsg("权限不足"))
-                        return
-                    }
-                }
-            }
-        }
-    }
+	var f model.Forward
+	if err := dbpkg.DB.First(&f, p.ForwardID).Error; err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("转发不存在"))
+		return
+	}
+	// auth: admin or owner or user has tunnel permission
+	if roleInf, ok := c.Get("role_id"); ok {
+		if role, _ := roleInf.(int); role != 0 {
+			if uidInf, ok2 := c.Get("user_id"); ok2 {
+				uid := uidInf.(int64)
+				if f.UserID != uid {
+					var utCnt int64
+					dbpkg.DB.Model(&model.UserTunnel{}).Where("user_id=? and tunnel_id=?", uid, f.TunnelID).Count(&utCnt)
+					if utCnt == 0 {
+						c.JSON(http.StatusForbidden, response.ErrMsg("权限不足"))
+						return
+					}
+				}
+			}
+		}
+	}
 	var t model.Tunnel
 	_ = dbpkg.DB.First(&t, f.TunnelID).Error
 	var inNode, outNode model.Node
@@ -1284,26 +1365,30 @@ func ForwardDiagnoseStep(c *gin.Context) {
 				"targetIp": target, "averageTime": avg, "packetLoss": loss, "message": msg, "reqId": rid,
 			})
 		}
-        // final: last hop node to EACH remote host:port via TCP
-        addrs := parseRemoteAddrs(f.RemoteAddr)
-        if len(addrs) == 0 { addrs = []string{firstTargetHost(f.RemoteAddr)} }
-        if len(hops) > 0 {
-            last := hops[len(hops)-1]
-            var lastN model.Node
-            _ = dbpkg.DB.First(&lastN, last).Error
-            for _, hp := range addrs {
-                host, port := splitHostPortSafe(hp)
-                if host == "" || port <= 0 { continue }
-                avg, loss, ok, msg, rid := diagnoseFromNodeCtx(last, host, port, 3, 1500, map[string]interface{}{"src": "forward", "step": "remote", "forwardId": f.ID})
-                items = append(items, map[string]any{
-                    "success": ok, "description": "最终到远端连通性 (TCP)", "nodeName": lastN.Name, "nodeId": last,
-                    "targetIp": host, "targetPort": port, "averageTime": avg, "packetLoss": loss, "message": msg, "reqId": rid,
-                })
-            }
-        }
+		// final: last hop node to EACH remote host:port via TCP
+		addrs := parseRemoteAddrs(f.RemoteAddr)
+		if len(addrs) == 0 {
+			addrs = []string{firstTargetHost(f.RemoteAddr)}
+		}
+		if len(hops) > 0 {
+			last := hops[len(hops)-1]
+			var lastN model.Node
+			_ = dbpkg.DB.First(&lastN, last).Error
+			for _, hp := range addrs {
+				host, port := splitHostPortSafe(hp)
+				if host == "" || port <= 0 {
+					continue
+				}
+				avg, loss, ok, msg, rid := diagnoseFromNodeCtx(last, host, port, 3, 1500, map[string]interface{}{"src": "forward", "step": "remote", "forwardId": f.ID})
+				items = append(items, map[string]any{
+					"success": ok, "description": "最终到远端连通性 (TCP)", "nodeName": lastN.Name, "nodeId": last,
+					"targetIp": host, "targetPort": port, "averageTime": avg, "packetLoss": loss, "message": msg, "reqId": rid,
+				})
+			}
+		}
 		c.JSON(http.StatusOK, response.Ok(map[string]any{"results": items}))
 		return
-    case "iperf3":
+	case "iperf3":
 		if t.Type != 2 {
 			c.JSON(http.StatusOK, response.ErrMsg("仅隧道转发支持iperf3"))
 			return
@@ -1366,25 +1451,25 @@ func ForwardDiagnoseStep(c *gin.Context) {
 				bw = b
 			}
 		}
-        // Accumulate diagnosis traffic into usage when succeed
-        if success && bw > 0 {
-            duration := 5.0 // seconds (client payload uses 5s)
-            bytes := int64((bw * 1e6 / 8.0) * duration)
-            // add to out_flow as diagnostic consumption
-            dbpkg.DB.Model(&model.Forward{}).Where("id=?", f.ID).
-                Updates(map[string]any{"out_flow": gorm.Expr("out_flow + ?", bytes), "updated_time": time.Now().UnixMilli()})
-            dbpkg.DB.Model(&model.User{}).Where("id=?", f.UserID).
-                Updates(map[string]any{"out_flow": gorm.Expr("out_flow + ?", bytes), "updated_time": time.Now().UnixMilli()})
-            var ut model.UserTunnel
-            if err := dbpkg.DB.Where("user_id=? and tunnel_id=?", f.UserID, f.TunnelID).First(&ut).Error; err == nil && ut.ID > 0 {
-                dbpkg.DB.Model(&model.UserTunnel{}).Where("id=?", ut.ID).
-                    Updates(map[string]any{"out_flow": gorm.Expr("out_flow + ?", bytes)})
-            }
-        }
-        res = map[string]interface{}{
-            "success": success, "description": "iperf3 反向带宽测试", "nodeName": inNode.Name, "nodeId": inNode.ID,
-            "targetIp": exitIP, "targetPort": srvPort, "message": msgI, "bandwidthMbps": bw,
-        }
+		// Accumulate diagnosis traffic into usage when succeed
+		if success && bw > 0 {
+			duration := 5.0 // seconds (client payload uses 5s)
+			bytes := int64((bw * 1e6 / 8.0) * duration)
+			// add to out_flow as diagnostic consumption
+			dbpkg.DB.Model(&model.Forward{}).Where("id=?", f.ID).
+				Updates(map[string]any{"out_flow": gorm.Expr("out_flow + ?", bytes), "updated_time": time.Now().UnixMilli()})
+			dbpkg.DB.Model(&model.User{}).Where("id=?", f.UserID).
+				Updates(map[string]any{"out_flow": gorm.Expr("out_flow + ?", bytes), "updated_time": time.Now().UnixMilli()})
+			var ut model.UserTunnel
+			if err := dbpkg.DB.Where("user_id=? and tunnel_id=?", f.UserID, f.TunnelID).First(&ut).Error; err == nil && ut.ID > 0 {
+				dbpkg.DB.Model(&model.UserTunnel{}).Where("id=?", ut.ID).
+					Updates(map[string]any{"out_flow": gorm.Expr("out_flow + ?", bytes)})
+			}
+		}
+		res = map[string]interface{}{
+			"success": success, "description": "iperf3 反向带宽测试", "nodeName": inNode.Name, "nodeId": inNode.ID,
+			"targetIp": exitIP, "targetPort": srvPort, "message": msgI, "bandwidthMbps": bw,
+		}
 	default:
 		c.JSON(http.StatusOK, response.ErrMsg("未知诊断步骤"))
 		return
@@ -1416,14 +1501,18 @@ func firstTargetHost(addr string) string {
 // parseRemoteAddrs splits a remoteAddr string into a list of host:port targets.
 // Accepts comma-separated list produced by frontend; trims spaces and drops empty items.
 func parseRemoteAddrs(remote string) []string {
-    if remote == "" { return nil }
-    parts := strings.Split(remote, ",")
-    out := make([]string, 0, len(parts))
-    for _, p := range parts {
-        s := strings.TrimSpace(p)
-        if s != "" { out = append(out, s) }
-    }
-    return out
+	if remote == "" {
+		return nil
+	}
+	parts := strings.Split(remote, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		s := strings.TrimSpace(p)
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // getTunnelPathNodes reads optional multi-level path from ViteConfig (name: tunnel_path_<id>), JSON array of node IDs
@@ -1525,27 +1614,29 @@ func buildServiceName(forwardID int64, userID int64, tunnelID int64) string {
 func buildServiceConfig(name string, listenPort int, target string, iface *string) map[string]any {
 	// Gost service JSON (v3): use top-level addr (NOT listener.addr)
 	// https://gost.run/tutorials/reverse-proxy-tunnel/#__tabbed_2_2
-    svc := map[string]any{
-        "name": name,
-        "addr": fmt.Sprintf(":%d", listenPort),
-        "listener": map[string]any{
-            "type": "tcp",
-        },
-        "handler": map[string]any{
-            "type": "forward",
-        },
-        // forwarder.nodes: support multiple remote targets (comma-separated)
-        "forwarder": map[string]any{},
-    }
-    nodes := []map[string]any{}
-    addrs := parseRemoteAddrs(target)
-    if len(addrs) == 0 { addrs = []string{target} }
-    for i, a := range addrs {
-        nodes = append(nodes, map[string]any{"name": fmt.Sprintf("target_%d", i), "addr": a})
-    }
-    svc["forwarder"].(map[string]any)["nodes"] = nodes
-    // attach panel-managed marker and enable stats/observer defaults; optional interface
-    meta := map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false}
+	svc := map[string]any{
+		"name": name,
+		"addr": fmt.Sprintf(":%d", listenPort),
+		"listener": map[string]any{
+			"type": "tcp",
+		},
+		"handler": map[string]any{
+			"type": "forward",
+		},
+		// forwarder.nodes: support multiple remote targets (comma-separated)
+		"forwarder": map[string]any{},
+	}
+	nodes := []map[string]any{}
+	addrs := parseRemoteAddrs(target)
+	if len(addrs) == 0 {
+		addrs = []string{target}
+	}
+	for i, a := range addrs {
+		nodes = append(nodes, map[string]any{"name": fmt.Sprintf("target_%d", i), "addr": a})
+	}
+	svc["forwarder"].(map[string]any)["nodes"] = nodes
+	// attach panel-managed marker and enable stats/observer defaults; optional interface
+	meta := map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false}
 	if iface != nil && *iface != "" {
 		meta["interface"] = *iface
 	}
@@ -1638,104 +1729,136 @@ func queryNodeServicesRaw(nodeID int64) []map[string]any {
 // suggestPortsViaAgent asks the node agent for nearest higher free ports above base
 // using OS-level checks (e.g., lsof/ss). Returns up to 'count' ports.
 func suggestPortsViaAgent(nodeID int64, base int, count int) []int {
-    if count <= 0 { count = 10 }
-    reqID := RandUUID()
-    payload := map[string]any{"requestId": reqID, "base": base, "count": count}
-    if err := sendWSCommand(nodeID, "SuggestPorts", payload); err != nil {
-        return nil
-    }
-    ch := make(chan map[string]interface{}, 1)
-    diagMu.Lock(); diagWaiters[reqID] = ch; diagMu.Unlock()
-    defer func(){ diagMu.Lock(); delete(diagWaiters, reqID); diagMu.Unlock() }()
-    select {
-    case res := <-ch:
-        if data, ok := res["data"].(map[string]interface{}); ok {
-            if arr, ok2 := data["ports"].([]interface{}); ok2 {
-                out := make([]int, 0, len(arr))
-                for _, v := range arr {
-                    switch x := v.(type) {
-                    case float64:
-                        out = append(out, int(x))
-                    case int:
-                        out = append(out, x)
-                    }
-                }
-                return out
-            }
-        }
-    case <-time.After(3 * time.Second):
-    }
-    return nil
+	if count <= 0 {
+		count = 10
+	}
+	reqID := RandUUID()
+	payload := map[string]any{"requestId": reqID, "base": base, "count": count}
+	if err := sendWSCommand(nodeID, "SuggestPorts", payload); err != nil {
+		return nil
+	}
+	ch := make(chan map[string]interface{}, 1)
+	diagMu.Lock()
+	diagWaiters[reqID] = ch
+	diagMu.Unlock()
+	defer func() { diagMu.Lock(); delete(diagWaiters, reqID); diagMu.Unlock() }()
+	select {
+	case res := <-ch:
+		if data, ok := res["data"].(map[string]interface{}); ok {
+			if arr, ok2 := data["ports"].([]interface{}); ok2 {
+				out := make([]int, 0, len(arr))
+				for _, v := range arr {
+					switch x := v.(type) {
+					case float64:
+						out = append(out, int(x))
+					case int:
+						out = append(out, x)
+					}
+				}
+				return out
+			}
+		}
+	case <-time.After(3 * time.Second):
+	}
+	return nil
 }
 
 // probePortViaAgent asks the node agent to check if a port is currently listening (OS-level).
 // returns true if port is FREE (not listening), false otherwise or on error.
 func probePortViaAgent(nodeID int64, port int) bool {
-    reqID := RandUUID()
-    payload := map[string]any{"requestId": reqID, "port": port}
-    if err := sendWSCommand(nodeID, "ProbePort", payload); err != nil { return false }
-    ch := make(chan map[string]interface{}, 1)
-    diagMu.Lock(); diagWaiters[reqID] = ch; diagMu.Unlock()
-    defer func(){ diagMu.Lock(); delete(diagWaiters, reqID); diagMu.Unlock() }()
-    select {
-    case res := <-ch:
-        if data, ok := res["data"].(map[string]interface{}); ok {
-            if v, ok2 := data["listening"].(bool); ok2 { return !v }
-        }
-    case <-time.After(2 * time.Second):
-    }
-    return false
+	reqID := RandUUID()
+	payload := map[string]any{"requestId": reqID, "port": port}
+	if err := sendWSCommand(nodeID, "ProbePort", payload); err != nil {
+		return false
+	}
+	ch := make(chan map[string]interface{}, 1)
+	diagMu.Lock()
+	diagWaiters[reqID] = ch
+	diagMu.Unlock()
+	defer func() { diagMu.Lock(); delete(diagWaiters, reqID); diagMu.Unlock() }()
+	select {
+	case res := <-ch:
+		if data, ok := res["data"].(map[string]interface{}); ok {
+			if v, ok2 := data["listening"].(bool); ok2 {
+				return !v
+			}
+		}
+	case <-time.After(2 * time.Second):
+	}
+	return false
 }
 
 func findFreePortOnNode(nodeID int64, prefer int, min int, max int) int {
-    used := queryNodeServicePorts(nodeID)
-    start := prefer
-    if start < min || start > max { start = min }
-    if start <= 0 { start = min }
-    // Prefer agent suggestions first to avoid OS-level conflicts (include base)
-    if sug := suggestPortsViaAgent(nodeID, start-1, 50); len(sug) > 0 {
-        for _, p := range sug { if p >= min && p <= max && !used[p] { return p } }
-    }
-    // Probe subsequent windows via agent suggestions (chunked) before falling back to local scan
-    for base := start; base <= max; base += 50 {
-        if sug := suggestPortsViaAgent(nodeID, base-1, 50); len(sug) > 0 {
-            for _, p := range sug { if p >= min && p <= max && !used[p] { return p } }
-        }
-    }
-    // Fallback: verify per-port via agent probe to avoid collisions
-    for p := start; p <= max; p++ {
-        if used[p] { continue }
-        if probePortViaAgent(nodeID, p) { return p }
-    }
-    for p := start - 1; p >= min; p-- {
-        if used[p] { continue }
-        if probePortViaAgent(nodeID, p) { return p }
-    }
-    return 0
+	used := queryNodeServicePorts(nodeID)
+	start := prefer
+	if start < min || start > max {
+		start = min
+	}
+	if start <= 0 {
+		start = min
+	}
+	// Prefer agent suggestions first to avoid OS-level conflicts (include base)
+	if sug := suggestPortsViaAgent(nodeID, start-1, 50); len(sug) > 0 {
+		for _, p := range sug {
+			if p >= min && p <= max && !used[p] {
+				return p
+			}
+		}
+	}
+	// Probe subsequent windows via agent suggestions (chunked) before falling back to local scan
+	for base := start; base <= max; base += 50 {
+		if sug := suggestPortsViaAgent(nodeID, base-1, 50); len(sug) > 0 {
+			for _, p := range sug {
+				if p >= min && p <= max && !used[p] {
+					return p
+				}
+			}
+		}
+	}
+	// Fallback: verify per-port via agent probe to avoid collisions
+	for p := start; p <= max; p++ {
+		if used[p] {
+			continue
+		}
+		if probePortViaAgent(nodeID, p) {
+			return p
+		}
+	}
+	for p := start - 1; p >= min; p-- {
+		if used[p] {
+			continue
+		}
+		if probePortViaAgent(nodeID, p) {
+			return p
+		}
+	}
+	return 0
 }
 
 // findFreePortOnNodeAny picks a free TCP port on node >= min (ignores node's configured port range)
 func findFreePortOnNodeAny(nodeID int64, prefer int, min int) int {
-    if min < 1 {
-        min = 1
-    }
-    used := queryNodeServicePorts(nodeID)
-    start := prefer
-    if start < min {
-        start = min
-    }
-    if sug := suggestPortsViaAgent(nodeID, start, 10); len(sug) > 0 {
-        for _, p := range sug {
-            if p >= min && !used[p] { return p }
-        }
-    }
-    if start >= min && !used[start] {
-        return start
-    }
-    for p := start + 1; p <= 65535; p++ {
-        if !used[p] {
-            return p
-        }
+	if min < 1 {
+		min = 1
+	}
+	used := queryNodeServicePorts(nodeID)
+	start := prefer
+	if start < min {
+		start = min
+	}
+	if sug := suggestPortsViaAgent(nodeID, start, 10); len(sug) > 0 {
+		for _, p := range sug {
+			if p >= min && !used[p] {
+				return p
+			}
+		}
+	}
+	if start >= min && !used[start] {
+		return start
+	}
+	for p := start + 1; p <= 65535; p++ {
+		if !used[p] {
+			return p
+		}
 	}
 	for p := start - 1; p >= min; p-- {
 		if !used[p] {
@@ -1763,7 +1886,7 @@ func buildSSService(name string, listenPort int, password string, method string,
 	}
 	// optional extras: observer, limiter, rlimiter, metadata
 	// base metadata includes panel marker
-    baseMeta := map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false}
+	baseMeta := map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false}
 	if len(opts) > 0 && opts[0] != nil {
 		o := opts[0]
 		if v, ok := o["observer"].(string); ok && v != "" {
@@ -1808,23 +1931,27 @@ func getOutNodeIP(t model.Tunnel) string {
 
 // safeHostPort formats host and port into host:port with IPv6 brackets if needed
 func safeHostPort(host string, port int) string {
-    if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
-        return fmt.Sprintf("[%s]:%d", host, port)
-    }
-    return fmt.Sprintf("%s:%d", host, port)
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		return fmt.Sprintf("[%s]:%d", host, port)
+	}
+	return fmt.Sprintf("%s:%d", host, port)
 }
 
 // firstIPAny returns the first non-empty IP from Node.IP list or ServerIP.
 func firstIPAny(n model.Node) string {
-    if n.IP != "" {
-        parts := strings.Split(n.IP, ",")
-        for _, p := range parts {
-            p = strings.TrimSpace(p)
-            if p != "" { return p }
-        }
-    }
-    if n.ServerIP != "" { return n.ServerIP }
-    return ""
+	if n.IP != "" {
+		parts := strings.Split(n.IP, ",")
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				return p
+			}
+		}
+	}
+	if n.ServerIP != "" {
+		return n.ServerIP
+	}
+	return ""
 }
 
 // helper to safely get OutNodeID as int64

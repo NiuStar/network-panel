@@ -230,6 +230,7 @@ func ForwardStatusDetail(c *gin.Context) {
 	expEntry := buildServiceConfig(name, f.InPort, f.RemoteAddr, inIface)
 	expEntryMeta := map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false}
 	expEntry["metadata"] = expEntryMeta
+	attachLimiter(expEntry, t.InNodeID)
 	expEntryPort := f.InPort
 	okEntry := false
 	act := map[string]any(nil)
@@ -482,7 +483,24 @@ func intPtrOrNil(v int) *int {
 // shared helpers
 func fetchServiceByName(nodeID int64, name string) map[string]any {
 	reqID := RandUUID()
-	payload := map[string]any{"requestId": reqID}
+	payload := map[string]any{"requestId": reqID, "name": name}
+	// prefer precise GetService if agent supports it
+	if err := sendWSCommand(nodeID, "GetService", payload); err == nil {
+		ch := make(chan map[string]interface{}, 1)
+		diagMu.Lock()
+		diagWaiters[reqID] = ch
+		diagMu.Unlock()
+		select {
+		case res := <-ch:
+			if data, ok := res["data"].(map[string]any); ok && data != nil {
+				if v, _ := data["name"].(string); v == name {
+					return data
+				}
+			}
+		case <-time.After(3 * time.Second):
+		}
+	}
+	// fallback to QueryServices
 	if err := sendWSCommand(nodeID, "QueryServices", payload); err != nil {
 		return nil
 	}
@@ -502,7 +520,6 @@ func fetchServiceByName(nodeID int64, name string) map[string]any {
 			}
 		}
 	case <-time.After(3 * time.Second):
-		return nil
 	}
 	return nil
 }

@@ -1,0 +1,240 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "network-panel API",
+    "description": "业务接口的简要 Swagger 文档。部分字段与响应体为概览，若有遗漏请根据实际返回补充。",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:6365",
+      "description": "默认本地开发端口"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "健康检查",
+        "responses": {
+          "200": {
+            "description": "ok"
+          }
+        }
+      }
+    },
+    "/api/v1/user/login": {
+      "post": {
+        "summary": "用户登录",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginReq"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "登录成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResp"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/user/register": {
+      "post": {
+        "summary": "用户注册",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterReq"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "注册结果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenericResp"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/user/package": {
+      "post": {
+        "summary": "获取当前用户套餐与配额",
+        "responses": {
+          "200": {
+            "description": "套餐数据",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenericResp"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/node/list": {
+      "post": {
+        "summary": "节点列表",
+        "responses": {
+          "200": {
+            "description": "节点列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenericResp"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tunnel/list": {
+      "post": {
+        "summary": "隧道列表",
+        "responses": {
+          "200": {
+            "description": "隧道列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenericResp"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/forward/list": {
+      "post": {
+        "summary": "转发列表",
+        "responses": {
+          "200": {
+            "description": "转发列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenericResp"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "GenericResp": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "example": 0
+          },
+          "msg": {
+            "type": "string",
+            "example": ""
+          },
+          "data": {
+            "description": "具体数据结构请参考实际接口返回",
+            "type": "object"
+          }
+        }
+      },
+      "LoginReq": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "example": "admin"
+          },
+          "password": {
+            "type": "string",
+            "example": "password"
+          },
+          "captchaId": {
+            "type": "string",
+            "example": ""
+          }
+        },
+        "required": [
+          "username",
+          "password"
+        ]
+      },
+      "LoginResp": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/GenericResp"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "example": "Bearer xxx"
+                  },
+                  "name": {
+                    "type": "string",
+                    "example": "admin"
+                  },
+                  "role_id": {
+                    "type": "integer",
+                    "example": 0
+                  },
+                  "requirePasswordChange": {
+                    "type": "boolean",
+                    "example": false
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "RegisterReq": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "example": "demo"
+          },
+          "password": {
+            "type": "string",
+            "example": "123456"
+          }
+        },
+        "required": [
+          "username",
+          "password"
+        ]
+      }
+    }
+  }
+}

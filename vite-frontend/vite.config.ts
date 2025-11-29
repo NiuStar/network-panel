@@ -1,20 +1,18 @@
+import path from "path";
+
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwind from "@tailwindcss/vite";
-import path from "path";
 // inject app version from package.json
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+
 // @ts-ignore
-import pkg from './package.json';
+import pkg from "./package.json";
 
 export default defineConfig({
-  plugins: [
-    tailwind(),
-    react(),
-  ],
-  base: '/app/',
+  plugins: [tailwind(), react()],
+  base: "/app/",
   define: {
-    'import.meta.env.VITE_APP_VERSION': JSON.stringify(pkg.version || ''),
+    "import.meta.env.VITE_APP_VERSION": JSON.stringify(pkg.version || ""),
   },
   resolve: {
     alias: {
@@ -23,14 +21,14 @@ export default defineConfig({
   },
   server: {
     port: 3000,
-    host: '0.0.0.0'
+    host: "0.0.0.0",
   },
   build: {
-    outDir: 'dist',
+    outDir: "dist",
     sourcemap: false,
-    minify: false,  
+    minify: false,
     rollupOptions: {
       treeshake: false,
-    }
-  }
+    },
+  },
 });

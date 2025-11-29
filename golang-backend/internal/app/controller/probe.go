@@ -131,7 +131,7 @@ func AgentReportProbe(c *gin.Context) {
 		c.JSON(http.StatusOK, response.OkNoData())
 		return
 	}
-    rows := make([]model.NodeProbeResult, 0, len(p.Results))
+	rows := make([]model.NodeProbeResult, 0, len(p.Results))
 	for _, r := range p.Results {
 		t := now
 		if r.TimeMs != nil && *r.TimeMs > 0 {
@@ -139,12 +139,20 @@ func AgentReportProbe(c *gin.Context) {
 		}
 		rows = append(rows, model.NodeProbeResult{NodeID: node.ID, TargetID: r.TargetID, RTTMs: r.RTTMs, OK: r.OK, TimeMs: t})
 	}
-    enqueueProbes(rows)
-    c.JSON(http.StatusOK, response.OkNoData())
+	enqueueProbes(rows)
+	c.JSON(http.StatusOK, response.OkNoData())
 }
 
 // ---- Query stats for frontend ----
 
+// NodeNetworkStats 节点连通性统计
+// @Summary 节点连通性统计
+// @Tags node
+// @Accept json
+// @Produce json
+// @Param data body SwaggerNodeRangeReq true "节点ID与时间范围(1h/12h/1d/7d/30d)"
+// @Success 200 {object} SwaggerResp
+// @Router /api/v1/node/network-stats [post]
 // POST /api/v1/node/network-stats {nodeId, range}
 func NodeNetworkStats(c *gin.Context) {
 	var p struct {
@@ -175,12 +183,12 @@ func NodeNetworkStats(c *gin.Context) {
 	from := now - windowMs
 
 	// results
-    var results []model.NodeProbeResult
-    dbpkg.DB.Where("node_id = ? AND time_ms >= ?", p.NodeID, from).Order("time_ms asc").Find(&results)
-    // merge buffered (unsaved) in-memory probe results
-    if extra := readBufferedProbes(p.NodeID, from); len(extra) > 0 {
-        results = append(results, extra...)
-    }
+	var results []model.NodeProbeResult
+	dbpkg.DB.Where("node_id = ? AND time_ms >= ?", p.NodeID, from).Order("time_ms asc").Find(&results)
+	// merge buffered (unsaved) in-memory probe results
+	if extra := readBufferedProbes(p.NodeID, from); len(extra) > 0 {
+		results = append(results, extra...)
+	}
 
 	// collect target meta
 	targetIDs := make([]int64, 0)
@@ -201,9 +209,11 @@ func NodeNetworkStats(c *gin.Context) {
 	}
 
 	// disconnect logs
-    var logs []model.NodeDisconnectLog
-    dbpkg.DB.Where("node_id = ? AND (down_at_ms >= ? OR (up_at_ms IS NOT NULL AND up_at_ms >= ?))", p.NodeID, from, from).Order("down_at_ms asc").Find(&logs)
-    if extra := readBufferedDisconnects(p.NodeID, from); len(extra) > 0 { logs = append(logs, extra...) }
+	var logs []model.NodeDisconnectLog
+	dbpkg.DB.Where("node_id = ? AND (down_at_ms >= ? OR (up_at_ms IS NOT NULL AND up_at_ms >= ?))", p.NodeID, from, from).Order("down_at_ms asc").Find(&logs)
+	if extra := readBufferedDisconnects(p.NodeID, from); len(extra) > 0 {
+		logs = append(logs, extra...)
+	}
 
 	// compute SLA in window: uptime / window
 	// approximate: subtract summed downtime intersecting window
@@ -249,6 +259,14 @@ func max64(a, b int64) int64 {
 	return b
 }
 
+// NodeNetworkStatsBatch 批量节点网络统计
+// @Summary 批量节点网络统计
+// @Tags node
+// @Accept json
+// @Produce json
+// @Param data body SwaggerNetworkStatsBatchReq true "时间范围(1h/12h/1d)"
+// @Success 200 {object} SwaggerResp
+// @Router /api/v1/node/network-stats-batch [post]
 // Batch network stats across nodes (latest+avg rtt in window)
 // POST /api/v1/node/network-stats-batch {range}
 func NodeNetworkStatsBatch(c *gin.Context) {
@@ -273,12 +291,12 @@ func NodeNetworkStatsBatch(c *gin.Context) {
 	}
 	from := now - windowMs
 	// fetch in window
-    var rows []model.NodeProbeResult
-    dbpkg.DB.Where("time_ms >= ?", from).Order("time_ms asc").Find(&rows)
-    // include buffered
-    if extra := readBufferedProbes(0, from); len(extra) > 0 {
-        rows = append(rows, extra...)
-    }
+	var rows []model.NodeProbeResult
+	dbpkg.DB.Where("time_ms >= ?", from).Order("time_ms asc").Find(&rows)
+	// include buffered
+	if extra := readBufferedProbes(0, from); len(extra) > 0 {
+		rows = append(rows, extra...)
+	}
 	// aggregate per node
 	type stat struct {
 		Sum          int

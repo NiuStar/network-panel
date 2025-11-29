@@ -7,6 +7,12 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// NodeConnections 获取节点连接信息
+// @Summary 获取节点连接信息
+// @Tags node
+// @Produce json
+// @Success 200 {object} SwaggerResp
+// @Router /api/v1/node/connections [get]
 // NodeConnections returns current WS connections per nodeId with versions
 // GET /api/v1/node/connections
 func NodeConnections(c *gin.Context) {

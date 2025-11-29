@@ -15,7 +15,15 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// POST /api/v1/user/login
+// UserLogin 登录
+// @Summary 用户登录
+// @Description 登录并返回 token
+// @Tags user
+// @Accept json
+// @Produce json
+// @Param data body SwaggerLoginReq true "登录参数"
+// @Success 200 {object} SwaggerLoginResp
+// @Router /api/v1/user/login [post]
 func UserLogin(c *gin.Context) {
 	var req dto.LoginDto
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -48,8 +56,15 @@ func UserLogin(c *gin.Context) {
 	}))
 }
 
-// POST /api/v1/user/register {username, password}
-// Public registration; guarded by vite_config: registration_enabled=true
+// UserRegister 注册
+// @Summary 用户注册
+// @Description 公开注册，受配置 registration_enabled 控制
+// @Tags user
+// @Accept json
+// @Produce json
+// @Param data body SwaggerRegisterReq true "注册参数（用户名、密码）"
+// @Success 200 {object} SwaggerRegisterResp
+// @Router /api/v1/user/register [post]
 func UserRegister(c *gin.Context) {
 	var p struct {
 		Username string `json:"username"`
@@ -100,7 +115,14 @@ func UserRegister(c *gin.Context) {
 	c.JSON(http.StatusOK, response.Ok(gin.H{"token": token, "name": u.User, "role_id": u.RoleID}))
 }
 
-// POST /api/v1/user/create
+// UserCreate 创建用户（管理员）
+// @Summary 创建用户
+// @Tags user
+// @Accept json
+// @Produce json
+// @Param data body SwaggerUserCreateReq true "用户信息"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/user/create [post]
 func UserCreate(c *gin.Context) {
 	var req dto.UserDto
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -136,7 +158,12 @@ func UserCreate(c *gin.Context) {
 
 // (helper provided in response package)
 
-// POST /api/v1/user/list
+// UserList 用户列表（管理员）
+// @Summary 用户列表
+// @Tags user
+// @Produce json
+// @Success 200 {object} SwaggerUserListResp
+// @Router /api/v1/user/list [post]
 func UserList(c *gin.Context) {
 	var users []model.User
 	dbpkg.DB.Where("role_id <> ?", 0).Find(&users)
@@ -213,7 +240,14 @@ func UserList(c *gin.Context) {
 	c.JSON(http.StatusOK, response.Ok(out))
 }
 
-// POST /api/v1/user/update
+// UserUpdate 更新用户（管理员）
+// @Summary 更新用户
+// @Tags user
+// @Accept json
+// @Produce json
+// @Param data body SwaggerUserUpdateReq true "用户更新参数"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/user/update [post]
 func UserUpdate(c *gin.Context) {
 	var req dto.UserUpdateDto
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -260,7 +294,14 @@ func UserUpdate(c *gin.Context) {
 	c.JSON(http.StatusOK, response.OkMsg("用户更新成功"))
 }
 
-// POST /api/v1/user/delete {"id":...}
+// UserDelete 删除用户（管理员）
+// @Summary 删除用户
+// @Tags user
+// @Accept json
+// @Produce json
+// @Param data body SwaggerUserUpdateReq true "需要提供 id"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/user/delete [post]
 func UserDelete(c *gin.Context) {
 	var p struct {
 		ID int64 `json:"id"`
@@ -289,7 +330,12 @@ func UserDelete(c *gin.Context) {
 	c.JSON(http.StatusOK, response.OkMsg("用户及关联数据删除成功"))
 }
 
-// POST /api/v1/user/package
+// UserPackage 当前用户套餐与配额
+// @Summary 获取当前用户套餐与配额
+// @Tags user
+// @Produce json
+// @Success 200 {object} SwaggerUserPackageResp
+// @Router /api/v1/user/package [post]
 func UserPackage(c *gin.Context) {
 	// Return aggregated package info as frontend expects
 	uidInf, exists := c.Get("user_id")
@@ -397,7 +443,14 @@ func recentFlowSeries(userID int64) []struct {
 	return out
 }
 
-// POST /api/v1/user/updatePassword
+// UserUpdatePassword 修改密码
+// @Summary 修改当前用户密码
+// @Tags user
+// @Accept json
+// @Produce json
+// @Param data body SwaggerChangePasswordReq true "修改密码参数"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/user/updatePassword [post]
 func UserUpdatePassword(c *gin.Context) {
 	uidInf, exists := c.Get("user_id")
 	if !exists {
@@ -440,7 +493,14 @@ func UserUpdatePassword(c *gin.Context) {
 	c.JSON(http.StatusOK, response.OkMsg("账号密码修改成功"))
 }
 
-// POST /api/v1/user/reset
+// UserReset 重置用户或隧道流量（管理员）
+// @Summary 重置用户/隧道流量
+// @Tags user
+// @Accept json
+// @Produce json
+// @Param data body SwaggerResetFlowReq true "type=1 用户流量，否则隧道路由"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/user/reset [post]
 func UserReset(c *gin.Context) {
 	var req dto.ResetFlowDto
 	if err := c.ShouldBindJSON(&req); err != nil {

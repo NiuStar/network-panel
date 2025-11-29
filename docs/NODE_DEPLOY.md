@@ -3,11 +3,16 @@
 > 更新提示：节点安装脚本已迁移至静态镜像域名，请使用以下最新命令：
 
 在线执行（替换参数中的面板地址与节点密钥）：
+静态源：
 ```bash
 curl -fsSL https://panel-static.199028.xyz/network-panel/install.sh -o install.sh \
   && sudo bash install.sh -a <面板地址:端口> -s <节点密钥>
-# 若静态源不可用，可用 GitHub 备用源：
-# curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/install.sh -o install.sh && sudo bash install.sh -a <面板地址:端口> -s <节点密钥>
+```
+
+GitHub 源：
+```bash
+curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/install.sh -o install.sh \
+  && sudo bash install.sh -a <面板地址:端口> -s <节点密钥>
 ```
 
 节点用于承载入口/出口服务，包含两部分：
@@ -40,11 +45,16 @@ curl -fsSL https://panel-static.199028.xyz/network-panel/install.sh -o install.s
 脚本位置：根目录 `install.sh`
 
 在线执行：
+静态源：
 ```bash
 curl -fsSL https://panel-static.199028.xyz/network-panel/install.sh -o install.sh \
   && sudo bash install.sh -a <面板地址:端口> -s <节点密钥>
-# 若静态源不可用，可用 GitHub 备用源：
-# curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/install.sh -o install.sh && sudo bash install.sh -a <面板地址:端口> -s <节点密钥>
+```
+
+GitHub 源：
+```bash
+curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/install.sh -o install.sh \
+  && sudo bash install.sh -a <面板地址:端口> -s <节点密钥>
 ```
 
 参数说明：

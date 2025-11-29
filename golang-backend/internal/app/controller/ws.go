@@ -109,8 +109,17 @@ func (ts *terminalSession) append(chunk string) {
 	}
 }
 
-// GET /system-info?type=1&secret=...&version=...
-// Minimal websocket endpoint to mark node online/offline and keep a connection for commands.
+// SystemInfoWS 节点状态 WebSocket
+// @Summary 节点状态 WebSocket
+// @Description type=1 携带 secret、version 上报节点心跳；type=0 作为管理端订阅节点状态
+// @Tags ws
+// @Produce json
+// @Param type query string true "0=admin监控，1=agent1，2=agent2"
+// @Param secret query string false "节点密钥(节点端必填)"
+// @Param version query string false "节点版本"
+// @Param role query string false "agent角色(可选)"
+// @Success 101 {string} string "Switching Protocols"
+// @Router /system-info [get]
 func SystemInfoWS(c *gin.Context) {
 	secret := c.Query("secret")
 	nodeType := c.Query("type")
@@ -313,7 +322,7 @@ func SystemInfoWS(c *gin.Context) {
 							continue
 						}
 					}
-				} else if ok && (t == "RunScriptResult" || t == "WriteFileResult" || t == "RestartServiceResult" || t == "StopServiceResult") {
+				} else if ok && (t == "RunScriptResult" || t == "WriteFileResult" || t == "RestartServiceResult" || t == "StopServiceResult" || t == "AddServiceResult") {
 					if reqID, ok := generic["requestId"].(string); ok {
 						opMu.Lock()
 						ch := opWaiters[reqID]
@@ -530,6 +539,14 @@ func resetTermSession(nodeID int64) {
 //	{type:"stop"}
 //
 // Backend relays to agent via sendWSCommand Shell* commands.
+// @Summary 节点终端 WebSocket
+// @Description 仅管理员可用。建立 WS 后发送 JSON 消息：start/input/resize/stop。start 需携带 rows/cols，input 携带 data。
+// @Tags ws
+// @Produce json
+// @Param id path int true "节点ID"
+// @Param token query string false "备用token或Authorization"
+// @Success 101 {string} string "Switching Protocols"
+// @Router /api/v1/node/{id}/terminal [get]
 func NodeTerminalWS(c *gin.Context) {
 	token := strings.TrimSpace(c.GetHeader("Authorization"))
 	if strings.HasPrefix(strings.ToLower(token), "bearer ") {

@@ -28,8 +28,12 @@ type ghRelease struct {
 	} `json:"assets"`
 }
 
-// GET /api/v1/version/latest
-// Returns {tag, assets: {frontendZip, installSh, agents: {...}, servers: {...}}}
+// VersionLatest 获取最新版本
+// @Summary 获取最新版本
+// @Tags version
+// @Produce json
+// @Success 200 {object} SwaggerVersionLatestResp
+// @Router /api/v1/version/latest [get]
 func VersionLatest(c *gin.Context) {
 	rel, err := fetchLatestRelease()
 	if err != nil {
@@ -44,9 +48,14 @@ func VersionLatest(c *gin.Context) {
 	c.JSON(http.StatusOK, response.Ok(out))
 }
 
-// POST /api/v1/version/upgrade {proxyPrefix?: string}
-// Downloads latest frontend-dist.zip -> ./public, install.sh -> ./install.sh,
-// flux-agent binaries -> ./public/flux-agent, server binaries -> ./public/server
+// VersionUpgrade 升级后端
+// @Summary 升级后端（并可返回重启模式）
+// @Tags version
+// @Accept json
+// @Produce json
+// @Param data body SwaggerVersionUpgradeReq false "代理前缀"
+// @Success 200 {object} SwaggerVersionUpgradeResp
+// @Router /api/v1/version/upgrade [post]
 func VersionUpgrade(c *gin.Context) {
 	var p struct {
 		ProxyPrefix string `json:"proxyPrefix"`

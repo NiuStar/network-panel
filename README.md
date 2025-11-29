@@ -175,11 +175,18 @@
 注意：若以单文件后端二进制部署而没有前端静态资源，UI 将不可用。
 推荐一键安装脚本（默认 SQLite）：
 
-```
+静态源（推荐）：
+
+```bash
 curl -fsSL https://panel-static.199028.xyz/network-panel/panel_install.sh -o panel_install.sh \
   && bash panel_install.sh
-# 若静态源不可用，可用 GitHub 备用源：
-# curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/panel_install.sh -o panel_install.sh && bash panel_install.sh
+```
+
+GitHub 源（需能访问 raw.githubusercontent.com，可自加代理前缀）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/panel_install.sh -o panel_install.sh \
+  && bash panel_install.sh
 ```
 
 说明：

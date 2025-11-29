@@ -44,7 +44,7 @@ interface CaptchaStyle {
 
 declare class TAC {
   constructor(config: CaptchaConfig, style?: CaptchaStyle);
-  
+
   init(): TAC;
   reloadCaptcha(): void;
   destroyWindow(): void;

@@ -44,7 +44,7 @@ var (
 
 // versionBase is the agent semantic version (without role prefix).
 // final reported version is: go-agent-<versionBase> or go-agent2-<versionBase>
-var versionBase = "1.0.10.1"
+var versionBase = "1.0.10.2"
 var version = ""      // computed in main()
 var apiBootDone int32 // 0=not attempted, 1=attempted
 var apiUse int32      // 1=Web API usable
@@ -506,15 +506,32 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 			go handleDiagnose(c, &d)
 		case "AddService":
 			var services []map[string]any
+			reqID := ""
 			if err := json.Unmarshal(m.Data, &services); err != nil {
-				log.Printf("{\"event\":\"svc_cmd_parse_err\",\"type\":%q,\"error\":%q}", m.Type, err.Error())
-				continue
+				// try wrapped payload {requestId, services:[...]}
+				var wrap struct {
+					RequestID string           `json:"requestId"`
+					Services  []map[string]any `json:"services"`
+				}
+				if err2 := json.Unmarshal(m.Data, &wrap); err2 == nil && len(wrap.Services) > 0 {
+					services = wrap.Services
+					reqID = wrap.RequestID
+				} else {
+					log.Printf("{\"event\":\"svc_cmd_parse_err\",\"type\":%q,\"error\":%q}", m.Type, err.Error())
+					continue
+				}
 			}
 			if err := addOrUpdateServices(services, false); err != nil {
 				log.Printf("{\"event\":\"svc_cmd_apply_err\",\"type\":%q,\"error\":%q}", m.Type, err.Error())
 				emitOpLog("gost_api_err", "apply AddService failed", map[string]any{"error": err.Error()})
+				if reqID != "" {
+					_ = c.WriteJSON(map[string]any{"type": "AddServiceResult", "requestId": reqID, "data": map[string]any{"success": false, "message": err.Error()}})
+				}
 			} else {
 				log.Printf("{\"event\":\"svc_cmd_applied\",\"type\":%q,\"count\":%d}", m.Type, len(services))
+				if reqID != "" {
+					_ = c.WriteJSON(map[string]any{"type": "AddServiceResult", "requestId": reqID, "data": map[string]any{"success": true, "message": "ok"}})
+				}
 			}
 		case "UpdateService":
 			var services []map[string]any

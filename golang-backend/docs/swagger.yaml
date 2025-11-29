@@ -1,0 +1,2254 @@
+basePath: /
+definitions:
+  controller.BaseSwaggerResp:
+    properties:
+      code:
+        example: 0
+        type: integer
+      msg:
+        example: 操作成功
+        type: string
+      ts:
+        example: 1700000000000
+        type: integer
+    type: object
+  controller.SwaggerChangePasswordReq:
+    properties:
+      confirmPassword:
+        type: string
+      currentPassword:
+        type: string
+      newPassword:
+        type: string
+      newUsername:
+        type: string
+    required:
+    - confirmPassword
+    - currentPassword
+    - newPassword
+    - newUsername
+    type: object
+  controller.SwaggerConfigGetReq:
+    properties:
+      name:
+        example: app_name
+        type: string
+    type: object
+  controller.SwaggerConfigGetResp:
+    properties:
+      code:
+        example: 0
+        type: integer
+      data:
+        example: some-value
+        type: string
+      msg:
+        example: 操作成功
+        type: string
+      ts:
+        example: 1700000000000
+        type: integer
+    type: object
+  controller.SwaggerConfigListResp:
+    properties:
+      code:
+        example: 0
+        type: integer
+      data:
+        additionalProperties:
+          type: string
+        type: object
+      msg:
+        example: 操作成功
+        type: string
+      ts:
+        example: 1700000000000
+        type: integer
+    type: object
+  controller.SwaggerConfigUpdateMap:
+    additionalProperties:
+      type: string
+    type: object
+  controller.SwaggerConfigUpdateSingle:
+    properties:
+      name:
+        example: app_name
+        type: string
+      value:
+        example: network-panel
+        type: string
+    type: object
+  controller.SwaggerForwardDiagnoseStepReq:
+    properties:
+      forwardId:
+        example: 1
+        type: integer
+      step:
+        example: entryExit
+        type: string
+    type: object
+  controller.SwaggerForwardOrderReq:
+    properties:
+      forwards:
+        items:
+          properties:
+            id:
+              example: 1
+              type: integer
+            inx:
+              example: 1
+              type: integer
+          type: object
+        type: array
+    type: object
+  controller.SwaggerIDReq:
+    properties:
+      id:
+        example: 1
+        type: integer
+    type: object
+  controller.SwaggerLoginReq:
+    properties:
+      captchaData: {}
+      captchaId:
+        type: string
+      password:
+        type: string
+      username:
+        type: string
+    required:
+    - password
+    - username
+    type: object
+  controller.SwaggerLoginResp:
+    properties:
+      code:
+        example: 0
+        type: integer
+      data:
+        properties:
+          name:
+            example: admin
+            type: string
+          requirePasswordChange:
+            example: false
+            type: boolean
+          role_id:
+            example: 0
+            type: integer
+          token:
+            example: Bearer xxx
+            type: string
+        type: object
+      msg:
+        example: 操作成功
+        type: string
+      ts:
+        example: 1700000000000
+        type: integer
+    type: object
+  controller.SwaggerNetworkStatsBatchReq:
+    properties:
+      range:
+        example: 1h
+        type: string
+    type: object
+  controller.SwaggerNodeCreateReq:
+    properties:
+      cycleDays:
+        type: integer
+      cycleMonths:
+        description: 'New: prefer cycleMonths (1/3/6/12). cycleDays kept for backward-compat
+          (30/90/180/365)'
+        type: integer
+      ip:
+        type: string
+      name:
+        type: string
+      portEnd:
+        type: integer
+      portSta:
+        type: integer
+      priceCents:
+        type: integer
+      serverIp:
+        type: string
+      startDateMs:
+        type: integer
+    required:
+    - ip
+    - name
+    type: object
+  controller.SwaggerNodeDeleteReq:
+    properties:
+      id:
+        example: 1
+        type: integer
+      uninstall:
+        example: true
+        type: boolean
+    type: object
+  controller.SwaggerNodeExitReq:
+    properties:
+      ifaces:
+        items:
+          type: string
+        type: array
+      interface:
+        type: string
+      limiter:
+        example: 5mbps
+        type: string
+      metadata:
+        example: '{"k":"v"}'
+        type: string
+      method:
+        example: AEAD_CHACHA20_POLY1305
+        type: string
+      nodeId:
+        example: 1
+        type: integer
+      observer:
+        example: console
+        type: string
+      password:
+        example: pass
+        type: string
+      port:
+        example: 10000
+        type: integer
+      rlimiter:
+        example: ""
+        type: string
+    type: object
+  controller.SwaggerNodeInstallReq:
+    properties:
+      id:
+        example: 1
+        type: integer
+    type: object
+  controller.SwaggerNodeInstallResp:
+    properties:
+      github:
+        example: curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/install.sh
+          -o install.sh && sudo bash install.sh -a 1.2.3.4:6365 -s secret
+        type: string
+      local:
+        example: curl -fsSL http://1.2.3.4:6365/install.sh -o install.sh && sudo bash
+          install.sh -a 1.2.3.4:6365 -s secret
+        type: string
+      static:
+        example: curl -fsSL https://panel-static.199028.xyz/network-panel/install.sh
+          -o install.sh && sudo bash install.sh -a 1.2.3.4:6365 -s secret
+        type: string
+    type: object
+  controller.SwaggerNodeInterfacesReq:
+    properties:
+      nodeId:
+        example: 1
+        type: integer
+    type: object
+  controller.SwaggerNodeNQStreamReq:
+    properties:
+      chunk:
+        example: log line
+        type: string
+      done:
+        example: false
+        type: boolean
+      requestId:
+        example: req-123
+        type: string
+      secret:
+        example: node-secret
+        type: string
+      timeMs:
+        example: 1700000000000
+        type: integer
+    type: object
+  controller.SwaggerNodeOpsReq:
+    properties:
+      limit:
+        example: 200
+        type: integer
+      nodeId:
+        example: 1
+        type: integer
+      requestId:
+        example: req-123
+        type: string
+    type: object
+  controller.SwaggerNodeQueryServicesReq:
+    properties:
+      filter:
+        example: gost
+        type: string
+      nodeId:
+        example: 1
+        type: integer
+    type: object
+  controller.SwaggerNodeRangeReq:
+    properties:
+      nodeId:
+        example: 1
+        type: integer
+      range:
+        example: 1h
+        type: string
+    type: object
+  controller.SwaggerNodeSimpleReq:
+    properties:
+      nodeId:
+        example: 1
+        type: integer
+    type: object
+  controller.SwaggerNodeSysinfoReq:
+    properties:
+      limit:
+        example: 200
+        type: integer
+      nodeId:
+        example: 1
+        type: integer
+      range:
+        example: 1h
+        type: string
+    type: object
+  controller.SwaggerNodeUpdateReq:
+    properties:
+      cycleDays:
+        type: integer
+      cycleMonths:
+        type: integer
+      id:
+        type: integer
+      ip:
+        type: string
+      name:
+        type: string
+      portEnd:
+        type: integer
+      portSta:
+        type: integer
+      priceCents:
+        type: integer
+      serverIp:
+        type: string
+      startDateMs:
+        type: integer
+    required:
+    - id
+    type: object
+  controller.SwaggerPackageFlowPoint:
+    properties:
+      flow:
+        example: 1024
+        type: integer
+      time:
+        example: 01-02 15:00
+        type: string
+    type: object
+  controller.SwaggerPackageForward:
+    properties:
+      createdTime:
+        type: integer
+      id:
+        type: integer
+      inFlow:
+        type: integer
+      inIp:
+        example: 1.1.1.1
+        type: string
+      inPort:
+        type: integer
+      interfaceName:
+        type: string
+      inx:
+        type: integer
+      name:
+        type: string
+      outFlow:
+        type: integer
+      outPort:
+        type: integer
+      remoteAddr:
+        type: string
+      status:
+        type: integer
+      strategy:
+        type: string
+      tunnelId:
+        type: integer
+      tunnelName:
+        example: default-tunnel
+        type: string
+      updatedTime:
+        type: integer
+      userId:
+        type: integer
+      userName:
+        type: string
+    type: object
+  controller.SwaggerPackageTunnelPermission:
+    properties:
+      expTime:
+        type: integer
+      flow:
+        type: integer
+      flowResetTime:
+        type: integer
+      id:
+        type: integer
+      inFlow:
+        type: integer
+      num:
+        type: integer
+      outFlow:
+        type: integer
+      speedId:
+        type: integer
+      speedLimitName:
+        example: 10Mbps
+        type: string
+      status:
+        type: integer
+      tunnelFlow:
+        example: 2
+        type: integer
+      tunnelId:
+        type: integer
+      tunnelName:
+        example: default-tunnel
+        type: string
+      userId:
+        type: integer
+    type: object
+  controller.SwaggerRegisterReq:
+    properties:
+      password:
+        example: "123456"
+        type: string
+      username:
+        example: demo
+        type: string
+    type: object
+  controller.SwaggerRegisterResp:
+    properties:
+      code:
+        example: 0
+        type: integer
+      data:
+        properties:
+          name:
+            example: admin
+            type: string
+          requirePasswordChange:
+            example: false
+            type: boolean
+          role_id:
+            example: 0
+            type: integer
+          token:
+            example: Bearer xxx
+            type: string
+        type: object
+      msg:
+        example: 操作成功
+        type: string
+      ts:
+        example: 1700000000000
+        type: integer
+    type: object
+  controller.SwaggerResetFlowReq:
+    properties:
+      id:
+        type: integer
+      type:
+        description: 1 user, else tunnel
+        type: integer
+    required:
+    - id
+    - type
+    type: object
+  controller.SwaggerResp:
+    properties:
+      code:
+        type: integer
+      data: {}
+      msg:
+        type: string
+      ts:
+        type: integer
+    type: object
+  controller.SwaggerTunnelBindReq:
+    properties:
+      bind:
+        example: 0.0.0.0
+        type: string
+      tunnelId:
+        example: 1
+        type: integer
+    type: object
+  controller.SwaggerTunnelDiagnoseReq:
+    properties:
+      step:
+        example: path
+        type: string
+      tunnelId:
+        example: 1
+        type: integer
+    type: object
+  controller.SwaggerTunnelIDReq:
+    properties:
+      tunnelId:
+        example: 1
+        type: integer
+    type: object
+  controller.SwaggerTunnelIfaceReq:
+    properties:
+      iface:
+        example: eth0
+        type: string
+      tunnelId:
+        example: 1
+        type: integer
+    type: object
+  controller.SwaggerTunnelPathSetReq:
+    properties:
+      path:
+        example:
+        - 2
+        - 3
+        items:
+          type: integer
+        type: array
+      tunnelId:
+        example: 1
+        type: integer
+    type: object
+  controller.SwaggerUserCreateReq:
+    properties:
+      expTime:
+        type: integer
+      flow:
+        type: integer
+      flowResetTime:
+        type: integer
+      num:
+        type: integer
+      pwd:
+        type: string
+      status:
+        type: integer
+      user:
+        type: string
+    required:
+    - pwd
+    - user
+    type: object
+  controller.SwaggerUserInfoPackage:
+    properties:
+      expTime:
+        example: 1700000000000
+        type: integer
+      flow:
+        example: 1024
+        type: integer
+      flowResetTime:
+        example: 0
+        type: integer
+      inFlow:
+        example: 0
+        type: integer
+      num:
+        example: 20
+        type: integer
+      outFlow:
+        example: 0
+        type: integer
+      usedBilled:
+        example: 0
+        type: integer
+    type: object
+  controller.SwaggerUserListItem:
+    properties:
+      createdTime:
+        example: 1700000000000
+        type: integer
+      expTime:
+        example: 1700000000000
+        type: integer
+      flow:
+        example: 1024
+        type: integer
+      flowResetTime:
+        example: 0
+        type: integer
+      forwardCount:
+        example: 3
+        type: integer
+      id:
+        example: 1
+        type: integer
+      inFlow:
+        example: 0
+        type: integer
+      nodeCount:
+        example: 1
+        type: integer
+      num:
+        example: 20
+        type: integer
+      outFlow:
+        example: 0
+        type: integer
+      roleId:
+        example: 1
+        type: integer
+      status:
+        example: 1
+        type: integer
+      tunnelCount:
+        example: 1
+        type: integer
+      updatedTime:
+        example: 1700000000000
+        type: integer
+      usedBilled:
+        example: 0
+        type: integer
+      user:
+        example: demo
+        type: string
+    type: object
+  controller.SwaggerUserListResp:
+    properties:
+      code:
+        example: 0
+        type: integer
+      data:
+        items:
+          $ref: '#/definitions/controller.SwaggerUserListItem'
+        type: array
+      msg:
+        example: 操作成功
+        type: string
+      ts:
+        example: 1700000000000
+        type: integer
+    type: object
+  controller.SwaggerUserPackageResp:
+    properties:
+      code:
+        example: 0
+        type: integer
+      data:
+        properties:
+          forwards:
+            items:
+              $ref: '#/definitions/controller.SwaggerPackageForward'
+            type: array
+          statisticsFlows:
+            items:
+              $ref: '#/definitions/controller.SwaggerPackageFlowPoint'
+            type: array
+          tunnelPermissions:
+            items:
+              $ref: '#/definitions/controller.SwaggerPackageTunnelPermission'
+            type: array
+          userInfo:
+            $ref: '#/definitions/controller.SwaggerUserInfoPackage'
+        type: object
+      msg:
+        example: 操作成功
+        type: string
+      ts:
+        example: 1700000000000
+        type: integer
+    type: object
+  controller.SwaggerUserUpdateReq:
+    properties:
+      expTime:
+        type: integer
+      flow:
+        type: integer
+      flowResetTime:
+        type: integer
+      id:
+        type: integer
+      num:
+        type: integer
+      pwd:
+        type: string
+      status:
+        type: integer
+      user:
+        type: string
+    required:
+    - id
+    type: object
+  controller.SwaggerVersionInfo:
+    properties:
+      agent:
+        example: go-agent-1.0.1
+        type: string
+      agent2:
+        example: go-agent2-1.0.1
+        type: string
+      center:
+        example: https://center.example.com
+        type: string
+      centerOn:
+        example: true
+        type: boolean
+      server:
+        example: 1.0.1
+        type: string
+    type: object
+  controller.SwaggerVersionLatestResp:
+    properties:
+      code:
+        example: 0
+        type: integer
+      data:
+        properties:
+          assets: {}
+          name:
+            example: Release name
+            type: string
+          tag:
+            example: v1.0.1
+            type: string
+        type: object
+      msg:
+        example: 操作成功
+        type: string
+      ts:
+        example: 1700000000000
+        type: integer
+    type: object
+  controller.SwaggerVersionResp:
+    properties:
+      code:
+        example: 0
+        type: integer
+      data:
+        $ref: '#/definitions/controller.SwaggerVersionInfo'
+      msg:
+        example: 操作成功
+        type: string
+      ts:
+        example: 1700000000000
+        type: integer
+    type: object
+  controller.SwaggerVersionUpgradeReq:
+    properties:
+      proxyPrefix:
+        example: https://ghproxy.com
+        type: string
+    type: object
+  controller.SwaggerVersionUpgradeResp:
+    properties:
+      code:
+        example: 0
+        type: integer
+      data:
+        properties:
+          created: {}
+          errors:
+            items:
+              type: string
+            type: array
+          logs:
+            items:
+              type: string
+            type: array
+          restart: {}
+          tag: {}
+        type: object
+      msg:
+        example: 操作成功
+        type: string
+      ts:
+        example: 1700000000000
+        type: integer
+    type: object
+  dto.ForwardDto:
+    properties:
+      inPort:
+        type: integer
+      interfaceName:
+        type: string
+      name:
+        type: string
+      remoteAddr:
+        type: string
+      strategy:
+        type: string
+      tunnelId:
+        type: integer
+    required:
+    - name
+    - remoteAddr
+    - tunnelId
+    type: object
+  dto.ForwardUpdateDto:
+    properties:
+      id:
+        type: integer
+      inPort:
+        type: integer
+      interfaceName:
+        type: string
+      name:
+        type: string
+      remoteAddr:
+        type: string
+      strategy:
+        type: string
+      tunnelId:
+        type: integer
+    required:
+    - id
+    type: object
+  dto.TunnelDto:
+    properties:
+      flow:
+        type: integer
+      inNodeId:
+        type: integer
+      interfaceName:
+        type: string
+      name:
+        type: string
+      outNodeId:
+        type: integer
+      protocol:
+        type: string
+      tcpListenAddr:
+        type: string
+      trafficRatio:
+        type: number
+      type:
+        type: integer
+      udpListenAddr:
+        type: string
+    required:
+    - inNodeId
+    - name
+    - type
+    type: object
+  dto.TunnelUpdateDto:
+    properties:
+      flow:
+        type: integer
+      id:
+        type: integer
+      interfaceName:
+        type: string
+      name:
+        type: string
+      protocol:
+        type: string
+      tcpListenAddr:
+        type: string
+      trafficRatio:
+        type: number
+      udpListenAddr:
+        type: string
+    required:
+    - id
+    type: object
+  dto.UserTunnelDto:
+    properties:
+      expTime:
+        type: integer
+      flow:
+        type: integer
+      flowResetTime:
+        type: integer
+      num:
+        type: integer
+      speedId:
+        type: integer
+      status:
+        type: integer
+      tunnelId:
+        type: integer
+      userId:
+        type: integer
+    required:
+    - tunnelId
+    - userId
+    type: object
+  dto.UserTunnelQueryDto:
+    properties:
+      userId:
+        type: integer
+    required:
+    - userId
+    type: object
+  dto.UserTunnelUpdateDto:
+    properties:
+      expTime:
+        type: integer
+      flow:
+        type: integer
+      flowResetTime:
+        type: integer
+      id:
+        type: integer
+      num:
+        type: integer
+      speedId:
+        type: integer
+      status:
+        type: integer
+    required:
+    - id
+    type: object
+info:
+  contact: {}
+  description: 面板后端接口文档
+  title: network-panel API
+  version: "1.0"
+paths:
+  /api/v1/config/get:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 配置名
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerConfigGetReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerConfigGetResp'
+      summary: 根据 name 获取配置
+      tags:
+      - config
+  /api/v1/config/list:
+    post:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerConfigListResp'
+      summary: 获取所有配置
+      tags:
+      - config
+  /api/v1/config/update:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 键值对
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerConfigUpdateMap'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 批量更新配置
+      tags:
+      - config
+  /api/v1/config/update-single:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: name/value
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerConfigUpdateSingle'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 单项配置更新
+      tags:
+      - config
+  /api/v1/forward/create:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 转发信息
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/dto.ForwardDto'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 创建转发
+      tags:
+      - forward
+  /api/v1/forward/delete:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 转发ID
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerIDReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 删除转发
+      tags:
+      - forward
+  /api/v1/forward/diagnose:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 转发ID
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerIDReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 诊断转发
+      tags:
+      - forward
+  /api/v1/forward/diagnose-step:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 'forwardId, step: entryExit|nodeRemote|iperf3|path'
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerForwardDiagnoseStepReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 诊断转发分步
+      tags:
+      - forward
+  /api/v1/forward/force-delete:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 转发ID
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerIDReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 强制删除转发
+      tags:
+      - forward
+  /api/v1/forward/list:
+    post:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 转发列表
+      tags:
+      - forward
+  /api/v1/forward/pause:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 转发ID
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerIDReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 暂停转发
+      tags:
+      - forward
+  /api/v1/forward/resume:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 转发ID
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerIDReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 恢复转发
+      tags:
+      - forward
+  /api/v1/forward/update:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 转发更新参数
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/dto.ForwardUpdateDto'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 更新转发
+      tags:
+      - forward
+  /api/v1/forward/update-order:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 转发顺序
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerForwardOrderReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 更新转发排序
+      tags:
+      - forward
+  /api/v1/node/{id}/terminal:
+    get:
+      description: 仅管理员可用。建立 WS 后发送 JSON 消息：start/input/resize/stop。start 需携带 rows/cols，input
+        携带 data。
+      parameters:
+      - description: 节点ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 备用token或Authorization
+        in: query
+        name: token
+        type: string
+      produces:
+      - application/json
+      responses:
+        "101":
+          description: Switching Protocols
+          schema:
+            type: string
+      summary: 节点终端 WebSocket
+      tags:
+      - ws
+  /api/v1/node/connections:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerResp'
+      summary: 获取节点连接信息
+      tags:
+      - node
+  /api/v1/node/create:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 节点信息
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerNodeCreateReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 创建节点
+      tags:
+      - node
+  /api/v1/node/delete:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 节点ID与是否卸载代理
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerNodeDeleteReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 删除节点
+      tags:
+      - node
+  /api/v1/node/enable-gost-api:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 节点ID
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerNodeSimpleReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 启用节点的gost API
+      tags:
+      - node
+  /api/v1/node/get-exit:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 节点ID
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerNodeSimpleReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerResp'
+      summary: 获取出口节点配置
+      tags:
+      - node
+  /api/v1/node/gost-config:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 节点ID
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerNodeSimpleReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerResp'
+      summary: 获取节点上的gost配置
+      tags:
+      - node
+  /api/v1/node/install:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 节点ID
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerNodeInstallReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerNodeInstallResp'
+      summary: 获取节点安装命令
+      tags:
+      - node
+  /api/v1/node/interfaces:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 节点ID
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerNodeInterfacesReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerResp'
+      summary: 获取节点网卡IP列表
+      tags:
+      - node
+  /api/v1/node/list:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 判定离线的阈值(毫秒)，默认30000
+        in: query
+        name: offline_threshold_ms
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerResp'
+      summary: 节点列表
+      tags:
+      - node
+  /api/v1/node/network-stats:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 节点ID与时间范围(1h/12h/1d/7d/30d)
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerNodeRangeReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerResp'
+      summary: 节点连通性统计
+      tags:
+      - node
+  /api/v1/node/network-stats-batch:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 时间范围(1h/12h/1d)
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerNetworkStatsBatchReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerResp'
+      summary: 批量节点网络统计
+      tags:
+      - node
+  /api/v1/node/nq-result:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 节点ID
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerNodeSimpleReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerResp'
+      summary: 查询节点质量测试结果
+      tags:
+      - node
+  /api/v1/node/nq-test:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 节点ID
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerNodeSimpleReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerResp'
+      summary: 触发节点质量测试
+      tags:
+      - node
+  /api/v1/node/ops:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 节点或请求ID，可指定limit
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerNodeOpsReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerResp'
+      summary: 查询节点操作日志
+      tags:
+      - node
+  /api/v1/node/query-services:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 节点ID与过滤关键字
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerNodeQueryServicesReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerResp'
+      summary: 查询节点服务
+      tags:
+      - node
+  /api/v1/node/restart-gost:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 节点ID
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerNodeSimpleReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerResp'
+      summary: 重启节点上的gost
+      tags:
+      - node
+  /api/v1/node/set-exit:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 出口服务配置
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerNodeExitReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 配置出口节点服务
+      tags:
+      - node
+  /api/v1/node/sysinfo:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 节点ID与时间范围
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerNodeSysinfoReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerResp'
+      summary: 获取节点系统信息
+      tags:
+      - node
+  /api/v1/node/update:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 节点信息
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerNodeUpdateReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 更新节点
+      tags:
+      - node
+  /api/v1/nq/stream:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 回传内容
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerNodeNQStreamReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: NodeQuality 流式回传
+      tags:
+      - node
+  /api/v1/tunnel/bind/get:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 隧道ID
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerTunnelIDReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 获取隧道节点绑定IP
+      tags:
+      - tunnel
+  /api/v1/tunnel/bind/set:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 隧道ID与绑定IP
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerTunnelBindReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 设置隧道节点绑定IP
+      tags:
+      - tunnel
+  /api/v1/tunnel/cleanup-temp:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 隧道ID
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerTunnelIDReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 清理路径临时服务（iperf3）
+      tags:
+      - tunnel
+  /api/v1/tunnel/create:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 隧道信息
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/dto.TunnelDto'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 创建隧道
+      tags:
+      - tunnel
+  /api/v1/tunnel/delete:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 隧道ID
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerIDReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 删除隧道
+      tags:
+      - tunnel
+  /api/v1/tunnel/diagnose:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: tunnelId, step 可选 path|overlay|remote
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerTunnelDiagnoseReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 诊断隧道
+      tags:
+      - tunnel
+  /api/v1/tunnel/diagnose-step:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 'tunnelId, step: entry|entryExit|exitPublic'
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerTunnelDiagnoseReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 隧道分步诊断
+      tags:
+      - tunnel
+  /api/v1/tunnel/iface/get:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 隧道ID
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerTunnelIDReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 获取隧道节点出口IP
+      tags:
+      - tunnel
+  /api/v1/tunnel/iface/set:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 隧道ID与出口IP
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerTunnelIfaceReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 设置隧道节点出口IP
+      tags:
+      - tunnel
+  /api/v1/tunnel/list:
+    post:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 隧道列表
+      tags:
+      - tunnel
+  /api/v1/tunnel/path/check:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 隧道ID
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerTunnelIDReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 检查多级路径节点状态
+      tags:
+      - tunnel
+  /api/v1/tunnel/path/get:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 隧道ID
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerTunnelIDReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 获取隧道多级路径
+      tags:
+      - tunnel
+  /api/v1/tunnel/path/set:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 隧道ID与路径节点
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerTunnelPathSetReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 设置隧道多级路径
+      tags:
+      - tunnel
+  /api/v1/tunnel/update:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 隧道更新信息
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/dto.TunnelUpdateDto'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 更新隧道
+      tags:
+      - tunnel
+  /api/v1/tunnel/user/assign:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 用户隧道权限
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/dto.UserTunnelDto'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 分配隧道权限
+      tags:
+      - tunnel
+  /api/v1/tunnel/user/list:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 用户ID
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/dto.UserTunnelQueryDto'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 用户隧道权限列表
+      tags:
+      - tunnel
+  /api/v1/tunnel/user/remove:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 用户隧道记录ID
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerIDReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 移除用户隧道权限
+      tags:
+      - tunnel
+  /api/v1/tunnel/user/tunnel:
+    post:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 用户可用隧道列表
+      tags:
+      - tunnel
+  /api/v1/tunnel/user/update:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 更新内容
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/dto.UserTunnelUpdateDto'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 更新用户隧道权限
+      tags:
+      - tunnel
+  /api/v1/user/create:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 用户信息
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerUserCreateReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 创建用户
+      tags:
+      - user
+  /api/v1/user/delete:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 需要提供 id
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerUserUpdateReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 删除用户
+      tags:
+      - user
+  /api/v1/user/list:
+    post:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerUserListResp'
+      summary: 用户列表
+      tags:
+      - user
+  /api/v1/user/login:
+    post:
+      consumes:
+      - application/json
+      description: 登录并返回 token
+      parameters:
+      - description: 登录参数
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerLoginReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerLoginResp'
+      summary: 用户登录
+      tags:
+      - user
+  /api/v1/user/package:
+    post:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerUserPackageResp'
+      summary: 获取当前用户套餐与配额
+      tags:
+      - user
+  /api/v1/user/register:
+    post:
+      consumes:
+      - application/json
+      description: 公开注册，受配置 registration_enabled 控制
+      parameters:
+      - description: 注册参数（用户名、密码）
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerRegisterReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerRegisterResp'
+      summary: 用户注册
+      tags:
+      - user
+  /api/v1/user/reset:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: type=1 用户流量，否则隧道路由
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerResetFlowReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 重置用户/隧道流量
+      tags:
+      - user
+  /api/v1/user/update:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 用户更新参数
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerUserUpdateReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 更新用户
+      tags:
+      - user
+  /api/v1/user/updatePassword:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 修改密码参数
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/controller.SwaggerChangePasswordReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.BaseSwaggerResp'
+      summary: 修改当前用户密码
+      tags:
+      - user
+  /api/v1/version:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerVersionResp'
+      summary: 版本信息
+      tags:
+      - version
+  /api/v1/version/latest:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerVersionLatestResp'
+      summary: 获取最新版本
+      tags:
+      - version
+  /api/v1/version/upgrade:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 代理前缀
+        in: body
+        name: data
+        schema:
+          $ref: '#/definitions/controller.SwaggerVersionUpgradeReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/controller.SwaggerVersionUpgradeResp'
+      summary: 升级后端（并可返回重启模式）
+      tags:
+      - version
+  /system-info:
+    get:
+      description: type=1 携带 secret、version 上报节点心跳；type=0 作为管理端订阅节点状态
+      parameters:
+      - description: 0=admin监控，1=agent1，2=agent2
+        in: query
+        name: type
+        required: true
+        type: string
+      - description: 节点密钥(节点端必填)
+        in: query
+        name: secret
+        type: string
+      - description: 节点版本
+        in: query
+        name: version
+        type: string
+      - description: agent角色(可选)
+        in: query
+        name: role
+        type: string
+      produces:
+      - application/json
+      responses:
+        "101":
+          description: Switching Protocols
+          schema:
+            type: string
+      summary: 节点状态 WebSocket
+      tags:
+      - ws
+swagger: "2.0"

@@ -4,6 +4,7 @@ import { Input } from "@heroui/input";
 import { Button } from "@heroui/button";
 import { Progress as UiProgress } from "@heroui/progress";
 import toast from "react-hot-toast";
+
 import api from "@/api/network";
 
 type MigrateForm = {
@@ -55,8 +56,10 @@ export default function MigratePage() {
   const validate = () => {
     if (!form.host || !form.port || !form.user || !form.db) {
       toast.error("请填写完整信息");
+
       return false;
     }
+
     return true;
   };
 
@@ -65,6 +68,7 @@ export default function MigratePage() {
     setLoading(true);
     try {
       const res: any = await api.post("/migrate/start", form);
+
       if (res.code === 0 && res.data?.jobId) {
         toast.success("已开始迁移");
         // 开始轮询进度
@@ -72,7 +76,9 @@ export default function MigratePage() {
           try {
             const st: any = await fetch(
               `/api/v1/migrate/status?jobId=${res.data.jobId}`,
-              { headers: { Authorization: localStorage.getItem("token") || "" } }
+              {
+                headers: { Authorization: localStorage.getItem("token") || "" },
+              },
             ).then((r) => r.json());
 
             if (!st || st.code !== 0) return;
@@ -107,6 +113,7 @@ export default function MigratePage() {
     setTesting(true);
     try {
       const res: any = await api.post("/migrate/test", form);
+
       if (res.code === 0) {
         setCounts((res.data?.counts as Counts) || {});
         toast.success("连接正常");
@@ -129,17 +136,23 @@ export default function MigratePage() {
             <Input
               label="Host"
               value={form.host}
-              onChange={(e) => setForm({ ...form, host: (e.target as any).value })}
+              onChange={(e) =>
+                setForm({ ...form, host: (e.target as any).value })
+              }
             />
             <Input
               label="Port"
               value={form.port}
-              onChange={(e) => setForm({ ...form, port: (e.target as any).value })}
+              onChange={(e) =>
+                setForm({ ...form, port: (e.target as any).value })
+              }
             />
             <Input
               label="User"
               value={form.user}
-              onChange={(e) => setForm({ ...form, user: (e.target as any).value })}
+              onChange={(e) =>
+                setForm({ ...form, user: (e.target as any).value })
+              }
             />
             <Input
               label="Password"
@@ -152,12 +165,14 @@ export default function MigratePage() {
             <Input
               label="Database"
               value={form.db}
-              onChange={(e) => setForm({ ...form, db: (e.target as any).value })}
+              onChange={(e) =>
+                setForm({ ...form, db: (e.target as any).value })
+              }
             />
           </div>
 
           <div className="flex gap-2">
-            <Button variant="flat" isLoading={testing} onPress={testConn}>
+            <Button isLoading={testing} variant="flat" onPress={testConn}>
               测试连接
             </Button>
             <Button color="primary" isLoading={loading} onPress={submit}>
@@ -182,30 +197,46 @@ export default function MigratePage() {
                 </div>
                 <div className="flex-1">
                   <UiProgress
+                    showValueLabel
                     aria-label="迁移进度"
+                    color={
+                      progress.status === "error"
+                        ? "danger"
+                        : progress.status === "done"
+                          ? "success"
+                          : "primary"
+                    }
                     size="sm"
-                    color={progress.status === "error" ? "danger" : progress.status === "done" ? "success" : "primary"}
                     value={(() => {
                       const t = Math.max(progress.total || 0, 0);
-                      const c = Math.min(progress.current || 0, t || Number.MAX_SAFE_INTEGER);
+                      const c = Math.min(
+                        progress.current || 0,
+                        t || Number.MAX_SAFE_INTEGER,
+                      );
+
                       return t > 0 ? Math.floor((c / t) * 100) : 0;
                     })()}
-                    showValueLabel
                   />
                 </div>
-                <span className={`text-2xs ${progress.status === "error" ? "text-danger" : "text-default-500"}`}>
+                <span
+                  className={`text-2xs ${progress.status === "error" ? "text-danger" : "text-default-500"}`}
+                >
                   {progress.status}
                 </span>
               </div>
               {Array.isArray(progress.tables) && progress.tables.length > 0 && (
                 <div className="text-xs text-default-600">
                   {progress.tables
-                    .map((t) => `${t.table}:${t.inserted || 0}/${t.srcCount || 0}`)
+                    .map(
+                      (t) => `${t.table}:${t.inserted || 0}/${t.srcCount || 0}`,
+                    )
                     .join("，")}
                 </div>
               )}
               {progress.status === "error" && (
-                <div className="text-xs text-danger">错误：{progress.error}</div>
+                <div className="text-xs text-danger">
+                  错误：{progress.error}
+                </div>
               )}
             </div>
           )}

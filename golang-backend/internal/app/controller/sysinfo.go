@@ -10,6 +10,14 @@ import (
 	dbpkg "network-panel/golang-backend/internal/db"
 )
 
+// NodeSysinfo 获取节点系统信息
+// @Summary 获取节点系统信息
+// @Tags node
+// @Accept json
+// @Produce json
+// @Param data body SwaggerNodeSysinfoReq true "节点ID与时间范围"
+// @Success 200 {object} SwaggerResp
+// @Router /api/v1/node/sysinfo [post]
 // POST /api/v1/node/sysinfo {nodeId, range}
 // range: 1h,12h,1d,7d,30d
 func NodeSysinfo(c *gin.Context) {
@@ -37,15 +45,15 @@ func NodeSysinfo(c *gin.Context) {
 		windowMs = 3600 * 1000
 	}
 	from := now - windowMs
-    q := dbpkg.DB.Model(&model.NodeSysInfo{}).Where("node_id = ? AND time_ms >= ?", p.NodeID, from).Order("time_ms asc")
+	q := dbpkg.DB.Model(&model.NodeSysInfo{}).Where("node_id = ? AND time_ms >= ?", p.NodeID, from).Order("time_ms asc")
 	if p.Limit > 0 {
 		q = q.Limit(p.Limit)
 	}
-    var list []model.NodeSysInfo
-    q.Find(&list)
-    // merge unsaved buffered samples
-    if extra := readBufferedSysInfo(p.NodeID, from); len(extra) > 0 {
-        list = append(list, extra...)
-    }
-    c.JSON(http.StatusOK, response.Ok(list))
+	var list []model.NodeSysInfo
+	q.Find(&list)
+	// merge unsaved buffered samples
+	if extra := readBufferedSysInfo(p.NodeID, from); len(extra) > 0 {
+		list = append(list, extra...)
+	}
+	c.JSON(http.StatusOK, response.Ok(list))
 }

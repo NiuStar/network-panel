@@ -22,6 +22,14 @@ import (
 )
 
 // POST /api/v1/forward/create
+// ForwardCreate 创建转发
+// @Summary 创建转发
+// @Tags forward
+// @Accept json
+// @Produce json
+// @Param data body dto.ForwardDto true "转发信息"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/forward/create [post]
 func ForwardCreate(c *gin.Context) {
 	var req dto.ForwardDto
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -457,7 +465,12 @@ func ForwardCreate(c *gin.Context) {
 	c.JSON(http.StatusOK, response.Ok(map[string]any{"requestId": opId}))
 }
 
-// POST /api/v1/forward/list
+// ForwardList 转发列表
+// @Summary 转发列表
+// @Tags forward
+// @Produce json
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/forward/list [post]
 func ForwardList(c *gin.Context) {
 	roleInf, _ := c.Get("role_id")
 	uidInf, _ := c.Get("user_id")
@@ -474,7 +487,14 @@ func ForwardList(c *gin.Context) {
 	c.JSON(http.StatusOK, response.Ok(res))
 }
 
-// POST /api/v1/forward/update
+// ForwardUpdate 更新转发
+// @Summary 更新转发
+// @Tags forward
+// @Accept json
+// @Produce json
+// @Param data body dto.ForwardUpdateDto true "转发更新参数"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/forward/update [post]
 func ForwardUpdate(c *gin.Context) {
 	var req dto.ForwardUpdateDto
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -850,7 +870,14 @@ func ForwardUpdate(c *gin.Context) {
 	c.JSON(http.StatusOK, response.Ok(map[string]any{"msg": "端口转发更新成功", "requestId": opId}))
 }
 
-// POST /api/v1/forward/delete
+// ForwardDelete 删除转发
+// @Summary 删除转发
+// @Tags forward
+// @Accept json
+// @Produce json
+// @Param data body SwaggerIDReq true "转发ID"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/forward/delete [post]
 func ForwardDelete(c *gin.Context) {
 	var p struct {
 		ID int64 `json:"id"`
@@ -893,10 +920,24 @@ func ForwardDelete(c *gin.Context) {
 	c.JSON(http.StatusOK, response.OkMsg("端口转发删除成功"))
 }
 
-// POST /api/v1/forward/force-delete
+// ForwardForceDelete 强制删除转发
+// @Summary 强制删除转发
+// @Tags forward
+// @Accept json
+// @Produce json
+// @Param data body SwaggerIDReq true "转发ID"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/forward/force-delete [post]
 func ForwardForceDelete(c *gin.Context) { ForwardDelete(c) }
 
-// POST /api/v1/forward/pause
+// ForwardPause 暂停转发
+// @Summary 暂停转发
+// @Tags forward
+// @Accept json
+// @Produce json
+// @Param data body SwaggerIDReq true "转发ID"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/forward/pause [post]
 func ForwardPause(c *gin.Context) {
 	var p struct {
 		ID int64 `json:"id"`
@@ -924,7 +965,14 @@ func ForwardPause(c *gin.Context) {
 	c.JSON(http.StatusOK, response.OkNoData())
 }
 
-// POST /api/v1/forward/resume
+// ForwardResume 恢复转发
+// @Summary 恢复转发
+// @Tags forward
+// @Accept json
+// @Produce json
+// @Param data body SwaggerIDReq true "转发ID"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/forward/resume [post]
 func ForwardResume(c *gin.Context) {
 	var p struct {
 		ID int64 `json:"id"`
@@ -952,7 +1000,14 @@ func ForwardResume(c *gin.Context) {
 	c.JSON(http.StatusOK, response.OkNoData())
 }
 
-// POST /api/v1/forward/diagnose
+// ForwardDiagnose 诊断转发
+// @Summary 诊断转发
+// @Tags forward
+// @Accept json
+// @Produce json
+// @Param data body SwaggerIDReq true "转发ID"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/forward/diagnose [post]
 func ForwardDiagnose(c *gin.Context) {
 	var p struct {
 		ForwardID int64 `json:"forwardId" binding:"required"`
@@ -1258,7 +1313,14 @@ func ForwardDiagnose(c *gin.Context) {
 	c.JSON(http.StatusOK, response.Ok(out))
 }
 
-// POST /api/v1/forward/diagnose-step {forwardId, step: entryExit|nodeRemote|iperf3|path}
+// ForwardDiagnoseStep 诊断转发分步
+// @Summary 诊断转发分步
+// @Tags forward
+// @Accept json
+// @Produce json
+// @Param data body SwaggerForwardDiagnoseStepReq true "forwardId, step: entryExit|nodeRemote|iperf3|path"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/forward/diagnose-step [post]
 func ForwardDiagnoseStep(c *gin.Context) {
 	var p struct {
 		ForwardID int64  `json:"forwardId" binding:"required"`
@@ -1555,7 +1617,14 @@ func splitHostPortSafe(hp string) (string, int) {
 // Ask node via WS Diagnose; if node不回执则返回 ok=false
 // diagnoseFromNode and tcpDialFallback are implemented in diagnose_util.go
 
-// POST /api/v1/forward/update-order {forwards: [{id, inx}]}
+// ForwardUpdateOrder 更新转发排序
+// @Summary 更新转发排序
+// @Tags forward
+// @Accept json
+// @Produce json
+// @Param data body SwaggerForwardOrderReq true "转发顺序"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/forward/update-order [post]
 func ForwardUpdateOrder(c *gin.Context) {
 	var p struct {
 		Forwards []struct {

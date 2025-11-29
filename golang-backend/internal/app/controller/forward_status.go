@@ -462,13 +462,23 @@ func toBool(v any) (bool, bool) {
 }
 
 func probePortListening(nodeID int64, port int) bool {
-	req := map[string]interface{}{"requestId": RandUUID(), "port": port}
-	if res, ok := RequestOp(nodeID, "ProbePort", req, 3*time.Second); ok {
+	reqID := RandUUID()
+	payload := map[string]interface{}{"requestId": reqID, "port": port}
+	if err := sendWSCommand(nodeID, "ProbePort", payload); err != nil {
+		return false
+	}
+	ch := make(chan map[string]interface{}, 1)
+	diagMu.Lock()
+	diagWaiters[reqID] = ch
+	diagMu.Unlock()
+	select {
+	case res := <-ch:
 		if data, _ := res["data"].(map[string]any); data != nil {
 			if v, _ := data["listening"].(bool); v {
 				return true
 			}
 		}
+	case <-time.After(3 * time.Second):
 	}
 	return false
 }

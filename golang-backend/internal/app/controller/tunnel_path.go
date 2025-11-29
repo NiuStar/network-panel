@@ -13,7 +13,14 @@ import (
     dbpkg "network-panel/golang-backend/internal/db"
 )
 
-// POST /api/v1/tunnel/path/get {tunnelId}
+// TunnelPathGet 获取隧道多级路径
+// @Summary 获取隧道多级路径
+// @Tags tunnel
+// @Accept json
+// @Produce json
+// @Param data body SwaggerTunnelIDReq true "隧道ID"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/tunnel/path/get [post]
 func TunnelPathGet(c *gin.Context) {
     var p struct{ TunnelID int64 `json:"tunnelId" binding:"required"` }
     if err := c.ShouldBindJSON(&p); err != nil {
@@ -30,7 +37,14 @@ func TunnelPathGet(c *gin.Context) {
     c.JSON(http.StatusOK, response.Ok(map[string]any{"path": ids}))
 }
 
-// POST /api/v1/tunnel/path/set {tunnelId, path:[nodeId...]}
+// TunnelPathSet 设置隧道多级路径
+// @Summary 设置隧道多级路径
+// @Tags tunnel
+// @Accept json
+// @Produce json
+// @Param data body SwaggerTunnelPathSetReq true "隧道ID与路径节点"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/tunnel/path/set [post]
 func TunnelPathSet(c *gin.Context) {
     var p struct{ TunnelID int64 `json:"tunnelId" binding:"required"`; Path []int64 `json:"path"` }
     if err := c.ShouldBindJSON(&p); err != nil {
@@ -73,8 +87,14 @@ func TunnelPathSet(c *gin.Context) {
 
 func tunnelPathKey(tid int64) string { return "tunnel_path_" + strconv.FormatInt(tid, 10) }
 
-// POST /api/v1/tunnel/path-check {tunnelId}
-// Check each hop for: node online, proposed free port (mid relay), relay presence (grpc)
+// TunnelPathCheck 检查多级路径节点
+// @Summary 检查多级路径节点状态
+// @Tags tunnel
+// @Accept json
+// @Produce json
+// @Param data body SwaggerTunnelIDReq true "隧道ID"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/tunnel/path/check [post]
 func TunnelPathCheck(c *gin.Context) {
     var p struct{ TunnelID int64 `json:"tunnelId" binding:"required"` }
     if err := c.ShouldBindJSON(&p); err != nil {
@@ -157,8 +177,14 @@ func TunnelPathCheck(c *gin.Context) {
     c.JSON(http.StatusOK, response.Ok(map[string]any{"hops": out, "ok": allOK}))
 }
 
-// POST /api/v1/tunnel/cleanup-temp {tunnelId}
-// Delete temporary services created for iperf3 along the path: names starting with tmp_iperf3_<tid>_
+// TunnelCleanupTemp 清理路径临时服务
+// @Summary 清理路径临时服务（iperf3）
+// @Tags tunnel
+// @Accept json
+// @Produce json
+// @Param data body SwaggerTunnelIDReq true "隧道ID"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/tunnel/cleanup-temp [post]
 func TunnelCleanupTemp(c *gin.Context) {
     var p struct{ TunnelID int64 `json:"tunnelId" binding:"required"` }
     if err := c.ShouldBindJSON(&p); err != nil { c.JSON(http.StatusOK, response.ErrMsg("参数错误")); return }

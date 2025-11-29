@@ -3,11 +3,12 @@ import { Input } from "@heroui/input";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import toast from 'react-hot-toast';
-import axios from 'axios';
-import { isWebViewFunc } from '@/utils/panel';
-import { siteConfig, getCachedConfig, configCache } from '@/config/site';
-import { getConfigByName } from '@/api';
+import toast from "react-hot-toast";
+import axios from "axios";
+
+import { isWebViewFunc } from "@/utils/panel";
+import { siteConfig, getCachedConfig, configCache } from "@/config/site";
+import { getConfigByName } from "@/api";
 import { title } from "@/components/primitives";
 import DefaultLayout from "@/layouts/default";
 import { login, LoginData, checkCaptcha, register } from "@/api";
@@ -15,14 +16,11 @@ import "@/utils/tac.css";
 import "@/utils/tac.min.js";
 import bgImage from "@/images/bg.jpg";
 
-
 interface LoginForm {
   username: string;
   password: string;
   captchaId: string;
 }
-
-
 
 interface CaptchaConfig {
   requestCaptchaDataUrl: string;
@@ -57,7 +55,8 @@ export default function IndexPage() {
   const [isWebView, setIsWebView] = useState(false);
   const [regEnabled, setRegEnabled] = useState(false);
   const [regMode, setRegMode] = useState(false);
-  const [reg, setReg] = useState({ username: '', password: '', confirm: '' });
+  const [reg, setReg] = useState({ username: "", password: "", confirm: "" });
+
   // 清理验证码实例
   useEffect(() => {
     return () => {
@@ -73,20 +72,27 @@ export default function IndexPage() {
   }, []);
   // 读取注册开关（优先缓存，但若为 false 再强制拉取一次最新值）
   useEffect(() => {
-    (async()=>{
-      try{
-        const v = await getCachedConfig('registration_enabled');
-        let enabled = String(v).toLowerCase() === 'true';
+    (async () => {
+      try {
+        const v = await getCachedConfig("registration_enabled");
+        let enabled = String(v).toLowerCase() === "true";
+
         if (!enabled) {
-          const r:any = await getConfigByName('registration_enabled');
+          const r: any = await getConfigByName("registration_enabled");
+
           if (r && r.code === 0) {
-            enabled = String(r.data).toLowerCase() === 'true';
+            enabled = String(r.data).toLowerCase() === "true";
             // 覆盖本地缓存，避免旧值干扰
-            try { if (typeof r.data === 'string') configCache.set('registration_enabled', r.data); } catch {}
+            try {
+              if (typeof r.data === "string")
+                configCache.set("registration_enabled", r.data);
+            } catch {}
           }
         }
         setRegEnabled(enabled);
-      }catch{ setRegEnabled(false); }
+      } catch {
+        setRegEnabled(false);
+      }
     })();
   }, []);
   // 验证表单
@@ -94,26 +100,26 @@ export default function IndexPage() {
     const newErrors: Partial<LoginForm> = {};
 
     if (!form.username.trim()) {
-      newErrors.username = '请输入用户名';
+      newErrors.username = "请输入用户名";
     }
 
     if (!form.password.trim()) {
-      newErrors.password = '请输入密码';
+      newErrors.password = "请输入密码";
     } else if (form.password.length < 6) {
-      newErrors.password = '密码长度至少6位';
+      newErrors.password = "密码长度至少6位";
     }
 
-
     setErrors(newErrors);
+
     return Object.keys(newErrors).length === 0;
   };
 
   // 处理输入变化
   const handleInputChange = (field: keyof LoginForm, value: string) => {
-    setForm(prev => ({ ...prev, [field]: value }));
+    setForm((prev) => ({ ...prev, [field]: value }));
     // 清除该字段的错误
     if (errors[field]) {
-      setErrors(prev => ({ ...prev, [field]: undefined }));
+      setErrors((prev) => ({ ...prev, [field]: undefined }));
     }
   };
 
@@ -131,16 +137,18 @@ export default function IndexPage() {
       }
 
       // 使用axios的baseURL，确保在WebView中使用正确的面板地址
-      const baseURL = axios.defaults.baseURL || (import.meta.env.VITE_API_BASE ? `${import.meta.env.VITE_API_BASE}/api/v1/` : '/api/v1/');
-      
+      const baseURL =
+        axios.defaults.baseURL ||
+        (import.meta.env.VITE_API_BASE
+          ? `${import.meta.env.VITE_API_BASE}/api/v1/`
+          : "/api/v1/");
+
       const config: CaptchaConfig = {
         requestCaptchaDataUrl: `${baseURL}captcha/generate`,
-        validCaptchaUrl: `${baseURL}captcha/verify`, 
+        validCaptchaUrl: `${baseURL}captcha/verify`,
         bindEl: "#captcha-container",
         validSuccess: (res: any, _: any, tac: any) => {
-          
-
-          form.captchaId = res.data.validToken
+          form.captchaId = res.data.validToken;
 
           setShowCaptcha(false);
           tac.destroyWindow();
@@ -156,30 +164,30 @@ export default function IndexPage() {
         },
         btnRefreshFun: (_event: any, tac: any) => {
           tac.reloadCaptcha();
-        }
+        },
       };
 
       // 检测暗黑模式
-      const isDarkMode = document.documentElement.classList.contains('dark') || 
-                        document.documentElement.getAttribute('data-theme') === 'dark' ||
-                        window.matchMedia('(prefers-color-scheme: dark)').matches;
-      
+      const isDarkMode =
+        document.documentElement.classList.contains("dark") ||
+        document.documentElement.getAttribute("data-theme") === "dark" ||
+        window.matchMedia("(prefers-color-scheme: dark)").matches;
+
       // 根据主题调整颜色
       const trackColor = isDarkMode ? "#4a5568" : "#7db0be"; // 暗黑模式使用更深的灰蓝色
-      
+
       const style: CaptchaStyle = {
         bgUrl: bgImage,
         logoUrl: null,
         moveTrackMaskBgColor: trackColor,
-        moveTrackMaskBorderColor: trackColor
+        moveTrackMaskBorderColor: trackColor,
       };
 
       tacInstanceRef.current = new window.TAC(config, style);
       tacInstanceRef.current.init();
-
     } catch (error) {
-      console.error('初始化验证码失败:', error);
-      toast.error('验证码初始化失败，请刷新页面重试');
+      console.error("初始化验证码失败:", error);
+      toast.error("验证码初始化失败，请刷新页面重试");
       setShowCaptcha(false);
       setLoading(false);
     }
@@ -187,8 +195,6 @@ export default function IndexPage() {
 
   // 执行登录请求
   const performLogin = async () => {
-
-
     try {
       const loginData: LoginData = {
         username: form.username.trim(),
@@ -197,35 +203,36 @@ export default function IndexPage() {
       };
 
       const response = await login(loginData);
-      
+
       if (response.code !== 0) {
         toast.error(response.msg || "登录失败");
+
         return;
       }
 
       // 检查是否需要强制修改密码
       if (response.data.requirePasswordChange) {
-        localStorage.setItem('token', response.data.token);
+        localStorage.setItem("token", response.data.token);
         localStorage.setItem("role_id", response.data.role_id.toString());
         localStorage.setItem("name", response.data.name);
         localStorage.setItem("admin", (response.data.role_id === 0).toString());
-        toast.success('检测到默认密码，即将跳转到修改密码页面');
+        toast.success("检测到默认密码，即将跳转到修改密码页面");
         navigate("/change-password");
+
         return;
       }
 
       // 保存登录信息
-      localStorage.setItem('token', response.data.token);
+      localStorage.setItem("token", response.data.token);
       localStorage.setItem("role_id", response.data.role_id.toString());
       localStorage.setItem("name", response.data.name);
       localStorage.setItem("admin", (response.data.role_id === 0).toString());
 
       // 登录成功
-      toast.success('登录成功');
+      toast.success("登录成功");
       navigate("/dashboard");
-
     } catch (error) {
-      console.error('登录错误:', error);
+      console.error("登录错误:", error);
       toast.error("网络错误，请稍后重试");
     } finally {
       setLoading(false);
@@ -240,10 +247,11 @@ export default function IndexPage() {
     try {
       // 先检查是否需要验证码
       const checkResponse = await checkCaptcha();
-      
+
       if (checkResponse.code !== 0) {
         toast.error("检查验证码状态失败，请重试" + checkResponse.msg);
         setLoading(false);
+
         return;
       }
 
@@ -260,15 +268,14 @@ export default function IndexPage() {
         }, 100);
       }
     } catch (error) {
-      console.error('检查验证码状态错误:', error);
+      console.error("检查验证码状态错误:", error);
       toast.error("网络错误，请稍后重试" + error);
       setLoading(false);
     }
   };
 
-
   const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !loading) {
+    if (e.key === "Enter" && !loading) {
       handleLogin();
     }
   };
@@ -280,42 +287,47 @@ export default function IndexPage() {
           <Card className="w-full">
             <CardHeader className="pb-0 pt-6 px-6 flex-col items-center">
               <h1 className={title({ size: "sm" })}>登陆</h1>
-              <p className="text-small text-default-500 mt-2">请输入您的账号信息</p>
+              <p className="text-small text-default-500 mt-2">
+                请输入您的账号信息
+              </p>
             </CardHeader>
             <CardBody className="px-6 py-6">
               <div className="flex flex-col gap-4">
                 <Input
+                  errorMessage={errors.username}
+                  isDisabled={loading}
+                  isInvalid={!!errors.username}
                   label="用户名"
                   placeholder="请输入用户名"
                   value={form.username}
-                  onChange={(e) => handleInputChange('username', e.target.value)}
-                  onKeyDown={handleKeyPress}
                   variant="bordered"
-                  isDisabled={loading}
-                  isInvalid={!!errors.username}
-                  errorMessage={errors.username}
+                  onChange={(e) =>
+                    handleInputChange("username", e.target.value)
+                  }
+                  onKeyDown={handleKeyPress}
                 />
-                
+
                 <Input
+                  isDisabled={loading}
+                  isInvalid={!!errors.password}
                   label="密码"
                   placeholder="请输入密码"
                   type="password"
                   value={form.password}
-                  onChange={(e) => handleInputChange('password', e.target.value)}
-                  onKeyDown={handleKeyPress}
                   variant="bordered"
-                  isDisabled={loading}
-                  isInvalid={!!errors.password}
+                  onChange={(e) =>
+                    handleInputChange("password", e.target.value)
+                  }
+                  onKeyDown={handleKeyPress}
                 />
 
-                
                 <Button
+                  className="mt-2"
                   color="primary"
+                  disabled={loading}
+                  isLoading={loading}
                   size="lg"
                   onClick={handleLogin}
-                  isLoading={loading}
-                  disabled={loading}
-                  className="mt-2"
                 >
                   {loading ? (showCaptcha ? "验证中..." : "登录中...") : "登录"}
                 </Button>
@@ -324,94 +336,159 @@ export default function IndexPage() {
           </Card>
         </div>
 
+        {/* 版权信息 - 固定在底部，不占据布局空间 */}
 
-      {/* 版权信息 - 固定在底部，不占据布局空间 */}
-      
-              <div className="fixed inset-x-0 bottom-4 text-center py-4">
-               {/* Sponsor button */}
-               <a 
-                 href="https://vps.town" 
-                 target="_blank" 
-                 rel="noopener noreferrer"
-                 className="inline-block mb-2"
-                 aria-label="Sponsor"
-               >
-                 <img 
-                   src="https://vps.town/static/images/sponsor.png" 
-                   alt="Sponsor"
-                   className="h-8 mx-auto object-contain"
-                   loading="lazy"
-                 />
-               </a>
-               <p className="text-xs text-gray-400 dark:text-gray-500 mb-1">感谢vps.town提供的服务器赞助</p>
-                <p className="text-xs text-gray-400 dark:text-gray-500">
-                  Powered by{' '}
-                  <a 
-                    href="https://github.com/NiuStar/network-panel" 
-                    target="_blank" 
-                   rel="noopener noreferrer"
-                   className="text-gray-500 dark:text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
-                 >
-                   network-panel
-                 </a>
-              </p>
-              <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
-               v{ isWebView ? siteConfig.app_version : siteConfig.version}
-              </p>
-               {regEnabled && (
-                 <div className="mt-2">
-                   {!regMode ? (
-                     <button className="text-xs text-primary hover:underline" onClick={()=>setRegMode(true)}>没有账号？注册</button>
-                   ) : (
-                     <div className="max-w-md mx-auto mt-2 p-3 border border-default-200 rounded-md bg-default-50">
-                       <div className="grid gap-2">
-                         <Input size="sm" variant="bordered" label="新用户名" value={reg.username} onChange={e=>setReg(prev=>({...prev, username: e.target.value}))} />
-                         <Input size="sm" variant="bordered" label="新密码" type="password" value={reg.password} onChange={e=>setReg(prev=>({...prev, password: e.target.value}))} />
-                         <Input size="sm" variant="bordered" label="确认密码" type="password" value={reg.confirm} onChange={e=>setReg(prev=>({...prev, confirm: e.target.value}))} />
-                         <div className="flex gap-2 justify-end">
-                           <Button size="sm" variant="light" onPress={()=>setRegMode(false)}>取消</Button>
-                           <Button size="sm" color="primary" onPress={async()=>{
-                             if (!reg.username.trim() || reg.password.length<6 || reg.password!==reg.confirm){ toast.error('请填写有效用户名/密码'); return; }
-                             try{
-                               const r:any = await register({ username: reg.username.trim(), password: reg.password });
-                               if (r && r.code===0 && r.data?.token){
-                                 localStorage.setItem('token', r.data.token);
-                                 toast.success('注册并登录成功');
-                                 navigate('/dashboard');
-                               } else {
-                                 toast.error(r?.msg || '注册失败');
-                               }
-                             }catch(e:any){ toast.error(e?.message || '网络错误'); }
-                           }}>注册</Button>
-                         </div>
-                       </div>
-                     </div>
-                   )}
-                 </div>
-               )}
-             </div>
-      
-   
+        <div className="fixed inset-x-0 bottom-4 text-center py-4">
+          {/* Sponsor button */}
+          <a
+            aria-label="Sponsor"
+            className="inline-block mb-2"
+            href="https://vps.town"
+            rel="noopener noreferrer"
+            target="_blank"
+          >
+            <img
+              alt="Sponsor"
+              className="h-8 mx-auto object-contain"
+              loading="lazy"
+              src="https://vps.town/static/images/sponsor.png"
+            />
+          </a>
+          <p className="text-xs text-gray-400 dark:text-gray-500 mb-1">
+            感谢vps.town提供的服务器赞助
+          </p>
+          <p className="text-xs text-gray-400 dark:text-gray-500">
+            Powered by{" "}
+            <a
+              className="text-gray-500 dark:text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+              href="https://github.com/NiuStar/network-panel"
+              rel="noopener noreferrer"
+              target="_blank"
+            >
+              network-panel
+            </a>
+          </p>
+          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+            v{isWebView ? siteConfig.app_version : siteConfig.version}
+          </p>
+          {regEnabled && (
+            <div className="mt-2">
+              {!regMode ? (
+                <button
+                  className="text-xs text-primary hover:underline"
+                  onClick={() => setRegMode(true)}
+                >
+                  没有账号？注册
+                </button>
+              ) : (
+                <div className="max-w-md mx-auto mt-2 p-3 border border-default-200 rounded-md bg-default-50">
+                  <div className="grid gap-2">
+                    <Input
+                      label="新用户名"
+                      size="sm"
+                      value={reg.username}
+                      variant="bordered"
+                      onChange={(e) =>
+                        setReg((prev) => ({
+                          ...prev,
+                          username: e.target.value,
+                        }))
+                      }
+                    />
+                    <Input
+                      label="新密码"
+                      size="sm"
+                      type="password"
+                      value={reg.password}
+                      variant="bordered"
+                      onChange={(e) =>
+                        setReg((prev) => ({
+                          ...prev,
+                          password: e.target.value,
+                        }))
+                      }
+                    />
+                    <Input
+                      label="确认密码"
+                      size="sm"
+                      type="password"
+                      value={reg.confirm}
+                      variant="bordered"
+                      onChange={(e) =>
+                        setReg((prev) => ({ ...prev, confirm: e.target.value }))
+                      }
+                    />
+                    <div className="flex gap-2 justify-end">
+                      <Button
+                        size="sm"
+                        variant="light"
+                        onPress={() => setRegMode(false)}
+                      >
+                        取消
+                      </Button>
+                      <Button
+                        color="primary"
+                        size="sm"
+                        onPress={async () => {
+                          if (
+                            !reg.username.trim() ||
+                            reg.password.length < 6 ||
+                            reg.password !== reg.confirm
+                          ) {
+                            toast.error("请填写有效用户名/密码");
+
+                            return;
+                          }
+                          try {
+                            const r: any = await register({
+                              username: reg.username.trim(),
+                              password: reg.password,
+                            });
+
+                            if (r && r.code === 0 && r.data?.token) {
+                              localStorage.setItem("token", r.data.token);
+                              toast.success("注册并登录成功");
+                              navigate("/dashboard");
+                            } else {
+                              toast.error(r?.msg || "注册失败");
+                            }
+                          } catch (e: any) {
+                            toast.error(e?.message || "网络错误");
+                          }
+                        }}
+                      >
+                        注册
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
         {/* 验证码弹层 */}
         {showCaptcha && (
           <div className="fixed inset-0 z-50 flex items-center justify-center">
             {/* 背景遮罩层 - 模糊效果，暗黑模式下更深 */}
             <div className="absolute inset-0 bg-black/60 dark:bg-black/80 backdrop-blur-sm captcha-backdrop-enter" />
-           {/* 验证码容器 */}
-           <div className="mb-4">
-                <div 
-                  id="captcha-container" 
-                  ref={captchaContainerRef}
-                  className="w-full flex justify-center"
-                  style={{
-                    filter: document.documentElement.classList.contains('dark') || 
-                           document.documentElement.getAttribute('data-theme') === 'dark' ||
-                           window.matchMedia('(prefers-color-scheme: dark)').matches 
-                           ? 'brightness(0.8) contrast(0.9)' : 'none'
-                  }}
-                />
-              </div>
+            {/* 验证码容器 */}
+            <div className="mb-4">
+              <div
+                ref={captchaContainerRef}
+                className="w-full flex justify-center"
+                id="captcha-container"
+                style={{
+                  filter:
+                    document.documentElement.classList.contains("dark") ||
+                    document.documentElement.getAttribute("data-theme") ===
+                      "dark" ||
+                    window.matchMedia("(prefers-color-scheme: dark)").matches
+                      ? "brightness(0.8) contrast(0.9)"
+                      : "none",
+                }}
+              />
+            </div>
           </div>
         )}
       </section>

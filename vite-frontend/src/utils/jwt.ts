@@ -18,12 +18,14 @@ interface JWTPayload {
 function getPayloadFromToken(token: string): JWTPayload | null {
   try {
     if (!token) return null;
-    
-    const parts = token.split('.');
+
+    const parts = token.split(".");
+
     if (parts.length !== 3) return null;
-    
+
     const encodedPayload = parts[1];
     const decodedPayload = atob(encodedPayload);
+
     return JSON.parse(decodedPayload) as JWTPayload;
   } catch (error) {
     return null;
@@ -37,6 +39,7 @@ function getPayloadFromToken(token: string): JWTPayload | null {
  */
 export function getUserIdFromToken(token: string): number | null {
   const payload = getPayloadFromToken(token);
+
   return payload ? parseInt(payload.sub) : null;
 }
 
@@ -47,6 +50,7 @@ export function getUserIdFromToken(token: string): number | null {
  */
 export function getRoleIdFromToken(token: string): number | null {
   const payload = getPayloadFromToken(token);
+
   return payload ? payload.role_id : null;
 }
 
@@ -57,6 +61,7 @@ export function getRoleIdFromToken(token: string): number | null {
  */
 export function getUsernameFromToken(token: string): string | null {
   const payload = getPayloadFromToken(token);
+
   return payload ? payload.user : null;
 }
 
@@ -67,9 +72,11 @@ export function getUsernameFromToken(token: string): string | null {
  */
 export function isTokenValid(token: string): boolean {
   const payload = getPayloadFromToken(token);
+
   if (!payload) return false;
-  
+
   const now = Math.floor(Date.now() / 1000);
+
   return payload.exp > now;
 }
 
@@ -80,34 +87,38 @@ export const JwtUtil = {
    * @returns 用户ID
    */
   getUserIdFromToken(): number | null {
-    const token = localStorage.getItem('token');
+    const token = localStorage.getItem("token");
+
     return token ? getUserIdFromToken(token) : null;
   },
-  
+
   /**
    * 从localStorage获取token并解析角色ID
    * @returns 角色ID
    */
   getRoleIdFromToken(): number | null {
-    const token = localStorage.getItem('token');
+    const token = localStorage.getItem("token");
+
     return token ? getRoleIdFromToken(token) : null;
   },
-  
+
   /**
    * 从localStorage获取token并解析用户名
    * @returns 用户名
    */
   getUsernameFromToken(): string | null {
-    const token = localStorage.getItem('token');
+    const token = localStorage.getItem("token");
+
     return token ? getUsernameFromToken(token) : null;
   },
-  
+
   /**
    * 验证localStorage中的token是否有效
    * @returns 是否有效
    */
   isTokenValid(): boolean {
-    const token = localStorage.getItem('token');
+    const token = localStorage.getItem("token");
+
     return token ? isTokenValid(token) : false;
-  }
-}; 
+  },
+};

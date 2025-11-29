@@ -4,4 +4,4 @@
  */
 export const safeLogout = () => {
   localStorage.clear();
-}; 
+};

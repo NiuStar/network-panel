@@ -15,6 +15,14 @@ import (
 	"strconv"
 )
 
+// NodeCreate 创建节点
+// @Summary 创建节点
+// @Tags node
+// @Accept json
+// @Produce json
+// @Param data body SwaggerNodeCreateReq true "节点信息"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/node/create [post]
 // POST /api/v1/node/create
 func NodeCreate(c *gin.Context) {
 	var req dto.NodeDto
@@ -54,6 +62,14 @@ func NodeCreate(c *gin.Context) {
 	c.JSON(http.StatusOK, response.OkMsg("节点创建成功"))
 }
 
+// NodeList 节点列表
+// @Summary 节点列表
+// @Tags node
+// @Accept json
+// @Produce json
+// @Param offline_threshold_ms query int false "判定离线的阈值(毫秒)，默认30000"
+// @Success 200 {object} SwaggerResp
+// @Router /api/v1/node/list [post]
 // POST /api/v1/node/list
 func NodeList(c *gin.Context) {
 	var nodes []model.Node
@@ -145,6 +161,14 @@ func NodeList(c *gin.Context) {
 	c.JSON(http.StatusOK, response.Ok(outs))
 }
 
+// NodeUpdate 更新节点
+// @Summary 更新节点
+// @Tags node
+// @Accept json
+// @Produce json
+// @Param data body SwaggerNodeUpdateReq true "节点信息"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/node/update [post]
 // POST /api/v1/node/update
 func NodeUpdate(c *gin.Context) {
 	var req dto.NodeUpdateDto
@@ -213,6 +237,14 @@ func monthsToDays(m int) int {
 	}
 }
 
+// NodeDelete 删除节点
+// @Summary 删除节点
+// @Tags node
+// @Accept json
+// @Produce json
+// @Param data body SwaggerNodeDeleteReq true "节点ID与是否卸载代理"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/node/delete [post]
 // POST /api/v1/node/delete
 func NodeDelete(c *gin.Context) {
 	var p struct {
@@ -251,6 +283,14 @@ func NodeDelete(c *gin.Context) {
 	c.JSON(http.StatusOK, response.OkMsg("节点删除成功"))
 }
 
+// NodeInstallCmd 获取节点安装命令
+// @Summary 获取节点安装命令
+// @Tags node
+// @Accept json
+// @Produce json
+// @Param data body SwaggerNodeInstallReq true "节点ID"
+// @Success 200 {object} SwaggerNodeInstallResp
+// @Router /api/v1/node/install [post]
 // POST /api/v1/node/install
 func NodeInstallCmd(c *gin.Context) {
 	var p struct {
@@ -272,13 +312,27 @@ func NodeInstallCmd(c *gin.Context) {
 		return
 	}
 	server := wrapIPv6(cfg.Value)
-	// Pull install.sh from the deployed service instead of GitHub raw
-	// Assumes the service exposes GET /install.sh on the same address stored in vite_config.ip
-	// Example: ip = 1.2.3.4:6365 or [2001:db8::1]:6365
-	cmd := "curl -fsSL http://" + server + "/install.sh -o ./install.sh && chmod +x ./install.sh && ./install.sh -a " + server + " -s " + n.Secret
-	c.JSON(http.StatusOK, response.Ok(cmd))
+	staticURL := "https://panel-static.199028.xyz/network-panel/install.sh"
+	ghURL := "https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/main/install.sh"
+	localURL := "http://" + server + "/install.sh"
+	buildCmd := func(url string) string {
+		return "curl -fsSL " + url + " -o install.sh && chmod +x install.sh && sudo ./install.sh -a " + server + " -s " + n.Secret
+	}
+	c.JSON(http.StatusOK, response.Ok(map[string]any{
+		"static": buildCmd(staticURL),
+		"github": buildCmd(ghURL),
+		"local":  buildCmd(localURL),
+	}))
 }
 
+// NodeOps 查询节点操作日志
+// @Summary 查询节点操作日志
+// @Tags node
+// @Accept json
+// @Produce json
+// @Param data body SwaggerNodeOpsReq true "节点或请求ID，可指定limit"
+// @Success 200 {object} SwaggerResp
+// @Router /api/v1/node/ops [post]
 // POST /api/v1/node/ops {nodeId, limit}
 func NodeOps(c *gin.Context) {
 	var p struct {
@@ -345,6 +399,14 @@ func NodeOps(c *gin.Context) {
 	c.JSON(http.StatusOK, response.Ok(map[string]any{"ops": list}))
 }
 
+// NodeRestartGost 重启gost
+// @Summary 重启节点上的gost
+// @Tags node
+// @Accept json
+// @Produce json
+// @Param data body SwaggerNodeSimpleReq true "节点ID"
+// @Success 200 {object} SwaggerResp
+// @Router /api/v1/node/restart-gost [post]
 // POST /api/v1/node/restart-gost {nodeId}
 // Ask agent to restart gost service and wait for result if supported.
 func NodeRestartGost(c *gin.Context) {
@@ -388,6 +450,14 @@ func NodeRestartGost(c *gin.Context) {
 	c.JSON(http.StatusOK, response.Ok(map[string]any{"success": false, "message": "agent未回执，已下发重启命令"}))
 }
 
+// NodeEnableGostAPI 启用gost API
+// @Summary 启用节点的gost API
+// @Tags node
+// @Accept json
+// @Produce json
+// @Param data body SwaggerNodeSimpleReq true "节点ID"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/node/enable-gost-api [post]
 // POST /api/v1/node/enable-gost-api {nodeId}
 // Ask agent to enable top-level GOST Web API (write api{} then restart gost)
 func NodeEnableGostAPI(c *gin.Context) {
@@ -416,6 +486,14 @@ type nqStreamReq struct {
 	TimeMs    *int64 `json:"timeMs"`
 }
 
+// NodeNQStreamPush NodeQuality 流式回传
+// @Summary NodeQuality 流式回传
+// @Tags node
+// @Accept json
+// @Produce json
+// @Param data body SwaggerNodeNQStreamReq true "回传内容"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/nq/stream [post]
 // POST /api/v1/nq/stream {secret, requestId, chunk, done?}
 func NodeNQStreamPush(c *gin.Context) {
 	var p nqStreamReq
@@ -484,6 +562,14 @@ func NodeNQStreamPush(c *gin.Context) {
 	c.JSON(http.StatusOK, response.OkNoData())
 }
 
+// NodeGostConfig 获取gost配置
+// @Summary 获取节点上的gost配置
+// @Tags node
+// @Accept json
+// @Produce json
+// @Param data body SwaggerNodeSimpleReq true "节点ID"
+// @Success 200 {object} SwaggerResp
+// @Router /api/v1/node/gost-config [post]
 // POST /api/v1/node/gost-config {nodeId}
 // Ask agent to read gost.json content and return
 func NodeGostConfig(c *gin.Context) {
@@ -522,6 +608,14 @@ func NodeGostConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, response.ErrMsg("未响应，请稍后重试"))
 }
 
+// NodeNQTest 触发节点质量测试
+// @Summary 触发节点质量测试
+// @Tags node
+// @Accept json
+// @Produce json
+// @Param data body SwaggerNodeSimpleReq true "节点ID"
+// @Success 200 {object} SwaggerResp
+// @Router /api/v1/node/nq-test [post]
 // POST /api/v1/node/nq-test {nodeId}
 // Trigger NodeQuality test on agent via script
 func NodeNQTest(c *gin.Context) {
@@ -557,6 +651,14 @@ func NodeNQTest(c *gin.Context) {
 	c.JSON(http.StatusOK, response.Ok(map[string]any{"requestId": reqID}))
 }
 
+// NodeNQResult 查询节点质量测试结果
+// @Summary 查询节点质量测试结果
+// @Tags node
+// @Accept json
+// @Produce json
+// @Param data body SwaggerNodeSimpleReq true "节点ID"
+// @Success 200 {object} SwaggerResp
+// @Router /api/v1/node/nq-result [post]
 // POST /api/v1/node/nq-result {nodeId}
 func NodeNQResult(c *gin.Context) {
 	var p struct {

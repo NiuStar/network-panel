@@ -7,6 +7,14 @@ import (
 	"time"
 )
 
+// NodeQueryServices 查询节点服务
+// @Summary 查询节点服务
+// @Tags node
+// @Accept json
+// @Produce json
+// @Param data body SwaggerNodeQueryServicesReq true "节点ID与过滤关键字"
+// @Success 200 {object} SwaggerResp
+// @Router /api/v1/node/query-services [post]
 // POST /api/v1/node/query-services {nodeId, filter?, requestId?}
 func NodeQueryServices(c *gin.Context) {
 	var p struct {

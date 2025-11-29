@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"network-panel/golang-backend/docs"
 	"network-panel/golang-backend/internal/app/controller"
 	"network-panel/golang-backend/internal/app/middleware"
 
@@ -274,4 +275,14 @@ func RegisterRoutes(r *gin.Engine) {
 		easy.POST("/redeploy-master", controller.EasyTierRedeployMaster)
 		easy.GET("/ghproxy/*path", controller.EasyTierProxy)
 	}
+
+	// swagger (serve doc.json + simple CDN-based UI)
+	r.GET("/swagger/doc.json", func(c *gin.Context) {
+		doc := docs.SwaggerInfo.ReadDoc()
+		c.Data(http.StatusOK, "application/json", []byte(doc))
+	})
+	r.GET("/swagger", func(c *gin.Context) {
+		const html = `<!doctype html><html><head><title>Swagger UI</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css"></head><body><div id="swagger-ui"></div><script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script><script>window.onload=function(){SwaggerUIBundle({url:"/swagger/doc.json",dom_id:"#swagger-ui"});};</script></body></html>`
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
+	})
 }

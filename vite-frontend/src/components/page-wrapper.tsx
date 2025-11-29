@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import AdminLayout from '@/layouts/admin';
+import React, { useState, useEffect } from "react";
+
+import AdminLayout from "@/layouts/admin";
 
 interface PageWrapperProps {
   children: React.ReactNode;
@@ -8,11 +9,11 @@ interface PageWrapperProps {
   className?: string;
 }
 
-export default function PageWrapper({ 
-  children, 
-  title, 
-  description, 
-  className = "container mx-auto max-w-7xl px-3 lg:px-6 py-8" 
+export default function PageWrapper({
+  children,
+  title,
+  description,
+  className = "container mx-auto max-w-7xl px-3 lg:px-6 py-8",
 }: PageWrapperProps) {
   const [isReady, setIsReady] = useState(false);
 
@@ -31,8 +32,8 @@ export default function PageWrapper({
         <div className="container mx-auto max-w-7xl px-3 lg:px-6 py-8">
           <div className="flex items-center justify-center h-64">
             <div className="flex items-center gap-3">
-              <div className="animate-spin h-5 w-5 border-2 border-gray-200 dark:border-gray-700 border-t-gray-600 dark:border-t-gray-300 rounded-full"></div>
-              <span className="text-default-600"></span>
+              <div className="animate-spin h-5 w-5 border-2 border-gray-200 dark:border-gray-700 border-t-gray-600 dark:border-t-gray-300 rounded-full" />
+              <span className="text-default-600" />
             </div>
           </div>
         </div>
@@ -45,12 +46,10 @@ export default function PageWrapper({
       <div className={className}>
         <div className="mb-6">
           <h1 className="text-2xl font-bold mb-2 text-foreground">{title}</h1>
-          {description && (
-            <p className="text-default-600">{description}</p>
-          )}
+          {description && <p className="text-default-600">{description}</p>}
         </div>
         {children}
       </div>
     </AdminLayout>
   );
-} 
+}

@@ -11,7 +11,12 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// POST /api/v1/config/list
+// ConfigList 配置列表
+// @Summary 获取所有配置
+// @Tags config
+// @Produce json
+// @Success 200 {object} SwaggerConfigListResp
+// @Router /api/v1/config/list [post]
 func ConfigList(c *gin.Context) {
 	var items []model.ViteConfig
 	dbpkg.DB.Find(&items)
@@ -22,7 +27,14 @@ func ConfigList(c *gin.Context) {
 	c.JSON(http.StatusOK, response.Ok(m))
 }
 
-// POST /api/v1/config/get {"name":"..."}
+// ConfigGet 获取单个配置
+// @Summary 根据 name 获取配置
+// @Tags config
+// @Accept json
+// @Produce json
+// @Param data body SwaggerConfigGetReq true "配置名"
+// @Success 200 {object} SwaggerConfigGetResp
+// @Router /api/v1/config/get [post]
 func ConfigGet(c *gin.Context) {
 	var p struct {
 		Name string `json:"name"`
@@ -39,7 +51,14 @@ func ConfigGet(c *gin.Context) {
 	c.JSON(http.StatusOK, response.Ok(it.Value))
 }
 
-// POST /api/v1/config/update {"k":"v"...}
+// ConfigUpdate 批量更新配置
+// @Summary 批量更新配置
+// @Tags config
+// @Accept json
+// @Produce json
+// @Param data body SwaggerConfigUpdateMap true "键值对"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/config/update [post]
 func ConfigUpdate(c *gin.Context) {
 	var m map[string]string
 	if err := c.ShouldBindJSON(&m); err != nil {
@@ -58,7 +77,14 @@ func ConfigUpdate(c *gin.Context) {
 	c.JSON(http.StatusOK, response.OkNoData())
 }
 
-// POST /api/v1/config/update-single {name, value}
+// ConfigUpdateSingle 单项配置更新
+// @Summary 单项配置更新
+// @Tags config
+// @Accept json
+// @Produce json
+// @Param data body SwaggerConfigUpdateSingle true "name/value"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/config/update-single [post]
 func ConfigUpdateSingle(c *gin.Context) {
 	var p struct{ Name, Value string }
 	if err := c.ShouldBindJSON(&p); err != nil || p.Name == "" {

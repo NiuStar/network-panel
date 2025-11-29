@@ -17,7 +17,14 @@ import (
     "log"
 )
 
-// POST /api/v1/tunnel/create
+// TunnelCreate 创建隧道
+// @Summary 创建隧道
+// @Tags tunnel
+// @Accept json
+// @Produce json
+// @Param data body dto.TunnelDto true "隧道信息"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/tunnel/create [post]
 func TunnelCreate(c *gin.Context) {
 	var req dto.TunnelDto
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -71,7 +78,12 @@ func TunnelCreate(c *gin.Context) {
 	c.JSON(http.StatusOK, response.OkMsg("隧道创建成功"))
 }
 
-// POST /api/v1/tunnel/list
+// TunnelList 隧道列表
+// @Summary 隧道列表
+// @Tags tunnel
+// @Produce json
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/tunnel/list [post]
 func TunnelList(c *gin.Context) {
     var list []model.Tunnel
     if roleInf, ok := c.Get("role_id"); ok && roleInf != 0 {
@@ -82,7 +94,14 @@ func TunnelList(c *gin.Context) {
     c.JSON(http.StatusOK, response.Ok(list))
 }
 
-// POST /api/v1/tunnel/update
+// TunnelUpdate 更新隧道
+// @Summary 更新隧道
+// @Tags tunnel
+// @Accept json
+// @Produce json
+// @Param data body dto.TunnelUpdateDto true "隧道更新信息"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/tunnel/update [post]
 func TunnelUpdate(c *gin.Context) {
 	var req dto.TunnelUpdateDto
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -117,7 +136,14 @@ func TunnelUpdate(c *gin.Context) {
 	c.JSON(http.StatusOK, response.OkMsg("隧道更新成功"))
 }
 
-// POST /api/v1/tunnel/delete
+// TunnelDelete 删除隧道
+// @Summary 删除隧道
+// @Tags tunnel
+// @Accept json
+// @Produce json
+// @Param data body SwaggerIDReq true "隧道ID"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/tunnel/delete [post]
 func TunnelDelete(c *gin.Context) {
 	var p struct {
 		ID int64 `json:"id"`
@@ -154,7 +180,12 @@ func TunnelDelete(c *gin.Context) {
 	c.JSON(http.StatusOK, response.OkMsg("隧道删除成功"))
 }
 
-// POST /api/v1/tunnel/user/tunnel
+// TunnelUserTunnel 获取用户可见隧道
+// @Summary 用户可用隧道列表
+// @Tags tunnel
+// @Produce json
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/tunnel/user/tunnel [post]
 func TunnelUserTunnel(c *gin.Context) {
 	roleID, _ := c.Get("role_id")
 	userID, _ := c.Get("user_id")
@@ -170,7 +201,14 @@ func TunnelUserTunnel(c *gin.Context) {
 
 // ========== user-tunnel management ==========
 
-// POST /api/v1/tunnel/user/assign
+// TunnelUserAssign 分配隧道权限给用户
+// @Summary 分配隧道权限
+// @Tags tunnel
+// @Accept json
+// @Produce json
+// @Param data body dto.UserTunnelDto true "用户隧道权限"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/tunnel/user/assign [post]
 func TunnelUserAssign(c *gin.Context) {
 	var req dto.UserTunnelDto
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -191,7 +229,14 @@ func TunnelUserAssign(c *gin.Context) {
 	c.JSON(http.StatusOK, response.OkMsg("用户隧道权限分配成功"))
 }
 
-// POST /api/v1/tunnel/user/list
+// TunnelUserList 用户隧道权限列表
+// @Summary 用户隧道权限列表
+// @Tags tunnel
+// @Accept json
+// @Produce json
+// @Param data body dto.UserTunnelQueryDto true "用户ID"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/tunnel/user/list [post]
 func TunnelUserList(c *gin.Context) {
 	var req dto.UserTunnelQueryDto
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -214,7 +259,14 @@ func TunnelUserList(c *gin.Context) {
 	c.JSON(http.StatusOK, response.Ok(items))
 }
 
-// POST /api/v1/tunnel/user/remove {id}
+// TunnelUserRemove 移除用户隧道权限
+// @Summary 移除用户隧道权限
+// @Tags tunnel
+// @Accept json
+// @Produce json
+// @Param data body SwaggerIDReq true "用户隧道记录ID"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/tunnel/user/remove [post]
 func TunnelUserRemove(c *gin.Context) {
 	var p struct {
 		ID int64 `json:"id"`
@@ -234,7 +286,14 @@ func TunnelUserRemove(c *gin.Context) {
 	c.JSON(http.StatusOK, response.OkMsg("用户隧道权限删除成功"))
 }
 
-// POST /api/v1/tunnel/user/update
+// TunnelUserUpdate 更新用户隧道权限
+// @Summary 更新用户隧道权限
+// @Tags tunnel
+// @Accept json
+// @Produce json
+// @Param data body dto.UserTunnelUpdateDto true "更新内容"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/tunnel/user/update [post]
 func TunnelUserUpdate(c *gin.Context) {
 	var req dto.UserTunnelUpdateDto
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -264,8 +323,14 @@ func TunnelUserUpdate(c *gin.Context) {
 	c.JSON(http.StatusOK, response.OkMsg("用户隧道权限更新成功"))
 }
 
-// POST /api/v1/tunnel/diagnose
-// Returns a structured diagnosis result the frontend can render.
+// TunnelDiagnose 诊断隧道
+// @Summary 诊断隧道
+// @Tags tunnel
+// @Accept json
+// @Produce json
+// @Param data body SwaggerTunnelDiagnoseReq true "tunnelId, step 可选 path|overlay|remote"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/tunnel/diagnose [post]
 func TunnelDiagnose(c *gin.Context) {
 	var p struct {
 		TunnelID int64 `json:"tunnelId" binding:"required"`
@@ -396,7 +461,14 @@ func TunnelDiagnose(c *gin.Context) {
 	c.JSON(http.StatusOK, response.Ok(out))
 }
 
-// POST /api/v1/tunnel/diagnose-step {tunnelId, step: entry|entryExit|exitPublic}
+// TunnelDiagnoseStep 隧道分步诊断
+// @Summary 隧道分步诊断
+// @Tags tunnel
+// @Accept json
+// @Produce json
+// @Param data body SwaggerTunnelDiagnoseReq true "tunnelId, step: entry|entryExit|exitPublic"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/tunnel/diagnose-step [post]
 func TunnelDiagnoseStep(c *gin.Context) {
 	var p struct {
 		TunnelID int64  `json:"tunnelId" binding:"required"`

@@ -10,7 +10,12 @@ import (
 	appver "network-panel/golang-backend/internal/app/version"
 )
 
-// GET /api/v1/version
+// Version 获取后端版本信息
+// @Summary 版本信息
+// @Tags version
+// @Produce json
+// @Success 200 {object} SwaggerVersionResp
+// @Router /api/v1/version [get]
 func Version(c *gin.Context) {
 	// Backend version
 	serverVer := appver.Get() // e.g. "1.0.1"

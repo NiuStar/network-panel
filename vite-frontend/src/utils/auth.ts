@@ -1,4 +1,4 @@
-import { getRoleIdFromToken, isTokenValid } from './jwt';
+import { getRoleIdFromToken, isTokenValid } from "./jwt";
 
 /**
  * 权限工具类
@@ -9,7 +9,7 @@ import { getRoleIdFromToken, isTokenValid } from './jwt';
  * @returns token
  */
 export function getToken(): string | null {
-  return localStorage.getItem('token');
+  return localStorage.getItem("token");
 }
 
 /**
@@ -18,9 +18,11 @@ export function getToken(): string | null {
  */
 export function getCurrentUserRoleId(): number | null {
   const token = getToken();
+
   if (!token || !isTokenValid(token)) {
     return null;
   }
+
   return getRoleIdFromToken(token);
 }
 
@@ -30,6 +32,7 @@ export function getCurrentUserRoleId(): number | null {
  */
 export function isAdmin(): boolean {
   const roleId = getCurrentUserRoleId();
+
   return roleId === 0;
 }
 
@@ -40,6 +43,7 @@ export function isAdmin(): boolean {
  */
 export function hasRole(targetRoleId: number): boolean {
   const roleId = getCurrentUserRoleId();
+
   return roleId === targetRoleId;
 }
 
@@ -49,6 +53,7 @@ export function hasRole(targetRoleId: number): boolean {
  */
 export function isLoggedIn(): boolean {
   const token = getToken();
+
   return token ? isTokenValid(token) : false;
 }
 
@@ -59,14 +64,16 @@ export function isLoggedIn(): boolean {
  * @returns 包装后的函数
  */
 export function requireAdmin<T extends (...args: any[]) => any>(
-  fn: T, 
-  errorMsg: string = '权限不足，仅管理员可操作'
+  fn: T,
+  errorMsg: string = "权限不足，仅管理员可操作",
 ): T {
   return ((...args: Parameters<T>) => {
     if (!isAdmin()) {
       console.warn(errorMsg);
+
       return false;
     }
+
     return fn(...args);
   }) as T;
-} 
+}

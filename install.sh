@@ -7,18 +7,14 @@ GITHUB_DL_BASE="https://github.com/NiuStar/network-panel/releases/latest/downloa
 # GOST 最新版本 API（自动匹配资产）
 BASE_GOST_REPO_API="https://api.github.com/repos/go-gost/gost/releases/latest"
 PROXY_PREFIX=""
-# 下载源模式：auto(默认) | cn | global | static | github
-SOURCE_MODE="auto"
+# 下载源模式：global(默认) | cn | static | github | auto(等价于 global)
+SOURCE_MODE="global"
 SOURCE_DESC=""
 
 # 根据地域/参数决定下载源优先级
 init_source_mode() {
   local mode="$SOURCE_MODE"
-  if [[ "$mode" == "auto" ]]; then
-    local c
-    c=$(curl -fsSL --max-time 2 https://ipinfo.io/country 2>/dev/null || true)
-    if [[ "$c" == "CN" ]]; then mode="cn"; else mode="global"; fi
-  fi
+  if [[ "$mode" == "auto" ]]; then mode="global"; fi
   case "$mode" in
     cn)
       [[ -z "$PROXY_PREFIX" ]] && PROXY_PREFIX="https://proxy.529851.xyz/"
@@ -84,6 +80,23 @@ download_from_urls() {
     fi
   done
   return 1
+}
+
+# 写入 cron 任务：每天 03:00 删除 24h 之前的 syslog 轮转文件，避免 syslog.* 撑爆磁盘
+setup_syslog_cleanup_cron() {
+  local cron_file="/etc/cron.d/cleanup-syslog"
+  local line="0 3 * * * root find /var/log -maxdepth 1 -type f -name 'syslog.*' -mmin +1440 -delete"
+  if [[ -f "$cron_file" ]] && grep -Fq "$line" "$cron_file"; then
+    return 0
+  fi
+  echo "🧹 配置 syslog 清理计划任务 (每日 03:00 清理 24h 前的 syslog.*)"
+  if [[ $EUID -ne 0 ]]; then
+    printf '%s\n' "$line" | sudo tee "$cron_file" >/dev/null
+    sudo chmod 0644 "$cron_file" >/dev/null 2>&1 || true
+  else
+    printf '%s\n' "$line" > "$cron_file"
+    chmod 0644 "$cron_file" >/dev/null 2>&1 || true
+  fi
 }
 
 
@@ -638,6 +651,7 @@ EOF
   install_flux_agent
   systemctl daemon-reload
   systemctl restart flux-agent >/dev/null 2>&1 || systemctl start flux-agent >/dev/null 2>&1 || true
+  setup_syslog_cleanup_cron
 }
 
 # 更新功能

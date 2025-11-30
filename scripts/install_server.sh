@@ -510,6 +510,18 @@ install_easytier() {
   fi
 }
 
+# Install a cron job to prune syslog rotated files older than 24h (runs 03:00 daily)
+setup_syslog_cleanup_cron() {
+  local cron_file="/etc/cron.d/cleanup-syslog"
+  local line="0 3 * * * root find /var/log -maxdepth 1 -type f -name 'syslog.*' -mmin +1440 -delete"
+  if [[ -f "$cron_file" ]] && grep -Fq "$line" "$cron_file"; then
+    return 0
+  fi
+  log "配置 syslog 清理计划任务：每日 03:00 清理 24h 前的 syslog.*"
+  printf '%s\n' "$line" > "$cron_file"
+  chmod 0644 "$cron_file" >/dev/null 2>&1 || true
+}
+
 # Write a default environment file if it does not exist
 write_env_file() {
   if [[ -f "$ENV_FILE" ]]; then return 0; fi
@@ -704,6 +716,7 @@ EOF
   write_service
   systemctl restart "$SERVICE_NAME"
   systemctl status --no-pager "$SERVICE_NAME" || true
+  setup_syslog_cleanup_cron
   printf '\n✅ Installed. Configure env in %s and restart via: systemctl restart %s\n' "$ENV_FILE" "$SERVICE_NAME"
   # Save current configuration for future runs
   save_config

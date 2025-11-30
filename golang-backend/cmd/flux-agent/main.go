@@ -44,7 +44,7 @@ var (
 
 // versionBase is the agent semantic version (without role prefix).
 // final reported version is: go-agent-<versionBase> or go-agent2-<versionBase>
-var versionBase = "1.0.10.2"
+var versionBase = "1.0.10.3"
 var version = ""      // computed in main()
 var apiBootDone int32 // 0=not attempted, 1=attempted
 var apiUse int32      // 1=Web API usable

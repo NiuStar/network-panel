@@ -4,10 +4,87 @@ AGENT_BIN="/usr/local/bin/flux-agent"
 # Static mirror for all downloadable artifacts (scripts/binaries/configs)
 STATIC_BASE="https://panel-static.199028.xyz/network-panel"
 GITHUB_DL_BASE="https://github.com/NiuStar/network-panel/releases/latest/download"
-COUNTRY=$(curl -s https://ipinfo.io/country)
 # GOST 最新版本 API（自动匹配资产）
 BASE_GOST_REPO_API="https://api.github.com/repos/go-gost/gost/releases/latest"
 PROXY_PREFIX=""
+# 下载源模式：auto(默认) | cn | global | static | github
+SOURCE_MODE="auto"
+SOURCE_DESC=""
+
+# 根据地域/参数决定下载源优先级
+init_source_mode() {
+  local mode="$SOURCE_MODE"
+  if [[ "$mode" == "auto" ]]; then
+    local c
+    c=$(curl -fsSL --max-time 2 https://ipinfo.io/country 2>/dev/null || true)
+    if [[ "$c" == "CN" ]]; then mode="cn"; else mode="global"; fi
+  fi
+  case "$mode" in
+    cn)
+      [[ -z "$PROXY_PREFIX" ]] && PROXY_PREFIX="https://proxy.529851.xyz/"
+      SOURCE_DESC="静态镜像 > GitHub(代理) > GitHub(直连) > 面板"
+      ;;
+    static)
+      SOURCE_DESC="静态镜像 > GitHub(直/代理) > 面板"
+      ;;
+    github)
+      SOURCE_DESC="GitHub > 静态镜像 > 面板"
+      ;;
+    global)
+      SOURCE_DESC="GitHub > 静态镜像 > 面板"
+      ;;
+    *)
+      mode="global"
+      SOURCE_DESC="GitHub > 静态镜像 > 面板"
+      ;;
+  esac
+  SOURCE_MODE="$mode"
+  echo "📡 下载源模式: $SOURCE_MODE${SOURCE_DESC:+ ($SOURCE_DESC)}"
+}
+
+# 按源优先级组装候选下载地址，自动去重去空
+build_candidate_urls() {
+  local kind="$1" file="$2"
+  local urls=() static gh ghp panel
+  case "$kind" in
+    flux-agent)
+      static="${STATIC_BASE}/flux-agent/${file}"
+      gh="${GITHUB_DL_BASE}/${file}"
+      [[ -n "$PROXY_PREFIX" ]] && ghp="${PROXY_PREFIX}${GITHUB_DL_BASE}/${file}"
+      [[ -n "${SERVER_ADDR:-}" ]] && panel="http://${SERVER_ADDR}/flux-agent/${file}"
+      ;;
+    script)
+      static="${STATIC_BASE}/${file}"
+      gh="${GITHUB_DL_BASE}/${file}"
+      [[ -n "$PROXY_PREFIX" ]] && ghp="${PROXY_PREFIX}${GITHUB_DL_BASE}/${file}"
+      ;;
+  esac
+  case "$SOURCE_MODE" in
+    cn) urls+=("$static" "$ghp" "$gh" "$panel") ;;
+    static) urls+=("$static" "$gh" "$ghp" "$panel") ;;
+    github) urls+=("$gh" "$ghp" "$static" "$panel") ;;
+    global|*) 
+      urls+=("$gh")
+      [[ -n "$ghp" ]] && urls+=("$ghp")
+      urls+=("$static" "$panel")
+      ;;
+  esac
+  printf '%s\n' "${urls[@]}" | awk '!seen[$0]++ && NF {print}'
+}
+
+# 依次尝试下载至目标
+download_from_urls() {
+  local target="$1"; shift
+  local url
+  for url in "$@"; do
+    [[ -z "$url" ]] && continue
+    echo "尝试: $url"
+    if curl -fSL --retry 3 --retry-delay 1 "$url" -o "$target"; then
+      return 0
+    fi
+  done
+  return 1
+}
 
 
 
@@ -252,21 +329,12 @@ install_flux_agent_go_bin() {
     *) file="flux-agent-${os}-amd64" ;;
   esac
   local target="$INSTALL_DIR/flux-agent"
-  # 1) 首选静态镜像
-  if curl -fsSL "${STATIC_BASE}/flux-agent/${file}" -o "$target"; then
+  local urls=()
+  while read -r u; do urls+=("$u"); done < <(build_candidate_urls "flux-agent" "$file")
+  if download_from_urls "$target" "${urls[@]}"; then
     chmod +x "$target"; return 0
   fi
-  # 2) GitHub release 兜底
-  local gh_base="$GITHUB_DL_BASE"
-  [[ -n "$PROXY_PREFIX" ]] && gh_base="${PROXY_PREFIX}${gh_base}"
-  if curl -fsSL "${gh_base}/${file}" -o "$target"; then
-    chmod +x "$target"; return 0
-  fi
-  # 2) 回落到面板后端 /flux-agent
-  if curl -fsSL "http://$SERVER_ADDR/flux-agent/$file" -o "$target"; then
-    chmod +x "$target"; return 0
-  fi
-  echo "http://$SERVER_ADDR/flux-agent/$file"
+  echo "❌ 无法下载 flux-agent 二进制"
   return 1
 }
 
@@ -290,24 +358,13 @@ install_flux_agent() {
   local tmpfile
   local AGENT_FILE="$INSTALL_DIR/flux-agent"
   tmpfile=$(mktemp -p /tmp flux-agent.XXXX || echo "/tmp/flux-agent.tmp")
-  echo "尝试静态镜像: ${STATIC_BASE}/flux-agent/${file}"
-  if curl -fSL --retry 3 --retry-delay 1 "${STATIC_BASE}/flux-agent/${file}" -o "$tmpfile"; then
+  local urls=()
+  while read -r u; do urls+=("$u"); done < <(build_candidate_urls "flux-agent" "$file")
+  if download_from_urls "$tmpfile" "${urls[@]}"; then
     install -m 0755 "$tmpfile" "$AGENT_FILE" && rm -f "$tmpfile"
   else
-    local gh_base="$GITHUB_DL_BASE"
-    [[ -n "$PROXY_PREFIX" ]] && gh_base="${PROXY_PREFIX}${gh_base}"
-    echo "尝试 GitHub 发布页: ${gh_base}/${file}"
-    if curl -fSL --retry 3 --retry-delay 1 "${gh_base}/${file}" -o "$tmpfile"; then
-      install -m 0755 "$tmpfile" "$AGENT_FILE" && rm -f "$tmpfile"
-    else
-      echo "回落面板: http://$SERVER_ADDR/flux-agent/$file"
-      if curl -fSL --retry 3 --retry-delay 1 "http://$SERVER_ADDR/flux-agent/$file" -o "$tmpfile"; then
-        install -m 0755 "$tmpfile" "$AGENT_FILE" && rm -f "$tmpfile"
-      else
-        echo "❌ 无法下载 flux-agent 二进制"
-        return 1
-      fi
-    fi
+    echo "❌ 无法下载 flux-agent 二进制"
+    return 1
   fi
 
   # 写入环境配置，便于后续修改
@@ -352,12 +409,12 @@ EOF
 }
 # 解析命令行参数
 PROXY_MODE=""
-PROXY_PREFIX=""
-while getopts "a:s:p:" opt; do
+while getopts "a:s:p:m:" opt; do
   case $opt in
     a) SERVER_ADDR="$OPTARG" ;;
     s) SECRET="$OPTARG" ;;
     p) PROXY_MODE="$OPTARG" ;;
+    m) SOURCE_MODE="$OPTARG" ;;
     *) echo "❌ 无效参数"; exit 1 ;;
   esac
 done
@@ -368,6 +425,7 @@ if [[ "$PROXY_MODE" == "4" ]]; then
 elif [[ "$PROXY_MODE" == "6" ]]; then
   PROXY_PREFIX="http://[240b:4000:93:de01:ffff:c725:3c65:47ff]:5000/"
 fi
+init_source_mode
 
 # 解析 go-gost/gost 最新版本下载链接（匹配 Linux + 当前架构）
 resolve_latest_gost_url() {
@@ -385,33 +443,67 @@ resolve_latest_gost_url() {
     s390x) token="s390x" ;;
     *) token="amd64" ;;
   esac
-  # 1) Try static mirror first
+  local prefer_static=1
+  if [[ "$SOURCE_MODE" == "github" || "$SOURCE_MODE" == "global" ]]; then
+    prefer_static=0
+  fi
+  # 1) 静态镜像（按模式决定是否优先）
   local static_base="${STATIC_BASE}/gost"
   local name url
-  for name in \
-    "gost-linux-${token}.tar.gz" \
-    "gost-linux-${token}.tgz" \
-    "gost-linux-${token}.gz" \
-    "gost-linux-${token}.zip"
-  do
-    url="${static_base}/${name}"
-    if curl -fsI "$url" >/dev/null 2>&1; then
-      echo "$url"; return 0
-    fi
+  if (( prefer_static )); then
+    for name in \
+      "gost-linux-${token}.tar.gz" \
+      "gost-linux-${token}.tgz" \
+      "gost-linux-${token}.gz" \
+      "gost-linux-${token}.zip"
+    do
+      url="${static_base}/${name}"
+      if curl -fsI "$url" >/dev/null 2>&1; then
+        echo "$url"; return 0
+      fi
+    done
+  fi
+  # 2) GitHub API（优先顺序按模式选择直连/代理）
+  local api_list=()
+  if [[ "$SOURCE_MODE" == "cn" || "$SOURCE_MODE" == "static" ]]; then
+    [[ -n "$PROXY_PREFIX" ]] && api_list+=("${PROXY_PREFIX}${BASE_GOST_REPO_API}")
+    api_list+=("$BASE_GOST_REPO_API")
+  else
+    api_list+=("$BASE_GOST_REPO_API")
+    [[ -n "$PROXY_PREFIX" ]] && api_list+=("${PROXY_PREFIX}${BASE_GOST_REPO_API}")
+  fi
+  local prefer_proxy_dl=0
+  if [[ "$SOURCE_MODE" == "cn" || "$SOURCE_MODE" == "static" ]]; then prefer_proxy_dl=1; fi
+
+  local api urls cand
+  for api in "${api_list[@]}"; do
+    urls=$(curl -fsSL "$api" | jq -r '.assets[].browser_download_url' 2>/dev/null || true)
+    if [[ -z "$urls" ]]; then continue; fi
+    for cand in $urls; do
+      if [[ "$cand" == *linux* && "$cand" == *$token* && ( "$cand" == *.tar.gz || "$cand" == *.tgz || "$cand" == *.gz || "$cand" == *.zip ) ]]; then
+        if (( prefer_proxy_dl )) && [[ -n "$PROXY_PREFIX" ]] && [[ "$cand" == https://github.com/* ]]; then
+          echo "${PROXY_PREFIX}${cand}"
+        else
+          echo "$cand"
+        fi
+        return 0
+      fi
+    done
   done
-  # 2) Fallback to GitHub API assets
-  local api="$BASE_GOST_REPO_API"
-  if [[ -n "$PROXY_PREFIX" ]]; then api="${PROXY_PREFIX}${api}"; fi
-  local urls
-  urls=$(curl -fsSL "$api" | jq -r '.assets[].browser_download_url' 2>/dev/null || true)
-  if [[ -z "$urls" ]]; then return 1; fi
-  local cand
-  for cand in $urls; do
-    if [[ "$cand" == *linux* && "$cand" == *$token* && ( "$cand" == *.tar.gz || "$cand" == *.tgz || "$cand" == *.gz || "$cand" == *.zip ) ]]; then
-      if [[ -n "$PROXY_PREFIX" ]]; then echo "${PROXY_PREFIX}${cand}"; else echo "$cand"; fi
-      return 0
-    fi
-  done
+  # 3) 如果 GitHub 失败且未尝试静态源，再尝试静态源
+  if (( ! prefer_static )); then
+    for name in \
+      "gost-linux-${token}.tar.gz" \
+      "gost-linux-${token}.tgz" \
+      "gost-linux-${token}.gz" \
+      "gost-linux-${token}.zip"
+    do
+      url="${static_base}/${name}"
+      if curl -fsI "$url" >/dev/null 2>&1; then
+        echo "$url"; return 0
+      fi
+    done
+  fi
   return 1
 }
 

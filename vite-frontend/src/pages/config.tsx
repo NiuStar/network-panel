@@ -3,7 +3,6 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Input } from "@heroui/input";
-import { Spinner } from "@heroui/spinner";
 import { Divider } from "@heroui/divider";
 import { Switch } from "@heroui/switch";
 import { Select, SelectItem } from "@heroui/select";
@@ -412,8 +411,10 @@ export default function ConfigPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <Spinner label="加载配置中..." size="lg" />
+      <div className="p-6 max-w-4xl mx-auto space-y-4">
+        <div className="skeleton-line w-40" />
+        <div className="skeleton-line w-64" />
+        <div className="skeleton-block min-h-[360px]" />
       </div>
     );
   }

@@ -155,6 +155,21 @@ type NQResult struct {
 
 func (NQResult) TableName() string { return "nq_result" }
 
+// EasyTierResult stores streaming EasyTier install output per request/node
+type EasyTierResult struct {
+	ID          int64  `gorm:"primaryKey;column:id" json:"id"`
+	NodeID      int64  `gorm:"column:node_id;index:et_node_idx" json:"nodeId"`
+	RequestID   string `gorm:"column:request_id;type:varchar(128);index:et_node_idx" json:"requestId"`
+	Op          string `gorm:"column:op;type:varchar(32)" json:"op"`
+	Content     string `gorm:"column:content;type:longtext" json:"content"`
+	Done        bool   `gorm:"column:done" json:"done"`
+	TimeMs      int64  `gorm:"column:time_ms" json:"timeMs"`
+	CreatedTime int64  `gorm:"column:created_time" json:"createdTime"`
+	UpdatedTime int64  `gorm:"column:updated_time" json:"updatedTime"`
+}
+
+func (EasyTierResult) TableName() string { return "easytier_result" }
+
 // Ensure models compile with gorm
 var _ *gorm.DB
 
@@ -188,6 +203,16 @@ type ExitSetting struct {
 }
 
 func (ExitSetting) TableName() string { return "exit_setting" }
+
+// AnyTLSSetting persists AnyTLS exit settings per node
+type AnyTLSSetting struct {
+	BaseEntity
+	NodeID   int64  `gorm:"column:node_id;uniqueIndex" json:"nodeId"`
+	Port     int    `gorm:"column:port" json:"port"`
+	Password string `gorm:"column:password" json:"password"`
+}
+
+func (AnyTLSSetting) TableName() string { return "anytls_setting" }
 
 // ProbeTarget: global list of IPs to ping
 type ProbeTarget struct {
@@ -242,6 +267,13 @@ func (NodeSysInfo) TableName() string { return "node_sysinfo" }
 type NodeRuntime struct {
 	NodeID      int64   `gorm:"primaryKey;column:node_id" json:"nodeId"`
 	Interfaces  *string `gorm:"column:interfaces" json:"interfaces,omitempty"` // JSON array string
+	UsedPorts   *string `gorm:"column:used_ports" json:"usedPorts,omitempty"`  // JSON array string
+	EasyTierStatus      *string `gorm:"column:easytier_status" json:"easytierStatus,omitempty"`
+	EasyTierOp          *string `gorm:"column:easytier_op" json:"easytierOp,omitempty"`
+	EasyTierError       *string `gorm:"column:easytier_error" json:"easytierError,omitempty"`
+	EasyTierUpdatedTime *int64  `gorm:"column:easytier_updated_time" json:"easytierUpdatedTime,omitempty"`
+	EasyTierVersion     *string `gorm:"column:easytier_version" json:"easytierVersion,omitempty"`
+	EasyTierRequestID   *string `gorm:"column:easytier_request_id" json:"easytierRequestId,omitempty"`
 	UpdatedTime int64   `gorm:"column:updated_time" json:"updatedTime"`
 }
 

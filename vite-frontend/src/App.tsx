@@ -1,28 +1,37 @@
 import { Route, Routes, useNavigate } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 
-import IndexPage from "@/pages/index";
-import ChangePasswordPage from "@/pages/change-password";
-import DashboardPage from "@/pages/dashboard";
-import ForwardPage from "@/pages/forward";
-import ProbePage from "@/pages/probe";
-import NetworkPage from "@/pages/network";
-import ShareNetworkPage from "@/pages/share/network";
-import MigratePage from "@/pages/migrate";
-import TunnelPage from "@/pages/tunnel";
-import NodePage from "@/pages/node";
-import UserPage from "@/pages/user";
-import ProfilePage from "@/pages/profile";
-import LimitPage from "@/pages/limit";
-import ConfigPage from "@/pages/config";
-import { SettingsPage } from "@/pages/settings";
-import CenterPage from "@/pages/center";
-import AdminLayout from "@/layouts/admin";
-import H5Layout from "@/layouts/h5";
-import H5SimpleLayout from "@/layouts/h5-simple";
-import EasyTierPage from "@/pages/easytier";
 import { isLoggedIn } from "@/utils/auth";
 import { siteConfig } from "@/config/site";
+
+const IndexPage = lazy(() => import("@/pages/index"));
+const AdminLayout = lazy(() => import("@/layouts/admin"));
+const H5Layout = lazy(() => import("@/layouts/h5"));
+const H5SimpleLayout = lazy(() => import("@/layouts/h5-simple"));
+const ChangePasswordPage = lazy(() => import("@/pages/change-password"));
+const DashboardPage = lazy(() => import("@/pages/dashboard"));
+const ForwardPage = lazy(() => import("@/pages/forward"));
+const ProbePage = lazy(() => import("@/pages/probe"));
+const NetworkPage = lazy(() => import("@/pages/network"));
+const ShareNetworkPage = lazy(() => import("@/pages/share/network"));
+const MigratePage = lazy(() => import("@/pages/migrate"));
+const TunnelPage = lazy(() => import("@/pages/tunnel"));
+const NodePage = lazy(() => import("@/pages/node"));
+const UserPage = lazy(() => import("@/pages/user"));
+const ProfilePage = lazy(() => import("@/pages/profile"));
+const LimitPage = lazy(() => import("@/pages/limit"));
+const ConfigPage = lazy(() => import("@/pages/config"));
+const CenterPage = lazy(() => import("@/pages/center"));
+const EasyTierPage = lazy(() => import("@/pages/easytier"));
+const SettingsPage = lazy(() =>
+  import("@/pages/settings").then((m) => ({ default: m.SettingsPage })),
+);
+
+const PageFallback = () => (
+  <div className="flex items-center justify-center min-h-[40vh]">
+    <div className="text-sm text-default-500">加载中...</div>
+  </div>
+);
 
 // 检测是否为H5模式
 const useH5Mode = () => {
@@ -166,133 +175,135 @@ function App() {
   }, []);
 
   return (
-    <Routes>
-      <Route element={<LoginRoute />} path="/" />
-      {/* Public share (read-only) */}
-      <Route element={<ShareNetworkPage />} path="/share/network" />
-      <Route element={<ShareNetworkPage />} path="/share/network/:id" />
-      <Route
-        element={
-          <ProtectedRoute skipLayout={true}>
-            <ChangePasswordPage />
-          </ProtectedRoute>
-        }
-        path="/change-password"
-      />
-      <Route
-        element={
-          <ProtectedRoute>
-            <DashboardPage />
-          </ProtectedRoute>
-        }
-        path="/dashboard"
-      />
-      <Route
-        element={
-          <ProtectedRoute>
-            <ForwardPage />
-          </ProtectedRoute>
-        }
-        path="/forward"
-      />
-      <Route
-        element={
-          <ProtectedRoute>
-            <ProbePage />
-          </ProtectedRoute>
-        }
-        path="/probe"
-      />
-      <Route
-        element={
-          <ProtectedRoute>
-            <NetworkPage />
-          </ProtectedRoute>
-        }
-        path="/network/:id"
-      />
-      <Route
-        element={
-          <ProtectedRoute>
-            <NetworkPage />
-          </ProtectedRoute>
-        }
-        path="/network"
-      />
-      <Route
-        element={
-          <ProtectedRoute>
-            <MigratePage />
-          </ProtectedRoute>
-        }
-        path="/migrate"
-      />
-      <Route
-        element={
-          <ProtectedRoute>
-            <TunnelPage />
-          </ProtectedRoute>
-        }
-        path="/tunnel"
-      />
-      <Route
-        element={
-          <ProtectedRoute>
-            <NodePage />
-          </ProtectedRoute>
-        }
-        path="/node"
-      />
-      <Route
-        element={
-          <ProtectedRoute>
-            <EasyTierPage />
-          </ProtectedRoute>
-        }
-        path="/easytier"
-      />
-      <Route
-        element={
-          <ProtectedRoute useSimpleLayout={true}>
-            <UserPage />
-          </ProtectedRoute>
-        }
-        path="/user"
-      />
-      <Route
-        element={
-          <ProtectedRoute>
-            <ProfilePage />
-          </ProtectedRoute>
-        }
-        path="/profile"
-      />
-      <Route
-        element={
-          <ProtectedRoute useSimpleLayout={true}>
-            <LimitPage />
-          </ProtectedRoute>
-        }
-        path="/limit"
-      />
-      <Route
-        element={
-          <ProtectedRoute useSimpleLayout={true}>
-            <ConfigPage />
-          </ProtectedRoute>
-        }
-        path="/config"
-      />
-      <Route
-        element={
-          <ProtectedRoute>
-            <CenterPage />
-          </ProtectedRoute>
-        }
-        path="/center"
-      />
-      <Route element={<SettingsPage />} path="/settings" />
-    </Routes>
+    <Suspense fallback={<PageFallback />}>
+      <Routes>
+        <Route element={<LoginRoute />} path="/" />
+        {/* Public share (read-only) */}
+        <Route element={<ShareNetworkPage />} path="/share/network" />
+        <Route element={<ShareNetworkPage />} path="/share/network/:id" />
+        <Route
+          element={
+            <ProtectedRoute skipLayout={true}>
+              <ChangePasswordPage />
+            </ProtectedRoute>
+          }
+          path="/change-password"
+        />
+        <Route
+          element={
+            <ProtectedRoute>
+              <DashboardPage />
+            </ProtectedRoute>
+          }
+          path="/dashboard"
+        />
+        <Route
+          element={
+            <ProtectedRoute>
+              <ForwardPage />
+            </ProtectedRoute>
+          }
+          path="/forward"
+        />
+        <Route
+          element={
+            <ProtectedRoute>
+              <ProbePage />
+            </ProtectedRoute>
+          }
+          path="/probe"
+        />
+        <Route
+          element={
+            <ProtectedRoute>
+              <NetworkPage />
+            </ProtectedRoute>
+          }
+          path="/network/:id"
+        />
+        <Route
+          element={
+            <ProtectedRoute>
+              <NetworkPage />
+            </ProtectedRoute>
+          }
+          path="/network"
+        />
+        <Route
+          element={
+            <ProtectedRoute>
+              <MigratePage />
+            </ProtectedRoute>
+          }
+          path="/migrate"
+        />
+        <Route
+          element={
+            <ProtectedRoute>
+              <TunnelPage />
+            </ProtectedRoute>
+          }
+          path="/tunnel"
+        />
+        <Route
+          element={
+            <ProtectedRoute>
+              <NodePage />
+            </ProtectedRoute>
+          }
+          path="/node"
+        />
+        <Route
+          element={
+            <ProtectedRoute>
+              <EasyTierPage />
+            </ProtectedRoute>
+          }
+          path="/easytier"
+        />
+        <Route
+          element={
+            <ProtectedRoute useSimpleLayout={true}>
+              <UserPage />
+            </ProtectedRoute>
+          }
+          path="/user"
+        />
+        <Route
+          element={
+            <ProtectedRoute>
+              <ProfilePage />
+            </ProtectedRoute>
+          }
+          path="/profile"
+        />
+        <Route
+          element={
+            <ProtectedRoute useSimpleLayout={true}>
+              <LimitPage />
+            </ProtectedRoute>
+          }
+          path="/limit"
+        />
+        <Route
+          element={
+            <ProtectedRoute useSimpleLayout={true}>
+              <ConfigPage />
+            </ProtectedRoute>
+          }
+          path="/config"
+        />
+        <Route
+          element={
+            <ProtectedRoute>
+              <CenterPage />
+            </ProtectedRoute>
+          }
+          path="/center"
+        />
+        <Route element={<SettingsPage />} path="/settings" />
+      </Routes>
+    </Suspense>
   );
 }
 

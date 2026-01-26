@@ -38,19 +38,8 @@ func ForwardCreate(c *gin.Context) {
 	}
 	uidInf, _ := c.Get("user_id")
 	uid := uidInf.(int64)
-	var tun model.Tunnel
-	if err := dbpkg.DB.First(&tun, req.TunnelID).Error; err != nil {
-		c.JSON(http.StatusOK, response.ErrMsg("隧道不存在"))
-		return
-	}
-	// if user is not admin, ensure permission exists and check simple limits
-	var ut model.UserTunnel
 	roleInf, _ := c.Get("role_id")
 	if roleInf != 0 {
-		if err := dbpkg.DB.Where("user_id=? and tunnel_id=?", uid, req.TunnelID).First(&ut).Error; err != nil {
-			c.JSON(http.StatusOK, response.ErrMsg("你没有该隧道权限"))
-			return
-		}
 		// forward quota
 		var cfg model.ViteConfig
 		dbpkg.DB.Where("name=?", "registration_default_forward").First(&cfg)
@@ -63,6 +52,76 @@ func ForwardCreate(c *gin.Context) {
 		if int(cnt) >= limit {
 			c.JSON(http.StatusOK, response.ErrMsg("超出转发数量上限"))
 			return
+		}
+	}
+	var tun model.Tunnel
+	// if user is not admin, ensure permission exists and check simple limits
+	var ut model.UserTunnel
+	if req.TunnelID != 0 {
+		if err := dbpkg.DB.First(&tun, req.TunnelID).Error; err != nil {
+			c.JSON(http.StatusOK, response.ErrMsg("隧道不存在"))
+			return
+		}
+		if roleInf != 0 {
+			if err := dbpkg.DB.Where("user_id=? and tunnel_id=?", uid, req.TunnelID).First(&ut).Error; err != nil {
+				c.JSON(http.StatusOK, response.ErrMsg("你没有该隧道权限"))
+				return
+			}
+		}
+	} else {
+		if req.EntryNodeID == nil || *req.EntryNodeID == 0 {
+			c.JSON(http.StatusOK, response.ErrMsg("请选择入口节点"))
+			return
+		}
+		var in model.Node
+		if err := dbpkg.DB.First(&in, *req.EntryNodeID).Error; err != nil {
+			c.JSON(http.StatusOK, response.ErrMsg("入口节点不存在"))
+			return
+		}
+		if roleInf != 0 {
+			var cfg model.ViteConfig
+			dbpkg.DB.Where("name=?", "registration_default_num").First(&cfg)
+			limit := 10
+			if n, err := strconv.Atoi(strings.TrimSpace(cfg.Value)); err == nil && n > 0 {
+				limit = n
+			}
+			var cnt int64
+			dbpkg.DB.Model(&model.Tunnel{}).Where("owner_id=?", uid).Count(&cnt)
+			if int(cnt) >= limit {
+				c.JSON(http.StatusOK, response.ErrMsg("超出隧道数量上限"))
+				return
+			}
+		}
+		now := time.Now().UnixMilli()
+		status := 1
+		owner := uid
+		baseName := fmt.Sprintf("直连-%s", strings.TrimSpace(req.Name))
+		name := baseName
+		var cnt int64
+		dbpkg.DB.Model(&model.Tunnel{}).Where("name = ?", name).Count(&cnt)
+		if cnt > 0 {
+			name = fmt.Sprintf("%s-%d", baseName, now/1000)
+		}
+		tun = model.Tunnel{
+			BaseEntity: model.BaseEntity{CreatedTime: now, UpdatedTime: now, Status: &status},
+			Name:       name,
+			OwnerID:    &owner,
+			InNodeID:   in.ID,
+			InIP:       in.IP,
+			Type:       1,
+			Flow:       1,
+		}
+		if err := dbpkg.DB.Create(&tun).Error; err != nil {
+			c.JSON(http.StatusOK, response.ErrMsg("直连线路创建失败"))
+			return
+		}
+		req.TunnelID = tun.ID
+		if roleInf != 0 {
+			dbpkg.DB.Where("user_id=? and tunnel_id=?", uid, tun.ID).First(&ut)
+			if ut.ID == 0 {
+				ut = model.UserTunnel{UserID: uid, TunnelID: tun.ID, Flow: 0, Num: 0, Status: 1}
+				_ = dbpkg.DB.Create(&ut).Error
+			}
 		}
 	}
 	// allocate inPort if nil: find first port in range not used
@@ -562,14 +621,84 @@ func ForwardUpdate(c *gin.Context) {
 	opId := RandUUID()
 	name := buildServiceName(f.ID, f.UserID, f.TunnelID)
 	if tun.Type == 2 {
-		// ensure outPort exists as TLS tunnel port
-		if f.OutPort == nil {
-			if op := firstFreePortOut(tun, f.ID); op != 0 {
-				f.OutPort = &op
-				dbpkg.DB.Model(&model.Forward{}).Where("id=?", f.ID).Update("out_port", op)
-			} else {
+		// ensure outPort exists and matches exit relay service; if occupied by other service, reassign
+		exitID := outNodeIDOr0(tun)
+		if exitID == 0 {
+			c.JSON(http.StatusOK, response.ErrMsg("隧道出口节点无效"))
+			return
+		}
+		var outNode model.Node
+		_ = dbpkg.DB.First(&outNode, exitID).Error
+		minO := 10000
+		maxO := 65535
+		if outNode.PortSta > 0 {
+			minO = outNode.PortSta
+		}
+		if outNode.PortEnd > 0 {
+			maxO = outNode.PortEnd
+		}
+		// inspect existing service by name on exit node
+		svcCache := map[int64][]map[string]any{}
+		usedCache := map[int64]map[int]bool{}
+		getSvcList := func(nid int64) []map[string]any {
+			if v, ok := svcCache[nid]; ok {
+				return v
+			}
+			v := queryNodeServicesRaw(nid)
+			svcCache[nid] = v
+			return v
+		}
+		getUsedPorts := func(nid int64) map[int]bool {
+			if v, ok := usedCache[nid]; ok {
+				return v
+			}
+			ports := buildUsedPortsFromServices(nid, getSvcList(nid))
+			usedCache[nid] = ports
+			return ports
+		}
+		svcList := getSvcList(exitID)
+		svc := findServiceByName(svcList, name)
+		svcPort := getServicePort(svc)
+		svcOK := svc != nil && isExitRelayService(svc) && svcPort > 0
+
+		requestedOut := 0
+		if req.OutPort != nil {
+			requestedOut = *req.OutPort
+		}
+		if requestedOut > 0 {
+			if requestedOut < minO || requestedOut > maxO {
+				c.JSON(http.StatusOK, response.ErrMsg("出口端口超出范围"))
+				return
+			}
+			if !(svcOK && svcPort == requestedOut) {
+				if !portAvailableForService(exitID, name, requestedOut, svcList, getUsedPorts(exitID)) {
+					suggest := findFreePortOnNode(exitID, requestedOut, minO, maxO)
+					if suggest > 0 && suggest != requestedOut {
+						c.JSON(http.StatusOK, response.ErrMsg(fmt.Sprintf("出口端口已占用，建议端口 %d", suggest)))
+					} else {
+						c.JSON(http.StatusOK, response.ErrMsg("出口端口已占用"))
+					}
+					return
+				}
+			}
+			if f.OutPort == nil || *f.OutPort != requestedOut {
+				f.OutPort = &requestedOut
+				dbpkg.DB.Model(&model.Forward{}).Where("id=?", f.ID).Update("out_port", requestedOut)
+			}
+		} else if svcOK {
+			if f.OutPort == nil || *f.OutPort != svcPort {
+				f.OutPort = &svcPort
+				dbpkg.DB.Model(&model.Forward{}).Where("id=?", f.ID).Update("out_port", svcPort)
+			}
+		} else {
+			free := findFreePortOnNode(exitID, 0, minO, maxO)
+			if free == 0 {
 				c.JSON(http.StatusOK, response.ErrMsg("隧道出口端口已满，无法分配新端口"))
 				return
+			}
+			if f.OutPort == nil || *f.OutPort != free {
+				f.OutPort = &free
+				dbpkg.DB.Model(&model.Forward{}).Where("id=?", f.ID).Update("out_port", free)
 			}
 		}
 		// update out-node gRPC relay service
@@ -597,9 +726,15 @@ func ForwardUpdate(c *gin.Context) {
 		ifaceMap := getTunnelIfaceMap(tun.ID)
 		var entryTarget string
 		if len(path) > 0 {
-			// allocate ports for mids per overlay rule
+			// allocate ports for mids per overlay rule; allow user-specified ports
+			midReq := map[int]int{}
+			for _, mp := range req.MidPorts {
+				if mp.Idx >= 0 {
+					midReq[mp.Idx] = mp.Port
+				}
+			}
 			midPorts := make([]int, len(path))
-			for i := range path {
+			for i, nid := range path {
 				var prevID int64
 				if i == 0 {
 					prevID = tun.InNodeID
@@ -607,31 +742,65 @@ func ForwardUpdate(c *gin.Context) {
 					prevID = path[i-1]
 				}
 				prevOut := ifaceMap[prevID]
-				nextIn := bindMap[path[i]]
+				nextIn := bindMap[nid]
 				overlay := isOverlayIP(prevOut) && isOverlayIP(nextIn)
 				var n model.Node
-				_ = dbpkg.DB.First(&n, path[i]).Error
-				if overlay {
-					p := findFreePortOnNodeAny(path[i], 10000, 10000)
-					if p == 0 {
-						p = 10000
-					}
-					midPorts[i] = p
-				} else {
-					minP, maxP := 10000, 65535
+				_ = dbpkg.DB.First(&n, nid).Error
+				minP, maxP := 10000, 65535
+				if !overlay {
 					if n.PortSta > 0 {
 						minP = n.PortSta
 					}
 					if n.PortEnd > 0 {
 						maxP = n.PortEnd
 					}
-					p := findFreePortOnNode(path[i], minP, minP, maxP)
+				}
+				midName := fmt.Sprintf("%s_mid_%d", name, i)
+				svcList := getSvcList(nid)
+				svc := findServiceByName(svcList, midName)
+				svcPort := getServicePort(svc)
+				svcOK := svc != nil && svcPort > 0
+				requested := 0
+				if v, ok := midReq[i]; ok {
+					requested = v
+				}
+				if requested > 0 {
+					if requested < minP || requested > maxP {
+						c.JSON(http.StatusOK, response.ErrMsg(fmt.Sprintf("中继%d端口超出范围", i+1)))
+						return
+					}
+					if !(svcOK && svcPort == requested) {
+						if !portAvailableForService(nid, midName, requested, svcList, getUsedPorts(nid)) {
+							suggest := 0
+							if overlay {
+								suggest = findFreePortOnNodeAny(nid, requested, minP)
+							} else {
+								suggest = findFreePortOnNode(nid, requested, minP, maxP)
+							}
+							if suggest > 0 && suggest != requested {
+								c.JSON(http.StatusOK, response.ErrMsg(fmt.Sprintf("中继%d端口已占用，建议端口 %d", i+1, suggest)))
+							} else {
+								c.JSON(http.StatusOK, response.ErrMsg(fmt.Sprintf("中继%d端口已占用", i+1)))
+							}
+							return
+						}
+					}
+					midPorts[i] = requested
+				} else if svcOK {
+					midPorts[i] = svcPort
+				} else {
+					var p int
+					if overlay {
+						p = findFreePortOnNodeAny(nid, minP, minP)
+					} else {
+						p = findFreePortOnNode(nid, minP, minP, maxP)
+					}
 					if p == 0 {
 						p = minP
 					}
 					midPorts[i] = p
 				}
-				_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: path[i], Cmd: "ForwardPortPick", RequestID: opId, Success: 1, Message: fmt.Sprintf("mid port=%d (%s)", midPorts[i], ifThen(overlay, "overlay", "range"))}).Error
+				_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nid, Cmd: "ForwardPortPick", RequestID: opId, Success: 1, Message: fmt.Sprintf("mid port=%d (%s)", midPorts[i], ifThen(overlay, "overlay", "range"))}).Error
 			}
 			// Persist expected mid ports for strict compare (update)
 			{
@@ -1720,7 +1889,8 @@ func queryNodeServicePorts(nodeID int64) map[int]bool {
 	reqID := RandUUID()
 	payload := map[string]any{"requestId": reqID}
 	if err := sendWSCommand(nodeID, "QueryServices", payload); err != nil {
-		return ports
+		// continue to include locally persisted ports (e.g., exit SS)
+		return appendLocalPorts(nodeID, ports)
 	}
 	ch := make(chan map[string]interface{}, 1)
 	diagMu.Lock()
@@ -1754,7 +1924,130 @@ func queryNodeServicePorts(nodeID int64) map[int]bool {
 		delete(diagWaiters, reqID)
 		diagMu.Unlock()
 	}
+	return appendLocalPorts(nodeID, ports)
+}
+
+func appendLocalPorts(nodeID int64, ports map[int]bool) map[int]bool {
+	// reserve exit SS port if configured for this node
+	var es model.ExitSetting
+	if err := dbpkg.DB.Where("node_id = ?", nodeID).First(&es).Error; err == nil {
+		if es.Port > 0 {
+			ports[es.Port] = true
+		}
+	}
+	// reserve AnyTLS port if configured for this node
+	var at model.AnyTLSSetting
+	if err := dbpkg.DB.Where("node_id = ?", nodeID).First(&at).Error; err == nil {
+		if at.Port > 0 {
+			ports[at.Port] = true
+		}
+	}
+	// include agent-reported used ports snapshot (best-effort)
+	var rt model.NodeRuntime
+	if err := dbpkg.DB.Where("node_id = ?", nodeID).First(&rt).Error; err == nil {
+		if rt.UsedPorts != nil && *rt.UsedPorts != "" {
+			var list []int
+			if json.Unmarshal([]byte(*rt.UsedPorts), &list) == nil {
+				for _, p := range list {
+					if p > 0 {
+						ports[p] = true
+					}
+				}
+			}
+		}
+	}
 	return ports
+}
+
+func buildUsedPortsFromServices(nodeID int64, services []map[string]any) map[int]bool {
+	ports := map[int]bool{}
+	for _, svc := range services {
+		if svc == nil {
+			continue
+		}
+		if p := getServicePort(svc); p > 0 {
+			ports[p] = true
+			continue
+		}
+		if v, ok := svc["port"].(float64); ok && v > 0 {
+			ports[int(v)] = true
+		} else if v, ok := svc["port"].(int); ok && v > 0 {
+			ports[v] = true
+		}
+	}
+	return appendLocalPorts(nodeID, ports)
+}
+
+func portAvailableForService(nodeID int64, svcName string, port int, services []map[string]any, used map[int]bool) bool {
+	if port <= 0 {
+		return false
+	}
+	if svcName != "" {
+		if svc := findServiceByName(services, svcName); svc != nil {
+			if p := getServicePort(svc); p == port {
+				return true
+			}
+		}
+	}
+	if used != nil && used[port] {
+		return false
+	}
+	return probePortViaAgent(nodeID, port)
+}
+
+func findServiceByName(list []map[string]any, name string) map[string]any {
+	if len(list) == 0 || name == "" {
+		return nil
+	}
+	for _, it := range list {
+		if it == nil {
+			continue
+		}
+		if v, ok := it["name"].(string); ok && v == name {
+			return it
+		}
+	}
+	return nil
+}
+
+func isExitRelayService(svc map[string]any) bool {
+	if svc == nil {
+		return false
+	}
+	if h, ok := svc["handler"].(map[string]any); ok {
+		if t, ok2 := h["type"].(string); !ok2 || t != "relay" {
+			return false
+		}
+	} else {
+		return false
+	}
+	if l, ok := svc["listener"].(map[string]any); ok {
+		if t, ok2 := l["type"].(string); !ok2 || t != "grpc" {
+			return false
+		}
+	} else {
+		return false
+	}
+	return true
+}
+
+func getServicePort(svc map[string]any) int {
+	if svc == nil {
+		return 0
+	}
+	if v, ok := svc["addr"].(string); ok {
+		if p := parsePort(v); p > 0 {
+			return p
+		}
+	}
+	if l, ok := svc["listener"].(map[string]any); ok {
+		if v, ok2 := l["addr"].(string); ok2 {
+			if p := parsePort(v); p > 0 {
+				return p
+			}
+		}
+	}
+	return 0
 }
 
 func parsePort(addr string) int {

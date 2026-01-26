@@ -244,6 +244,7 @@ type SwaggerNodeUpdateReq = dto.NodeUpdateDto
 
 type SwaggerNodeExitReq struct {
 	NodeID    int64    `json:"nodeId" example:"1"`
+	Type      string   `json:"type" example:"ss"`
 	Port      int      `json:"port" example:"10000"`
 	Password  string   `json:"password" example:"pass"`
 	Method    string   `json:"method" example:"AEAD_CHACHA20_POLY1305"`

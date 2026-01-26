@@ -1,4 +1,5 @@
 #!/bin/bash
+# NP_EASYTIER_INSTALLER
 
 RED_COLOR='\e[1;31m'
 GREEN_COLOR='\e[1;32m'
@@ -7,6 +8,63 @@ BLUE_COLOR='\e[1;34m'
 PINK_COLOR='\e[1;35m'
 SHAN='\e[1;33;5m'
 RES='\e[0m'
+
+APT_UPDATED=0
+
+install_pkg() {
+  local pkg="$1"
+  if command -v apt-get >/dev/null 2>&1; then
+    if [ "$APT_UPDATED" -eq 0 ]; then
+      apt-get update
+      APT_UPDATED=1
+    fi
+    apt-get install -y "$pkg"
+    return
+  fi
+  if command -v apt >/dev/null 2>&1; then
+    if [ "$APT_UPDATED" -eq 0 ]; then
+      apt update
+      APT_UPDATED=1
+    fi
+    apt install -y "$pkg"
+    return
+  fi
+  if command -v dnf >/dev/null 2>&1; then
+    dnf install -y "$pkg"
+    return
+  fi
+  if command -v yum >/dev/null 2>&1; then
+    yum install -y "$pkg"
+    return
+  fi
+  if command -v apk >/dev/null 2>&1; then
+    apk add --no-cache "$pkg"
+    return
+  fi
+  if command -v pacman >/dev/null 2>&1; then
+    pacman -Sy --noconfirm "$pkg"
+    return
+  fi
+  if command -v zypper >/dev/null 2>&1; then
+    zypper --non-interactive install "$pkg"
+    return
+  fi
+  echo -e "\r\n${RED_COLOR}Error: no supported package manager found to install ${pkg}${RES}\r\n"
+  exit 1
+}
+
+ensure_dep() {
+  local bin="$1"
+  if command -v "$bin" >/dev/null 2>&1; then
+    return 0
+  fi
+  echo -e "\r\n${YELLOW_COLOR}Installing ${bin}...${RES}\r\n"
+  install_pkg "$bin"
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    echo -e "\r\n${RED_COLOR}Error: failed to install ${bin}${RES}\r\n"
+    exit 1
+  fi
+}
 
 HELP() {
   echo -e "\r\n${GREEN_COLOR}EasyTier Installation Script Help${RES}\r\n"
@@ -44,7 +102,7 @@ fi
 SKIP_FOLDER_VERIFY=false
 SKIP_FOLDER_FIX=false
 NO_GH_PROXY=false
-GH_PROXY='https://ghfast.top/'
+GH_PROXY=''
 
 COMMEND=$1
 shift
@@ -75,6 +133,10 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
+if [ -n "$GH_PROXY" ] && [[ "$GH_PROXY" != */ ]]; then
+  GH_PROXY="${GH_PROXY}/"
+fi
+
 if [ -z "$INSTALL_PATH" ]; then
     INSTALL_PATH='/opt/easytier'
 fi
@@ -90,20 +152,6 @@ fi
 echo INSTALL PATH : $INSTALL_PATH
 echo SKIP FOLDER FIX : $SKIP_FOLDER_FIX
 echo SKIP FOLDER VERIFY : $SKIP_FOLDER_VERIFY
-
-# clear
-
-# check if unzip is installed
-if ! command -v unzip >/dev/null 2>&1; then
-  echo -e "\r\n${RED_COLOR}Error: unzip is not installed${RES}\r\n"
-  exit 1
-fi
-
-# check if curl is installed
-if ! command -v curl >/dev/null 2>&1; then
-  echo -e "\r\n${RED_COLOR}Error: curl is not installed${RES}\r\n"
-  exit 1
-fi
 
 echo -e "\r\n${RED_COLOR}----------------------NOTICE----------------------${RES}\r\n"
 echo " This is a temporary script to install EasyTier "
@@ -161,6 +209,10 @@ elif [ "$ARCH" == "UNKNOWN" ]; then
   exit 1
 fi
 
+# ensure deps
+ensure_dep unzip
+ensure_dep curl
+
 # Detect init system
 if command -v systemctl >/dev/null 2>&1; then
   INIT_SYSTEM="systemd"
@@ -196,11 +248,38 @@ CHECK() {
   fi
 }
 
+get_latest_version() {
+  local api_url="https://api.github.com/repos/EasyTier/EasyTier/releases/latest"
+  local resp=""
+  resp=$(curl -fsSL "$api_url" 2>/dev/null || true)
+  if [ -z "$resp" ] && ! $NO_GH_PROXY && [ -n "$GH_PROXY" ]; then
+    resp=$(curl -fsSL "${GH_PROXY}${api_url}" 2>/dev/null || true)
+  fi
+  if [ -z "$resp" ]; then
+    echo ""
+    return
+  fi
+  echo "$resp" | grep '"tag_name":' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/' | tr -d '[:space:]'
+}
+
 INSTALL() {
+  download_zip() {
+    local url=$1
+    rm -rf /tmp/easytier_tmp_install.zip
+    if ! curl -fL ${url} -o /tmp/easytier_tmp_install.zip $CURL_BAR; then
+      return 1
+    fi
+    if [ ! -s /tmp/easytier_tmp_install.zip ]; then
+      return 1
+    fi
+    if ! unzip -t /tmp/easytier_tmp_install.zip >/dev/null 2>&1; then
+      return 1
+    fi
+    return 0
+  }
+
   # Get version number
-  RESPONSE=$(curl -s "https://api.github.com/repos/EasyTier/EasyTier/releases/latest")
-  LATEST_VERSION=$(echo "$RESPONSE" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-  LATEST_VERSION=$(echo -e "$LATEST_VERSION" | tr -d '[:space:]')
+  LATEST_VERSION=$(get_latest_version)
 
   if [ -z "$LATEST_VERSION" ]; then
     echo -e "\r\n${RED_COLOR}Opus${RES}, failure to get latest version. Check your internet\r\nOr try ${GREEN_COLOR}install by hand${RES}\r\n"
@@ -209,11 +288,23 @@ INSTALL() {
 
   # Download
   echo -e "\r\n${GREEN_COLOR}Downloading EasyTier $LATEST_VERSION ...${RES}"
-  rm -rf /tmp/easytier_tmp_install.zip
   BASE_URL="https://github.com/EasyTier/EasyTier/releases/latest/download/easytier-linux-${ARCH}-${LATEST_VERSION}.zip"
   DOWNLOAD_URL=$($NO_GH_PROXY && echo "$BASE_URL" || echo "${GH_PROXY}${BASE_URL}")
   echo -e "Download URL: ${GREEN_COLOR}${DOWNLOAD_URL}${RES}"
-  curl -L ${DOWNLOAD_URL} -o /tmp/easytier_tmp_install.zip $CURL_BAR
+  if ! download_zip "${DOWNLOAD_URL}"; then
+    if ! $NO_GH_PROXY; then
+      echo -e "${YELLOW_COLOR}Download failed, retrying direct GitHub ...${RES}"
+      DOWNLOAD_URL="${BASE_URL}"
+      echo -e "Download URL: ${GREEN_COLOR}${DOWNLOAD_URL}${RES}"
+      if ! download_zip "${DOWNLOAD_URL}"; then
+        echo -e "${RED_COLOR} Download failed! ${RES}"
+        exit 1
+      fi
+    else
+      echo -e "${RED_COLOR} Download failed! ${RES}"
+      exit 1
+    fi
+  fi
 
   # Unzip resource
   echo -e "\r\n${GREEN_COLOR}Unzip resource ...${RES}"
@@ -399,9 +490,7 @@ UPDATE() {
 
   # 1. Get the latest version info (while service is still running)
   echo -e "${GREEN_COLOR}Checking for the latest version...${RES}"
-  RESPONSE=$(curl -s "https://api.github.com/repos/EasyTier/EasyTier/releases/latest")
-  LATEST_VERSION=$(echo "$RESPONSE" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-  LATEST_VERSION=$(echo -e "$LATEST_VERSION" | tr -d '[:space:]')
+  LATEST_VERSION=$(get_latest_version)
 
   if [ -z "$LATEST_VERSION" ]; then
     echo -e "\r\n${RED_COLOR}Error${RES}: Failed to get the latest version. Please check your network connection.\r\n"

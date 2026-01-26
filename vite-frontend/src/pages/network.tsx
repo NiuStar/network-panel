@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
@@ -11,6 +11,7 @@ import {
   getNodeList,
   getNodeSysinfo,
 } from "@/api";
+import VirtualGrid from "@/components/VirtualGrid";
 
 const ranges = [
   { key: "1h", label: "每小时" },
@@ -19,6 +20,61 @@ const ranges = [
   { key: "7d", label: "每七天" },
   { key: "30d", label: "每月" },
 ];
+
+const CARD_STYLE: CSSProperties = {
+  contentVisibility: "auto",
+  containIntrinsicSize: "260px 220px",
+};
+
+const formatUptime = (seconds: number) => {
+  if (!seconds) return "-";
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+
+  return d > 0
+    ? `${d}天${h}小时`
+    : h > 0
+      ? `${h}小时${m}分钟`
+      : `${m}分钟`;
+};
+
+
+const addMonths = (ts: number, months: number) => {
+  const d = new Date(ts);
+  const day = d.getDate();
+  const target = d.getMonth() + months;
+  const y = d.getFullYear() + Math.floor(target / 12);
+  const m = ((target % 12) + 12) % 12;
+  const last = new Date(y, m + 1, 0).getDate();
+  const nd = new Date(
+    y,
+    m,
+    Math.min(day, last),
+    d.getHours(),
+    d.getMinutes(),
+    d.getSeconds(),
+    d.getMilliseconds(),
+  );
+
+  return nd.getTime();
+};
+
+const toMonths = (cd?: number) => {
+  if (!cd) return undefined;
+  switch (cd) {
+    case 30:
+      return 1;
+    case 90:
+      return 3;
+    case 180:
+      return 6;
+    case 365:
+      return 12;
+    default:
+      return undefined;
+  }
+};
 
 export default function NetworkPage() {
   const params = useParams();
@@ -35,9 +91,7 @@ export default function NetworkPage() {
   const [nodes, setNodes] = useState<any[]>([]);
   const [batch, setBatch] = useState<any>({});
   const [sysMap, setSysMap] = useState<Record<number, any>>({});
-  const [cycleOverride, setCycleOverride] = useState<Record<number, number>>(
-    {},
-  );
+  const cycleOverride: Record<number, number> = {};
   const [nodeName, setNodeName] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const chartRef = useRef<HTMLDivElement>(null);
@@ -285,67 +339,18 @@ export default function NetworkPage() {
             </Button>
           </CardHeader>
           <CardBody>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {nodes.map((n: any) => {
+            <VirtualGrid
+              className="w-full"
+              estimateRowHeight={220}
+              items={nodes}
+              maxColumns={4}
+              minItemWidth={260}
+              renderItem={(n: any) => {
                 const s = batch?.[n.id] || {};
                 const avg = s.avg ?? null;
                 const latest = s.latest ?? null;
                 const sys = sysMap[n.id];
                 const online = n.status === 1;
-                const formatUptime = (seconds: number) => {
-                  if (!seconds) return "-";
-                  const d = Math.floor(seconds / 86400);
-                  const h = Math.floor((seconds % 86400) / 3600);
-                  const m = Math.floor((seconds % 3600) / 60);
-
-                  return d > 0
-                    ? `${d}天${h}小时`
-                    : h > 0
-                      ? `${h}小时${m}分钟`
-                      : `${m}分钟`;
-                };
-                const fmtTraffic = (bytes: number) => {
-                  if (!bytes) return "0 B";
-                  const k = 1024;
-                  const u = ["B", "KB", "MB", "GB", "TB"];
-                  const i = Math.floor(Math.log(bytes) / Math.log(k));
-
-                  return `${(bytes / Math.pow(k, i)).toFixed(2)} ${u[i]}`;
-                };
-                const addMonths = (ts: number, months: number) => {
-                  const d = new Date(ts);
-                  const day = d.getDate();
-                  const target = d.getMonth() + months;
-                  const y = d.getFullYear() + Math.floor(target / 12);
-                  const m = ((target % 12) + 12) % 12;
-                  const last = new Date(y, m + 1, 0).getDate();
-                  const nd = new Date(
-                    y,
-                    m,
-                    Math.min(day, last),
-                    d.getHours(),
-                    d.getMinutes(),
-                    d.getSeconds(),
-                    d.getMilliseconds(),
-                  );
-
-                  return nd.getTime();
-                };
-                const toMonths = (cd?: number) => {
-                  if (!cd) return undefined;
-                  switch (cd) {
-                    case 30:
-                      return 1;
-                    case 90:
-                      return 3;
-                    case 180:
-                      return 6;
-                    case 365:
-                      return 12;
-                    default:
-                      return undefined;
-                  }
-                };
                 const remainDays = () => {
                   const cm =
                     cycleOverride[n.id] ||
@@ -373,6 +378,7 @@ export default function NetworkPage() {
                     key={n.id}
                     className="p-3 rounded border border-divider hover:shadow-sm transition cursor-pointer"
                     onClick={() => navigate(`/network/${n.id}`)}
+                    style={CARD_STYLE}
                   >
                     <div className="flex items-start justify-between mb-2">
                       <div className="font-semibold truncate">{n.name}</div>
@@ -408,89 +414,19 @@ export default function NetworkPage() {
                       <div>
                         <div className="text-default-600 mb-0.5">网络</div>
                         <div className="font-mono">
-                          {latest != null ? `${latest} ms` : "-"}
-                          {avg != null ? ` · 平均 ${avg} ms` : ""}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-default-600 mb-0.5">
-                          ↑ 上行流量
-                        </div>
-                        <div className="font-mono">
-                          {online && sys ? fmtTraffic(sys.bytes_tx || 0) : "-"}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-default-600 mb-0.5">
-                          ↓ 下行流量
-                        </div>
-                        <div className="font-mono">
-                          {online && sys ? fmtTraffic(sys.bytes_rx || 0) : "-"}
+                          {avg != null ? `${avg.toFixed(1)} ms` : "-"}
                         </div>
                       </div>
                     </div>
-                    {(n.priceCents || n.cycleMonths || n.cycleDays) && (
-                      <div className="mt-2 text-xs text-default-600">
-                        计费：
-                        {n.priceCents
-                          ? `¥${(n.priceCents / 100).toFixed(2)}`
-                          : ""}
-                        {cycleOverride[n.id] ||
-                        n.cycleMonths ||
-                        toMonths(n.cycleDays)
-                          ? ` / ${(() => {
-                              const cm =
-                                cycleOverride[n.id] ||
-                                n.cycleMonths ||
-                                toMonths(n.cycleDays);
 
-                              return cm === 1
-                                ? "月"
-                                : cm === 3
-                                  ? "季度"
-                                  : cm === 6
-                                    ? "半年"
-                                    : cm === 12
-                                      ? "年"
-                                      : cm
-                                        ? cm + "月"
-                                        : "";
-                            })()}`
-                          : ""}
-                        {n.startDateMs ? ` · 剩余${remainDays()}` : ""}
-                        <div className="mt-1 flex items-center gap-2">
-                          <span>续费周期</span>
-                          <select
-                            className="text-xs border rounded px-1 py-0.5"
-                            value={String(
-                              cycleOverride[n.id] ||
-                                n.cycleMonths ||
-                                toMonths(n.cycleDays) ||
-                                "",
-                            )}
-                            onChange={(e) => {
-                              const v = Number(e.target.value);
-
-                              setCycleOverride((prev) => ({
-                                ...prev,
-                                [n.id]: v || (undefined as any),
-                              }));
-                            }}
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <option value="">默认</option>
-                            <option value="1">月</option>
-                            <option value="3">季度</option>
-                            <option value="6">半年</option>
-                            <option value="12">年</option>
-                          </select>
-                        </div>
-                      </div>
-                    )}
+                    <div className="flex justify-between text-xs text-default-500 mt-3">
+                      <span>最近: {latest != null ? `${latest}ms` : "-"}</span>
+                      <span>剩余: {remainDays() || "-"}</span>
+                    </div>
                   </div>
                 );
-              })}
-            </div>
+              }}
+            />
           </CardBody>
         </Card>
       )}

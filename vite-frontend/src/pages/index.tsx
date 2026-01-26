@@ -12,8 +12,6 @@ import { getConfigByName } from "@/api";
 import { title } from "@/components/primitives";
 import DefaultLayout from "@/layouts/default";
 import { login, LoginData, checkCaptcha, register } from "@/api";
-import "@/utils/tac.css";
-import "@/utils/tac.min.js";
 import bgImage from "@/images/bg.jpg";
 
 interface LoginForm {
@@ -39,6 +37,12 @@ interface CaptchaStyle {
   moveTrackMaskBgColor?: string;
   moveTrackMaskBorderColor?: string;
 }
+
+const ensureTac = async () => {
+  if (window.TAC) return;
+  await import("@/utils/tac.min.js");
+  await import("@/utils/tac.css");
+};
 
 export default function IndexPage() {
   const [form, setForm] = useState<LoginForm>({
@@ -125,6 +129,14 @@ export default function IndexPage() {
 
   // 初始化验证码
   const initCaptcha = async () => {
+    if (!window.TAC) {
+      try {
+        await ensureTac();
+      } catch {
+        toast.error("验证码脚本加载失败，请重试");
+        return;
+      }
+    }
     if (!window.TAC || !captchaContainerRef.current) {
       return;
     }
@@ -371,6 +383,11 @@ export default function IndexPage() {
           <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
             v{isWebView ? siteConfig.app_version : siteConfig.version}
           </p>
+          {siteConfig.build_date && (
+            <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+              build {new Date(siteConfig.build_date).toLocaleString()}
+            </p>
+          )}
           {regEnabled && (
             <div className="mt-2">
               {!regMode ? (

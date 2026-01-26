@@ -96,7 +96,8 @@ type TunnelUpdateDto struct {
 // Forward
 type ForwardDto struct {
     Name       string  `json:"name" binding:"required"`
-    TunnelID   int64   `json:"tunnelId" binding:"required"`
+    TunnelID   int64   `json:"tunnelId"`
+    EntryNodeID *int64 `json:"entryNodeId"`
     InPort     *int    `json:"inPort"`
     RemoteAddr string  `json:"remoteAddr" binding:"required"`
     Strategy   *string `json:"strategy"`
@@ -109,10 +110,17 @@ type ForwardUpdateDto struct {
     Name       string  `json:"name"`
     TunnelID   int64   `json:"tunnelId"`
     InPort     *int    `json:"inPort"`
+    OutPort    *int    `json:"outPort"`
     RemoteAddr string  `json:"remoteAddr"`
     Strategy   *string `json:"strategy"`
     InterfaceName *string `json:"interfaceName"`
+    MidPorts   []ForwardMidPortDto `json:"midPorts"`
     // SS 参数移除：统一在节点“出口服务”设置
+}
+
+type ForwardMidPortDto struct {
+    Idx  int `json:"idx"`
+    Port int `json:"port"`
 }
 
 // Speed limit

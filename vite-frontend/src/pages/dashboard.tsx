@@ -1,17 +1,8 @@
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Button } from "@heroui/button";
 import { Modal, ModalContent, ModalHeader, ModalBody } from "@heroui/modal";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Suspense, lazy } from "react";
 import toast from "react-hot-toast";
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-} from "recharts";
 
 import {
   getUserPackageInfo,
@@ -21,6 +12,11 @@ import {
   agentReconcileNode,
 } from "@/api";
 import { getCachedConfig } from "@/config/site";
+import { usePageVisibility } from "@/hooks/usePageVisibility";
+
+const DashboardFlowChart = lazy(
+  () => import("@/components/DashboardFlowChart"),
+);
 
 interface UserInfo {
   flow: number;
@@ -89,6 +85,7 @@ export default function DashboardPage() {
   const [addressModalOpen, setAddressModalOpen] = useState(false);
   const [addressModalTitle, setAddressModalTitle] = useState("");
   const [addressList, setAddressList] = useState<AddressItem[]>([]);
+  const pageVisible = usePageVisibility();
 
   // 24h 流量图数据（保持窗口并滚动更新，避免整图重绘）
   const [chartData, setChartData] = useState<
@@ -280,6 +277,7 @@ export default function DashboardPage() {
   useEffect(() => {
     let timer: any;
     const tick = async () => {
+      if (!pageVisible) return;
       try {
         const res: any = await getForwardList();
 
@@ -319,12 +317,13 @@ export default function DashboardPage() {
     return () => {
       if (timer) clearInterval(timer);
     };
-  }, [pollMs]);
+  }, [pollMs, pageVisible]);
 
   // 轮询刷新节点 GOST 健康统计（每 pollMs）
   useEffect(() => {
     let timer: any;
     const tick = async () => {
+      if (!pageVisible) return;
       try {
         const r: any = await getNodeList();
 
@@ -348,7 +347,7 @@ export default function DashboardPage() {
     return () => {
       if (timer) clearInterval(timer);
     };
-  }, [pollMs]);
+  }, [pollMs, pageVisible]);
 
   // 手动重新应用全部节点服务（管理员）
   const doReapplyAll = async () => {
@@ -383,6 +382,7 @@ export default function DashboardPage() {
   useEffect(() => {
     let timer: any;
     const tick = async () => {
+      if (!pageVisible) return;
       try {
         const res = await getUserPackageInfo();
 
@@ -405,7 +405,7 @@ export default function DashboardPage() {
     return () => {
       if (timer) clearInterval(timer);
     };
-  }, [pollMs]);
+  }, [pollMs, pageVisible]);
 
   const loadPackageData = async () => {
     setLoading(true);
@@ -940,12 +940,15 @@ export default function DashboardPage() {
 
   if (loading) {
     return (
-      <div className="px-3 lg:px-6 flex-grow pt-2 lg:pt-4">
-        <div className="flex items-center justify-center h-64">
-          <div className="flex items-center gap-3">
-            <div className="animate-spin h-5 w-5 border-2 border-gray-200 dark:border-gray-700 border-t-gray-600 dark:border-t-gray-300 rounded-full" />
-            <span className="text-default-600">正在加载数据...</span>
-          </div>
+      <div className="px-3 lg:px-6 flex-grow pt-2 lg:pt-4 space-y-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">
+          {Array.from({ length: 4 }).map((_, idx) => (
+            <div key={`dash-skel-${idx}`} className="skeleton-card" />
+          ))}
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="skeleton-block min-h-[320px]" />
+          <div className="skeleton-block min-h-[320px]" />
         </div>
       </div>
     );
@@ -1263,70 +1266,18 @@ export default function DashboardPage() {
           ) : (
             <div className="space-y-4">
               {/* 流量趋势图 */}
-              <div className="h-64 lg:h-80 w-full">
-                <ResponsiveContainer height="100%" width="100%">
-                  <LineChart
-                    data={chartData}
-                    margin={{ top: 4, right: 12, bottom: 0, left: 8 }}
-                  >
-                    <CartesianGrid
-                      className="opacity-30"
-                      strokeDasharray="3 3"
-                    />
-                    <XAxis
-                      axisLine={{ stroke: "#e5e7eb", strokeWidth: 1 }}
-                      dataKey="time"
-                      tick={{ fontSize: 12 }}
-                      tickLine={false}
-                    />
-                    <YAxis
-                      axisLine={{ stroke: "#e5e7eb", strokeWidth: 1 }}
-                      tick={{ fontSize: 12 }}
-                      tickFormatter={(value) => {
-                        if (value === 0) return "0";
-                        if (value < 1024) return `${value}B`;
-                        if (value < 1024 * 1024)
-                          return `${(value / 1024).toFixed(1)}K`;
-                        if (value < 1024 * 1024 * 1024)
-                          return `${(value / (1024 * 1024)).toFixed(1)}M`;
-
-                        return `${(value / (1024 * 1024 * 1024)).toFixed(1)}G`;
-                      }}
-                      tickLine={false}
-                    />
-                    <Tooltip
-                      content={({ active, payload, label }) => {
-                        if (active && payload && payload.length) {
-                          return (
-                            <div className="bg-white dark:bg-default-100 border border-default-200 rounded-lg shadow-lg p-3">
-                              <p className="font-medium text-foreground">{`时间: ${label}`}</p>
-                              <p className="text-primary">
-                                {`流量: ${formatFlow((payload[0]?.value as number) || 0)}`}
-                              </p>
-                            </div>
-                          );
-                        }
-
-                        return null;
-                      }}
-                    />
-                    <Line
-                      activeDot={{
-                        r: 4,
-                        stroke: "#8b5cf6",
-                        strokeWidth: 2,
-                        fill: "#fff",
-                      }}
-                      dataKey="flow"
-                      dot={false}
-                      isAnimationActive={false}
-                      stroke="#8b5cf6"
-                      strokeWidth={3}
-                      type="monotone"
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
+              <Suspense
+                fallback={
+                  <div className="h-64 lg:h-80 w-full flex items-center justify-center text-default-400">
+                    图表加载中...
+                  </div>
+                }
+              >
+                <DashboardFlowChart
+                  data={chartData}
+                  formatFlow={formatFlow}
+                />
+              </Suspense>
             </div>
           )}
         </CardBody>

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/md5"
@@ -37,14 +38,50 @@ import (
 )
 
 var (
-	newline = []byte{'\n'}
-	space   = []byte{' '}
-	opLogCh = make(chan map[string]any, 128)
+	newline   = []byte{'\n'}
+	space     = []byte{' '}
+	opLogCh   = make(chan map[string]any, 128)
+	wsWriteMu sync.Map // map[*websocket.Conn]*sync.Mutex
 )
+
+func wsWriteMuFor(c *websocket.Conn) *sync.Mutex {
+	if c == nil {
+		return &sync.Mutex{}
+	}
+	if v, ok := wsWriteMu.Load(c); ok {
+		if mu, ok2 := v.(*sync.Mutex); ok2 {
+			return mu
+		}
+	}
+	mu := &sync.Mutex{}
+	wsWriteMu.Store(c, mu)
+	return mu
+}
+
+func wsWriteJSON(c *websocket.Conn, v any) error {
+	mu := wsWriteMuFor(c)
+	mu.Lock()
+	defer mu.Unlock()
+	return c.WriteJSON(v)
+}
+
+func wsWriteMessage(c *websocket.Conn, mt int, data []byte) error {
+	mu := wsWriteMuFor(c)
+	mu.Lock()
+	defer mu.Unlock()
+	return c.WriteMessage(mt, data)
+}
+
+func wsWriteControl(c *websocket.Conn, mt int, data []byte, deadline time.Time) error {
+	mu := wsWriteMuFor(c)
+	mu.Lock()
+	defer mu.Unlock()
+	return c.WriteControl(mt, data, deadline)
+}
 
 // versionBase is the agent semantic version (without role prefix).
 // final reported version is: go-agent-<versionBase> or go-agent2-<versionBase>
-var versionBase = "1.0.10.3"
+var versionBase = "1.0.10.12"
 var version = ""      // computed in main()
 var apiBootDone int32 // 0=not attempted, 1=attempted
 var apiUse int32      // 1=Web API usable
@@ -301,6 +338,11 @@ func main() {
 	u.RawQuery = q.Encode()
 
 	// 不再自动启用 Web API，仅做报告（前端可手动触发启用）。
+	if cfg, ok := loadAnyTLSConfig(); ok {
+		if err := startAnyTLS(cfg); err != nil {
+			log.Printf("{\"event\":\"anytls_boot_err\",\"error\":%q}", err.Error())
+		}
+	}
 
 	for {
 		if err := runOnce(u.String(), addr, secret, scheme); err != nil {
@@ -352,6 +394,8 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 		return err
 	}
 	defer c.Close()
+	wsWriteMu.Store(c, &sync.Mutex{})
+	defer wsWriteMu.Delete(c)
 	log.Printf("{\"event\":\"connected\"}")
 
 	// 不在重连时自动启用/重启 GOST，仅保持心跳与命令通道
@@ -376,7 +420,7 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 					continue
 				}
 				m["type"] = "OpLog"
-				_ = c.WriteJSON(m)
+				_ = wsWriteJSON(c, m)
 			case <-done:
 				return
 			}
@@ -426,7 +470,7 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 		ticker := time.NewTicker(time.Duration(pingSec) * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			_ = c.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(5*time.Second))
+			_ = wsWriteControl(c, websocket.PingMessage, []byte("ping"), time.Now().Add(5*time.Second))
 		}
 	}()
 
@@ -525,13 +569,28 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 				log.Printf("{\"event\":\"svc_cmd_apply_err\",\"type\":%q,\"error\":%q}", m.Type, err.Error())
 				emitOpLog("gost_api_err", "apply AddService failed", map[string]any{"error": err.Error()})
 				if reqID != "" {
-					_ = c.WriteJSON(map[string]any{"type": "AddServiceResult", "requestId": reqID, "data": map[string]any{"success": false, "message": err.Error()}})
+					_ = wsWriteJSON(c, map[string]any{"type": "AddServiceResult", "requestId": reqID, "data": map[string]any{"success": false, "message": err.Error()}})
 				}
 			} else {
 				log.Printf("{\"event\":\"svc_cmd_applied\",\"type\":%q,\"count\":%d}", m.Type, len(services))
 				if reqID != "" {
-					_ = c.WriteJSON(map[string]any{"type": "AddServiceResult", "requestId": reqID, "data": map[string]any{"success": true, "message": "ok"}})
+					_ = wsWriteJSON(c, map[string]any{"type": "AddServiceResult", "requestId": reqID, "data": map[string]any{"success": true, "message": "ok"}})
 				}
+			}
+		case "SetAnyTLS":
+			var req struct {
+				RequestID string `json:"requestId"`
+				Port      int    `json:"port"`
+				Password  string `json:"password"`
+			}
+			_ = json.Unmarshal(m.Data, &req)
+			err := applyAnyTLSConfig(req.Port, req.Password)
+			msg := "ok"
+			if err != nil {
+				msg = err.Error()
+			}
+			if req.RequestID != "" {
+				_ = wsWriteJSON(c, map[string]any{"type": "SetAnyTLSResult", "requestId": req.RequestID, "data": map[string]any{"success": err == nil, "message": msg}})
 			}
 		case "UpdateService":
 			var services []map[string]any
@@ -586,7 +645,7 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 				} else {
 					resp["data"] = nil
 				}
-				_ = c.WriteJSON(resp)
+				_ = wsWriteJSON(c, resp)
 			}()
 		case "DeleteService":
 			var req struct {
@@ -632,7 +691,7 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 			_ = json.Unmarshal(m.Data, &q)
 			list := queryServices(q.Filter)
 			out := map[string]any{"type": "QueryServicesResult", "requestId": q.RequestID, "data": list}
-			_ = c.WriteJSON(out)
+			_ = wsWriteJSON(c, out)
 			log.Printf("{\"event\":\"send_qs_result\",\"count\":%d}", len(list))
 		case "SuggestPorts":
 			var req SuggestPortsReq
@@ -640,7 +699,7 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 			go func() {
 				ports := suggestPorts(req.Base, req.Count)
 				resp := map[string]any{"type": "SuggestPortsResult", "requestId": req.RequestID, "data": map[string]any{"ports": ports}}
-				_ = c.WriteJSON(resp)
+				_ = wsWriteJSON(c, resp)
 			}()
 		case "ProbePort":
 			var req struct {
@@ -651,7 +710,7 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 			go func() {
 				listening := portListening(req.Port)
 				resp := map[string]any{"type": "ProbePortResult", "requestId": req.RequestID, "data": map[string]any{"port": req.Port, "listening": listening}}
-				_ = c.WriteJSON(resp)
+				_ = wsWriteJSON(c, resp)
 			}()
 		case "EnableGostAPI":
 			// 手动启用 GOST 顶层 API 并重启服务
@@ -724,11 +783,11 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 				content, _ := req["content"].(string)
 				urlStr, _ := req["url"].(string)
 				log.Printf("{\"event\":\"run_script_recv\",\"hasContent\":%t,\"contentLen\":%d,\"url\":%q}", content != "", len(content), urlStr)
-				_ = c.WriteJSON(map[string]any{"type": "OpLog", "step": "run_script_recv", "message": fmt.Sprintf("RunScript recv hasContent=%t contentLen=%d url=%s content=%s", content != "", len(content), urlStr, content)})
+				_ = wsWriteJSON(c, map[string]any{"type": "OpLog", "step": "run_script_recv", "message": fmt.Sprintf("RunScript recv hasContent=%t contentLen=%d url=%s content=%s", content != "", len(content), urlStr, content)})
 				res := map[string]any{"type": "RunScriptResult", "requestId": reqID, "data": runScript(req)}
-				_ = c.WriteJSON(res)
+				_ = wsWriteJSON(c, res)
 				if d, ok := res["data"].(map[string]any); ok {
-					_ = c.WriteJSON(map[string]any{"type": "OpLog", "step": "run_script_done", "message": fmt.Sprintf("RunScript done success=%v message=%v stdout=%v stderr=%v", d["success"], d["message"], d["stdout"], d["stderr"])})
+					_ = wsWriteJSON(c, map[string]any{"type": "OpLog", "step": "run_script_done", "message": fmt.Sprintf("RunScript done success=%v message=%v stdout=%v stderr=%v", d["success"], d["message"], d["stdout"], d["stderr"])})
 				}
 			}()
 		case "RunStreamScript":
@@ -751,11 +810,11 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 				path, _ := req["path"].(string)
 				content, _ := req["content"].(string)
 				log.Printf("{\"event\":\"write_file_recv\",\"path\":%q,\"contentLen\":%d}", path, len(content))
-				_ = c.WriteJSON(map[string]any{"type": "OpLog", "step": "write_file_recv", "message": fmt.Sprintf("WriteFile recv path=%s bytes=%d content=%s", path, len(content), content)})
+				_ = wsWriteJSON(c, map[string]any{"type": "OpLog", "step": "write_file_recv", "message": fmt.Sprintf("WriteFile recv path=%s bytes=%d content=%s", path, len(content), content)})
 				res := map[string]any{"type": "WriteFileResult", "requestId": reqID, "data": writeFileOp(req)}
-				_ = c.WriteJSON(res)
+				_ = wsWriteJSON(c, res)
 				if d, ok := res["data"].(map[string]any); ok {
-					_ = c.WriteJSON(map[string]any{"type": "OpLog", "step": "write_file_done", "message": fmt.Sprintf("WriteFile done path=%s success=%v message=%v", path, d["success"], d["message"])})
+					_ = wsWriteJSON(c, map[string]any{"type": "OpLog", "step": "write_file_done", "message": fmt.Sprintf("WriteFile done path=%s success=%v message=%v", path, d["success"], d["message"])})
 				}
 			}()
 		case "RestartService":
@@ -765,11 +824,11 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 				reqID, _ := req["requestId"].(string)
 				name, _ := req["name"].(string)
 				log.Printf("{\"event\":\"restart_service_recv\",\"name\":%q}", name)
-				_ = c.WriteJSON(map[string]any{"type": "OpLog", "step": "restart_service_recv", "message": fmt.Sprintf("RestartService recv name=%s", name)})
+				_ = wsWriteJSON(c, map[string]any{"type": "OpLog", "step": "restart_service_recv", "message": fmt.Sprintf("RestartService recv name=%s", name)})
 				ok := tryRestartService(name)
 				res := map[string]any{"type": "RestartServiceResult", "requestId": reqID, "data": map[string]any{"success": ok}}
-				_ = c.WriteJSON(res)
-				_ = c.WriteJSON(map[string]any{"type": "OpLog", "step": "restart_service_done", "message": fmt.Sprintf("RestartService done name=%s success=%v", name, ok)})
+				_ = wsWriteJSON(c, res)
+				_ = wsWriteJSON(c, map[string]any{"type": "OpLog", "step": "restart_service_done", "message": fmt.Sprintf("RestartService done name=%s success=%v", name, ok)})
 			}()
 		case "StopService":
 			var req map[string]any
@@ -779,7 +838,7 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 				name, _ := req["name"].(string)
 				ok := tryStopService(name)
 				res := map[string]any{"type": "StopServiceResult", "requestId": reqID, "data": map[string]any{"success": ok}}
-				_ = c.WriteJSON(res)
+				_ = wsWriteJSON(c, res)
 			}()
 		default:
 			// ignore unknown
@@ -930,12 +989,42 @@ func uptimeSeconds() int64 {
 }
 
 func periodicSystemInfo(c *websocket.Conn) {
-	ticker := time.NewTicker(5 * time.Second)
+	sec := 10
+	if v := getenv("AGENT_SYSINFO_SEC", ""); v != "" {
+		if n, _ := strconv.Atoi(v); n > 0 {
+			sec = n
+		}
+	}
+	usedSec := 10
+	if v := getenv("AGENT_USED_PORTS_SEC", ""); v != "" {
+		if n, _ := strconv.Atoi(v); n > 0 {
+			usedSec = n
+		}
+	}
+	logSysinfo := false
+	switch strings.ToLower(strings.TrimSpace(getenv("AGENT_SYSINFO_LOG", "0"))) {
+	case "1", "true", "yes", "on":
+		logSysinfo = true
+	}
+	ticker := time.NewTicker(time.Duration(sec) * time.Second)
 	defer ticker.Stop()
+	var lastPorts []int
+	var lastPortsAt time.Time
 	for {
 		rx, tx := netBytes()
 		// gather interface list (best-effort)
 		ifaces := getInterfaces()
+		// refresh used ports snapshot periodically
+		if time.Since(lastPortsAt) >= time.Duration(usedSec)*time.Second || lastPortsAt.IsZero() {
+			used := getUsedListeningPorts()
+			list := make([]int, 0, len(used))
+			for p := range used {
+				list = append(list, p)
+			}
+			sort.Ints(list)
+			lastPorts = list
+			lastPortsAt = time.Now()
+		}
 		payload := map[string]any{
 			"Uptime": uptimeSeconds(),
 		}
@@ -947,12 +1036,15 @@ func periodicSystemInfo(c *websocket.Conn) {
 		payload["GostAPI"] = apiAvailable()
 		payload["GostRunning"] = gostRunning()
 		payload["GostAPIConfigured"] = apiConfigured()
-		if len(ifaces) > 0 {
-			payload["Interfaces"] = ifaces
-		}
+		payload["Interfaces"] = ifaces
+		payload["UsedPorts"] = lastPorts
 		b, _ := json.Marshal(payload)
-		log.Printf("{\"event\":\"sysinfo_report\",\"payload\":%s}", string(b))
-		if err := c.WriteMessage(websocket.TextMessage, b); err != nil {
+		if logSysinfo {
+			log.Printf("{\"event\":\"sysinfo_report\",\"payload\":%s}", string(b))
+		}
+		if err := wsWriteMessage(c, websocket.TextMessage, b); err != nil {
+			log.Printf("{\"event\":\"sysinfo_report_error\",\"error\":%q}", err.Error())
+			_ = c.Close()
 			return
 		}
 		<-ticker.C
@@ -1184,7 +1276,7 @@ func handleDiagnose(c *websocket.Conn, d *DiagnoseData) {
 		resp = map[string]any{"success": ok, "averageTime": avg, "packetLoss": loss, "message": msg, "ctx": d.Ctx}
 	}
 	out := map[string]any{"type": "DiagnoseResult", "requestId": d.RequestID, "data": resp}
-	_ = c.WriteJSON(out)
+	_ = wsWriteJSON(c, out)
 	log.Printf("{\"event\":\"send_result\",\"requestId\":%q,\"data\":%s}", d.RequestID, string(mustJSON(resp)))
 }
 
@@ -2027,36 +2119,12 @@ func portListening(port int) bool {
 	return false
 }
 
-// getUsedListeningPorts attempts to list TCP LISTEN ports via lsof/ss/netstat; fallback to probe
+// getUsedListeningPorts lists TCP/UDP LISTEN ports via ss; fallback to /proc/net; then probe
 func getUsedListeningPorts() map[int]bool {
 	used := map[int]bool{}
-	// Try lsof
-	if p, err := exec.LookPath("lsof"); err == nil {
-		cmd := exec.Command(p, "-nP", "-iTCP", "-sTCP:LISTEN")
-		cmd.Stdout = &bytes.Buffer{}
-		cmd.Stderr = &bytes.Buffer{}
-		if err := cmd.Run(); err == nil {
-			out := cmd.Stdout.(*bytes.Buffer).String()
-			lines := strings.Split(out, "\n")
-			for _, ln := range lines {
-				// typical line contains "*:8080 (LISTEN)" or "127.0.0.1:8080 (LISTEN)" or "[::]:8080"
-				if i := strings.LastIndex(ln, ":"); i >= 0 {
-					tail := ln[i+1:]
-					// tail may include space and (LISTEN)
-					fields := strings.Fields(tail)
-					if len(fields) > 0 {
-						if n, err2 := strconv.Atoi(fields[0]); err2 == nil {
-							used[n] = true
-						}
-					}
-				}
-			}
-			return used
-		}
-	}
-	// Try ss
+	// Try ss first (fast and widely available)
 	if p, err := exec.LookPath("ss"); err == nil {
-		cmd := exec.Command(p, "-lnt")
+		cmd := exec.Command(p, "-lntuH")
 		cmd.Stdout = &bytes.Buffer{}
 		cmd.Stderr = &bytes.Buffer{}
 		if err := cmd.Run(); err == nil {
@@ -2065,39 +2133,32 @@ func getUsedListeningPorts() map[int]bool {
 			for _, ln := range lines {
 				// lines like: LISTEN 0 128 0.0.0.0:22 ... or [::]:22
 				fields := strings.Fields(ln)
-				if len(fields) >= 4 {
-					addr := fields[3]
-					if i := strings.LastIndex(addr, ":"); i >= 0 && i+1 < len(addr) {
-						if n, err2 := strconv.Atoi(addr[i+1:]); err2 == nil {
+				for _, f := range fields {
+					if strings.HasSuffix(f, ":*") {
+						continue
+					}
+					if i := strings.LastIndex(f, ":"); i >= 0 && i+1 < len(f) {
+						if n, err2 := strconv.Atoi(f[i+1:]); err2 == nil {
 							used[n] = true
 						}
 					}
 				}
 			}
-			return used
+			if len(used) > 0 {
+				return used
+			}
 		}
 	}
-	// Try netstat
-	if p, err := exec.LookPath("netstat"); err == nil {
-		cmd := exec.Command(p, "-lnt")
-		cmd.Stdout = &bytes.Buffer{}
-		cmd.Stderr = &bytes.Buffer{}
-		if err := cmd.Run(); err == nil {
-			out := cmd.Stdout.(*bytes.Buffer).String()
-			lines := strings.Split(out, "\n")
-			for _, ln := range lines {
-				fields := strings.Fields(ln)
-				if len(fields) >= 4 {
-					addr := fields[len(fields)-2]
-					if i := strings.LastIndex(addr, ":"); i >= 0 && i+1 < len(addr) {
-						if n, err2 := strconv.Atoi(addr[i+1:]); err2 == nil {
-							used[n] = true
-						}
-					}
-				}
+	// Fallback: parse /proc/net/{tcp,udp} and ipv6 variants
+	for _, p := range []string{"/proc/net/tcp", "/proc/net/tcp6", "/proc/net/udp", "/proc/net/udp6"} {
+		if ports := parseProcNetPorts(p); len(ports) > 0 {
+			for k := range ports {
+				used[k] = true
 			}
-			return used
 		}
+	}
+	if len(used) > 0 {
+		return used
 	}
 	// Fallback minimal: probe a small range around common ports
 	for _, p := range []int{22, 80, 443, 3306, 6379} {
@@ -2106,6 +2167,39 @@ func getUsedListeningPorts() map[int]bool {
 		}
 	}
 	return used
+}
+
+// parseProcNetPorts returns listening ports from /proc/net/{tcp,udp} style files.
+func parseProcNetPorts(path string) map[int]bool {
+	ports := map[int]bool{}
+	b, err := ioutil.ReadFile(path)
+	if err != nil {
+		return ports
+	}
+	lines := strings.Split(string(b), "\n")
+	for i, ln := range lines {
+		if i == 0 || strings.TrimSpace(ln) == "" {
+			continue
+		}
+		fields := strings.Fields(ln)
+		if len(fields) < 4 {
+			continue
+		}
+		local := fields[1]
+		state := fields[3]
+		// TCP LISTEN = 0A, UDP LISTEN = 07
+		if state != "0A" && state != "07" {
+			continue
+		}
+		if idx := strings.LastIndex(local, ":"); idx >= 0 && idx+1 < len(local) {
+			if p, err := strconv.ParseInt(local[idx+1:], 16, 0); err == nil {
+				if p > 0 && p <= 65535 {
+					ports[int(p)] = true
+				}
+			}
+		}
+	}
+	return ports
 }
 
 // suggestPorts returns up to count nearest higher free ports above base
@@ -2847,8 +2941,17 @@ func runScript(req map[string]any) map[string]any {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "/bin/sh", scriptPath)
-	log.Printf("{\"event\":\"run_script_exec\",\"cmd\":[%q,%q],\"timeoutSec\":%d}", "/bin/sh", scriptPath, timeoutSec)
+	cmdPath := "/bin/sh"
+	if hasShebang(scriptPath) {
+		cmdPath = scriptPath
+	}
+	var cmd *exec.Cmd
+	if cmdPath == scriptPath {
+		cmd = exec.CommandContext(ctx, cmdPath)
+	} else {
+		cmd = exec.CommandContext(ctx, cmdPath, scriptPath)
+	}
+	log.Printf("{\"event\":\"run_script_exec\",\"cmd\":[%q,%q],\"timeoutSec\":%d}", cmdPath, scriptPath, timeoutSec)
 	out, e := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return map[string]any{"success": false, "message": "timeout"}
@@ -2920,11 +3023,11 @@ func runStreamScript(reqID, content, urlStr, endpoint, secret string) {
 	defer ticker.Stop()
 
 	var buf strings.Builder
-	flush := func(done bool) {
+	flush := func(done bool, exitCode *int) {
 		if buf.Len() == 0 && !done {
 			return
 		}
-		postStreamChunk(endpoint, secret, reqID, buf.String(), done)
+		postStreamChunk(endpoint, secret, reqID, buf.String(), done, exitCode)
 		buf.Reset()
 	}
 
@@ -2937,17 +3040,25 @@ func runStreamScript(reqID, content, urlStr, endpoint, secret string) {
 				buf.WriteString(ck.s)
 			}
 		case <-ticker.C:
-			flush(false)
+			flush(false, nil)
 		case <-doneCh:
-			flush(false)
-			cmd.Wait()
-			flush(true)
+			flush(false, nil)
+			err := cmd.Wait()
+			exitCode := 0
+			if err != nil {
+				if ee, ok := err.(*exec.ExitError); ok {
+					exitCode = ee.ExitCode()
+				} else {
+					exitCode = 1
+				}
+			}
+			flush(true, &exitCode)
 			return
 		}
 	}
 }
 
-func postStreamChunk(endpoint, secret, reqID, chunk string, done bool) {
+func postStreamChunk(endpoint, secret, reqID, chunk string, done bool, exitCode *int) {
 	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}}
@@ -2957,6 +3068,9 @@ func postStreamChunk(endpoint, secret, reqID, chunk string, done bool) {
 		"chunk":     chunk,
 		"done":      done,
 		"timeMs":    time.Now().UnixMilli(),
+	}
+	if exitCode != nil {
+		body["exitCode"] = *exitCode
 	}
 	b, _ := json.Marshal(body)
 	req, _ := http.NewRequest("POST", endpoint, bytes.NewReader(b))
@@ -3007,6 +3121,21 @@ func firstN(s string, n int) string {
 	return s[:n]
 }
 
+func hasShebang(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	r := bufio.NewReader(f)
+	line, err := r.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return false
+	}
+	line = strings.TrimSpace(line)
+	return strings.HasPrefix(line, "#!")
+}
+
 // ---- interactive shell support ----
 
 func startShellSession(sessionID string, rows, cols int, c *websocket.Conn) {
@@ -3023,7 +3152,7 @@ func startShellSession(sessionID string, rows, cols int, c *websocket.Conn) {
 	defer shellMu.Unlock()
 	if activeShell != nil && !activeShell.closed {
 		// already running; just send ready
-		_ = c.WriteJSON(map[string]any{"type": "ShellReady", "sessionId": activeShell.id})
+		_ = wsWriteJSON(c, map[string]any{"type": "ShellReady", "sessionId": activeShell.id})
 		return
 	}
 	cmd := exec.Command("/bin/bash", "--login")
@@ -3031,7 +3160,7 @@ func startShellSession(sessionID string, rows, cols int, c *websocket.Conn) {
 	ws := &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)}
 	ptmx, err := pty.StartWithSize(cmd, ws)
 	if err != nil {
-		_ = c.WriteJSON(map[string]any{"type": "ShellExit", "sessionId": sessionID, "code": -1, "message": err.Error()})
+		_ = wsWriteJSON(c, map[string]any{"type": "ShellExit", "sessionId": sessionID, "code": -1, "message": err.Error()})
 		return
 	}
 	sess := &shellSession{id: sessionID, cmd: cmd, ptmx: ptmx}
@@ -3045,7 +3174,7 @@ func startShellSession(sessionID string, rows, cols int, c *websocket.Conn) {
 			if n > 0 {
 				chunk := string(buf[:n])
 				sess.append(chunk)
-				_ = c.WriteJSON(map[string]any{"type": "ShellData", "sessionId": sessionID, "data": chunk, "timeMs": time.Now().UnixMilli()})
+				_ = wsWriteJSON(c, map[string]any{"type": "ShellData", "sessionId": sessionID, "data": chunk, "timeMs": time.Now().UnixMilli()})
 			}
 			if err != nil {
 				break
@@ -3061,7 +3190,7 @@ func startShellSession(sessionID string, rows, cols int, c *websocket.Conn) {
 			}
 		}
 		sess.markClosed()
-		_ = c.WriteJSON(map[string]any{"type": "ShellExit", "sessionId": sessionID, "code": code})
+		_ = wsWriteJSON(c, map[string]any{"type": "ShellExit", "sessionId": sessionID, "code": code})
 		shellMu.Lock()
 		if activeShell == sess {
 			activeShell = nil
@@ -3069,7 +3198,7 @@ func startShellSession(sessionID string, rows, cols int, c *websocket.Conn) {
 		shellMu.Unlock()
 	}()
 
-	_ = c.WriteJSON(map[string]any{"type": "ShellReady", "sessionId": sessionID})
+	_ = wsWriteJSON(c, map[string]any{"type": "ShellReady", "sessionId": sessionID})
 }
 
 func shellInput(sessionID, data string, c *websocket.Conn) {
@@ -3077,7 +3206,7 @@ func shellInput(sessionID, data string, c *websocket.Conn) {
 	sess := activeShell
 	shellMu.Unlock()
 	if sess == nil || sess.closed || (sessionID != "" && sess.id != sessionID) {
-		_ = c.WriteJSON(map[string]any{"type": "ShellExit", "sessionId": sessionID, "code": -1, "message": "session not running"})
+		_ = wsWriteJSON(c, map[string]any{"type": "ShellExit", "sessionId": sessionID, "code": -1, "message": "session not running"})
 		return
 	}
 	sess.mu.Lock()
@@ -3126,7 +3255,7 @@ func shellStop(sessionID string, c *websocket.Conn) {
 		activeShell = nil
 	}
 	shellMu.Unlock()
-	_ = c.WriteJSON(map[string]any{"type": "ShellExit", "sessionId": sess.id, "code": 0})
+	_ = wsWriteJSON(c, map[string]any{"type": "ShellExit", "sessionId": sess.id, "code": 0})
 }
 
 func killProc(cmd *exec.Cmd) error {

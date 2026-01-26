@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -25,6 +26,7 @@ import (
 func NodeSetExit(c *gin.Context) {
 	var p struct {
 		NodeID   int64  `json:"nodeId" binding:"required"`
+		Type     string `json:"type"`
 		Port     int    `json:"port" binding:"required"`
 		Password string `json:"password" binding:"required"`
 		Method   string `json:"method"`
@@ -38,11 +40,19 @@ func NodeSetExit(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
 		return
 	}
+	exitType := strings.ToLower(strings.TrimSpace(p.Type))
+	if exitType == "" {
+		exitType = "ss"
+	}
+	if exitType != "ss" && exitType != "anytls" {
+		c.JSON(http.StatusOK, response.ErrMsg("无效的出口类型"))
+		return
+	}
 	if p.Port <= 0 || p.Port > 65535 || p.Password == "" {
 		c.JSON(http.StatusOK, response.ErrMsg("无效的端口或密码"))
 		return
 	}
-	if p.Method == "" {
+	if p.Method == "" && exitType == "ss" {
 		p.Method = "AEAD_CHACHA20_POLY1305"
 	}
 
@@ -54,7 +64,53 @@ func NodeSetExit(c *gin.Context) {
 		return
 	}
 
-	// Build service config
+	if exitType == "anytls" {
+		req := map[string]interface{}{
+			"requestId": RandUUID(),
+			"port":      p.Port,
+			"password":  p.Password,
+		}
+		if res, ok := RequestOp(p.NodeID, "SetAnyTLS", req, 12*time.Second); ok {
+			msg := "AnyTLS 出口已创建/更新"
+			success := true
+			if data, _ := res["data"].(map[string]interface{}); data != nil {
+				if v, _ := data["message"].(string); v != "" {
+					msg = v
+				}
+				if v, _ := data["success"].(bool); !v {
+					success = false
+				}
+			}
+			if !success {
+				c.JSON(http.StatusOK, response.ErrMsg(msg))
+				return
+			}
+			now := time.Now().UnixMilli()
+			var existing model.AnyTLSSetting
+			tx := dbpkg.DB.Where("node_id = ?", p.NodeID).First(&existing)
+			if tx.Error == nil && existing.ID > 0 {
+				existing.Port = p.Port
+				existing.Password = p.Password
+				existing.UpdatedTime = now
+				_ = dbpkg.DB.Save(&existing).Error
+			} else {
+				status := 1
+				rec := model.AnyTLSSetting{
+					BaseEntity: model.BaseEntity{CreatedTime: now, UpdatedTime: now, Status: &status},
+					NodeID:     p.NodeID,
+					Port:       p.Port,
+					Password:   p.Password,
+				}
+				_ = dbpkg.DB.Create(&rec).Error
+			}
+			c.JSON(http.StatusOK, response.OkMsg(msg))
+			return
+		}
+		c.JSON(http.StatusOK, response.ErrMsg("节点未响应，请稍后重试"))
+		return
+	}
+
+	// Build service config (SS)
 	name := fmt.Sprintf("exit_ss_%d", p.Port)
 	svc := buildSSService(name, p.Port, p.Password, p.Method, map[string]any{
 		"observer": p.Observer,
@@ -141,9 +197,29 @@ func NodeSetExit(c *gin.Context) {
 func NodeGetExit(c *gin.Context) {
 	var p struct {
 		NodeID int64 `json:"nodeId" binding:"required"`
+		Type   string `json:"type"`
 	}
 	if err := c.ShouldBindJSON(&p); err != nil {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+		return
+	}
+	exitType := strings.ToLower(strings.TrimSpace(p.Type))
+	if exitType == "" {
+		exitType = "ss"
+	}
+	if exitType == "anytls" {
+		var item model.AnyTLSSetting
+		if err := dbpkg.DB.Where("node_id = ?", p.NodeID).First(&item).Error; err != nil || item.ID == 0 {
+			c.JSON(http.StatusOK, response.OkNoData())
+			return
+		}
+		out := gin.H{
+			"nodeId":   item.NodeID,
+			"port":     item.Port,
+			"password": item.Password,
+			"type":     "anytls",
+		}
+		c.JSON(http.StatusOK, response.Ok(out))
 		return
 	}
 	var item model.ExitSetting

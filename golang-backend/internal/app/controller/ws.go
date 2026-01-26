@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"reflect"
 	"strconv"
 	"sync"
@@ -91,12 +92,14 @@ var (
 )
 
 type terminalSession struct {
-	history strings.Builder
-	running bool
+	history    strings.Builder
+	running    bool
+	lastActive time.Time
 }
 
 func (ts *terminalSession) append(chunk string) {
 	ts.history.WriteString(chunk)
+	ts.lastActive = time.Now()
 	// trim history if too large
 	const limit = 256 * 1024
 	if ts.history.Len() > limit {
@@ -107,6 +110,25 @@ func (ts *terminalSession) append(chunk string) {
 		ts.history.Reset()
 		ts.history.WriteString(b)
 	}
+}
+
+var termSessionTTL = time.Duration(getEnvInt("TERM_SESSION_TTL_SEC", 600)) * time.Second
+var termSessionSweep = time.Duration(getEnvInt("TERM_SESSION_SWEEP_SEC", 60)) * time.Second
+var sysinfoStoreInterval = time.Duration(getEnvInt("SYSINFO_STORE_SEC", 10)) * time.Second
+var sysinfoStoreMu sync.Mutex
+var lastSysinfoStore = map[int64]int64{}
+
+func init() {
+	go cleanupTermSessions()
+}
+
+func getEnvInt(key string, def int) int {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return def
 }
 
 // SystemInfoWS 节点状态 WebSocket
@@ -198,6 +220,7 @@ func SystemInfoWS(c *gin.Context) {
 	// Node agent channel
 	var node model.Node
 	if err := dbpkg.DB.Where("secret = ?", secret).First(&node).Error; err == nil && nodeType == "1" {
+		_ = resolvePanelHost(c)
 		jlog(map[string]interface{}{"event": "node_connected", "nodeId": node.ID, "name": node.Name, "remote": c.Request.RemoteAddr, "version": version})
 		s := 1
 		node.Status = &s
@@ -205,6 +228,8 @@ func SystemInfoWS(c *gin.Context) {
 			node.Version = version
 		}
 		_ = dbpkg.DB.Save(&node).Error
+		// auto join easytier if enabled
+		go ensureEasyTierAutoJoinFor(node.ID)
 		// close an open disconnect log if any
 		var lastLog model.NodeDisconnectLog
 		if err := dbpkg.DB.Where("node_id = ? AND up_at_ms IS NULL", node.ID).Order("down_at_ms desc").First(&lastLog).Error; err == nil && lastLog.ID > 0 {
@@ -322,7 +347,7 @@ func SystemInfoWS(c *gin.Context) {
 							continue
 						}
 					}
-				} else if ok && (t == "RunScriptResult" || t == "WriteFileResult" || t == "RestartServiceResult" || t == "StopServiceResult" || t == "AddServiceResult") {
+				} else if ok && (t == "RunScriptResult" || t == "WriteFileResult" || t == "RestartServiceResult" || t == "StopServiceResult" || t == "AddServiceResult" || t == "SetAnyTLSResult") {
 					if reqID, ok := generic["requestId"].(string); ok {
 						opMu.Lock()
 						ch := opWaiters[reqID]
@@ -481,7 +506,7 @@ func getOrCreateTermSession(nodeID int64) *terminalSession {
 	defer termMu.Unlock()
 	ts := termSessions[nodeID]
 	if ts == nil {
-		ts = &terminalSession{}
+		ts = &terminalSession{lastActive: time.Now()}
 		termSessions[nodeID] = ts
 	}
 	return ts
@@ -491,6 +516,18 @@ func appendTermData(nodeID int64, chunk string) {
 	ts := getOrCreateTermSession(nodeID)
 	ts.append(chunk)
 	broadcastTerm(nodeID, map[string]any{"type": "data", "data": chunk})
+}
+
+func touchTermSession(nodeID int64) {
+	termMu.Lock()
+	ts := termSessions[nodeID]
+	if ts == nil {
+		ts = &terminalSession{lastActive: time.Now()}
+		termSessions[nodeID] = ts
+	} else {
+		ts.lastActive = time.Now()
+	}
+	termMu.Unlock()
 }
 
 func broadcastTerm(nodeID int64, payload map[string]any) {
@@ -520,6 +557,7 @@ func setTermRunning(nodeID int64, running bool) {
 	ts := termSessions[nodeID]
 	if ts != nil {
 		ts.running = running
+		ts.lastActive = time.Now()
 	}
 	termMu.Unlock()
 }
@@ -528,6 +566,44 @@ func resetTermSession(nodeID int64) {
 	termMu.Lock()
 	delete(termSessions, nodeID)
 	termMu.Unlock()
+}
+
+func cleanupTermSessions() {
+	if termSessionTTL <= 0 || termSessionSweep <= 0 {
+		return
+	}
+	ticker := time.NewTicker(termSessionSweep)
+	defer ticker.Stop()
+	for range ticker.C {
+		now := time.Now()
+		termMu.Lock()
+		expired := make([]int64, 0)
+		for nid, ts := range termSessions {
+			if ts == nil {
+				expired = append(expired, nid)
+				continue
+			}
+			if ts.running {
+				continue
+			}
+			if !ts.lastActive.IsZero() && now.Sub(ts.lastActive) > termSessionTTL {
+				expired = append(expired, nid)
+			}
+		}
+		for _, nid := range expired {
+			delete(termSessions, nid)
+			if clients := termClients[nid]; len(clients) > 0 {
+				for cli := range clients {
+					if cli != nil && cli.c != nil {
+						_ = cli.c.WriteMessage(websocket.TextMessage, []byte(`{"type":"expired"}`))
+						_ = cli.c.Close()
+					}
+				}
+			}
+			delete(termClients, nid)
+		}
+		termMu.Unlock()
+	}
 }
 
 // NodeTerminalWS handles admin websocket to node shell.
@@ -608,6 +684,7 @@ func NodeTerminalWS(c *gin.Context) {
 	termClients[nid][cli] = struct{}{}
 	ts := termSessions[nid]
 	termMu.Unlock()
+	touchTermSession(nid)
 
 	// send history if exists
 	if ts != nil && ts.history.Len() > 0 {
@@ -626,12 +703,14 @@ func NodeTerminalWS(c *gin.Context) {
 		t, _ := m["type"].(string)
 		switch t {
 		case "start":
+			touchTermSession(nid)
 			rows := intFrom(m["rows"], 24)
 			cols := intFrom(m["cols"], 80)
 			if err := sendWSCommand(nid, "ShellStart", map[string]any{"sessionId": "default", "rows": rows, "cols": cols}); err != nil {
 				_ = conn.WriteJSON(map[string]any{"type": "error", "message": err.Error()})
 			}
 		case "input":
+			touchTermSession(nid)
 			data, _ := m["data"].(string)
 			if data != "" {
 				if err := sendWSCommand(nid, "ShellInput", map[string]any{"sessionId": "default", "data": data}); err != nil {
@@ -639,12 +718,14 @@ func NodeTerminalWS(c *gin.Context) {
 				}
 			}
 		case "resize":
+			touchTermSession(nid)
 			rows := intFrom(m["rows"], 0)
 			cols := intFrom(m["cols"], 0)
 			if rows > 0 && cols > 0 {
 				_ = sendWSCommand(nid, "ShellResize", map[string]any{"sessionId": "default", "rows": rows, "cols": cols})
 			}
 		case "stop":
+			touchTermSession(nid)
 			_ = sendWSCommand(nid, "ShellStop", map[string]any{"sessionId": "default"})
 			resetTermSession(nid)
 			// notify client that history cleared
@@ -990,6 +1071,12 @@ func convertSysInfoJSON(b []byte) map[string]interface{} {
 	} else if v, ok := in["interfaces"]; ok {
 		out["interfaces"] = v
 	}
+	// used ports list (array of ints)
+	if v, ok := in["UsedPorts"]; ok {
+		out["used_ports"] = v
+	} else if v, ok := in["used_ports"]; ok {
+		out["used_ports"] = v
+	}
 	// passthrough health flags: gost api & service status
 	if v, ok := in["GostAPI"]; ok {
 		out["gost_api"] = v
@@ -1050,23 +1137,52 @@ func storeSysInfoSample(nodeID int64, m map[string]interface{}) {
 		return 0
 	}
 	now := time.Now().UnixMilli()
-	s := model.NodeSysInfo{
-		NodeID:  nodeID,
-		TimeMs:  now,
-		Uptime:  toInt64(m["uptime"]),
-		BytesRx: toInt64(m["bytes_received"]),
-		BytesTx: toInt64(m["bytes_transmitted"]),
-		CPU:     toFloat(m["cpu_usage"]),
-		Mem:     toFloat(m["memory_usage"]),
+	shouldStore := true
+	if sysinfoStoreInterval > 0 {
+		sysinfoStoreMu.Lock()
+		last := lastSysinfoStore[nodeID]
+		if last > 0 && now-last < sysinfoStoreInterval.Milliseconds() {
+			shouldStore = false
+		} else {
+			lastSysinfoStore[nodeID] = now
+		}
+		sysinfoStoreMu.Unlock()
 	}
-	enqueueSysInfo(s)
-	// persist interfaces snapshot if provided
-	if ifs, ok := m["interfaces"]; ok && ifs != nil {
+	if shouldStore {
+		s := model.NodeSysInfo{
+			NodeID:  nodeID,
+			TimeMs:  now,
+			Uptime:  toInt64(m["uptime"]),
+			BytesRx: toInt64(m["bytes_received"]),
+			BytesTx: toInt64(m["bytes_transmitted"]),
+			CPU:     toFloat(m["cpu_usage"]),
+			Mem:     toFloat(m["memory_usage"]),
+		}
+		enqueueSysInfo(s)
+	}
+	// persist runtime snapshot if provided
+	var ifsStr *string
+	var usedStr *string
+	if ifs, ok := m["interfaces"]; ok {
 		if b, err := json.Marshal(ifs); err == nil {
 			s := string(b)
-			rec := model.NodeRuntime{NodeID: nodeID, Interfaces: &s, UpdatedTime: now}
-			setRuntime(rec)
+			ifsStr = &s
 		}
+	}
+	if ports, ok := m["used_ports"]; ok {
+		if b, err := json.Marshal(ports); err == nil {
+			s := string(b)
+			usedStr = &s
+		}
+	}
+	if ifsStr != nil || usedStr != nil {
+		rec := model.NodeRuntime{
+			NodeID:      nodeID,
+			Interfaces:  ifsStr,
+			UsedPorts:   usedStr,
+			UpdatedTime: now,
+		}
+		setRuntime(rec)
 	}
 }
 

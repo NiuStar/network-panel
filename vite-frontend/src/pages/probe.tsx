@@ -17,6 +17,7 @@ import {
   updateProbeTarget,
   deleteProbeTarget,
 } from "@/api";
+import VirtualGrid from "@/components/VirtualGrid";
 
 export default function ProbePage() {
   const [list, setList] = useState<any[]>([]);
@@ -95,9 +96,14 @@ export default function ProbePage() {
           新增目标
         </Button>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {list.map((it) => (
-          <Card key={it.id}>
+      <VirtualGrid
+        className="w-full"
+        estimateRowHeight={180}
+        items={list}
+        maxColumns={3}
+        minItemWidth={280}
+        renderItem={(it) => (
+          <Card key={it.id} className="list-card">
             <CardHeader className="justify-between">
               <div>
                 <div className="font-semibold">{it.name}</div>
@@ -121,8 +127,8 @@ export default function ProbePage() {
               ID: {it.id}
             </CardBody>
           </Card>
-        ))}
-      </div>
+        )}
+      />
 
       <Modal isOpen={modalOpen} onOpenChange={setModalOpen}>
         <ModalContent>

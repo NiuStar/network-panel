@@ -100,6 +100,7 @@ func Init() error {
 		&model.ViteConfig{},
 		&model.StatisticsFlow{},
 		&model.ExitSetting{},
+		&model.AnyTLSSetting{},
 		&model.ProbeTarget{},
 		&model.NodeProbeResult{},
 		&model.NodeDisconnectLog{},
@@ -110,6 +111,7 @@ func Init() error {
 		&model.ForwardMidPort{},
 		&model.HeartbeatRecord{},
 		&model.FlowTimeseries{},
+		&model.EasyTierResult{},
 		&model.NQResult{},
 	); err != nil {
 		return err

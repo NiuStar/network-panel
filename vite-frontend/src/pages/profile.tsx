@@ -341,6 +341,11 @@ export default function ProfilePage() {
           <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
             v{isWebViewFunc() ? siteConfig.app_version : siteConfig.version}
           </p>
+          {siteConfig.build_date && (
+            <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+              build {new Date(siteConfig.build_date).toLocaleString()}
+            </p>
+          )}
         </div>
       </div>
 

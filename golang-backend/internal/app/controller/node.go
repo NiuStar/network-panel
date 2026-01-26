@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -12,8 +13,12 @@ import (
 	"network-panel/golang-backend/internal/app/model"
 	"network-panel/golang-backend/internal/app/response"
 	dbpkg "network-panel/golang-backend/internal/db"
-	"strconv"
 )
+
+// NodeSelfCheckRequest for quick node self-check.
+type NodeSelfCheckRequest struct {
+	NodeID int64 `json:"nodeId"`
+}
 
 // NodeCreate 创建节点
 // @Summary 创建节点
@@ -82,27 +87,22 @@ func NodeList(c *gin.Context) {
 	} else {
 		dbpkg.DB.Find(&nodes)
 	}
-	// build last-seen map from node_sysinfo (latest sample per node)
-	type rec struct {
-		NodeID int64
-		TimeMs int64
+	// websocket status already persisted in node.status; no sysinfo-based override
+	// map to output adding cycleMonths for clarity; keep other fields
+	// runtime snapshots (interfaces / used ports)
+	idList := make([]int64, 0, len(nodes))
+	for _, n := range nodes {
+		idList = append(idList, n.ID)
 	}
-	var recs []rec
-	// table name is node_sysinfo (no extra underscore)
-	_ = dbpkg.DB.Raw("select node_id, max(time_ms) as time_ms from node_sysinfo group by node_id").Scan(&recs)
-	lastSeen := map[int64]int64{}
-	for _, r := range recs {
-		lastSeen[r.NodeID] = r.TimeMs
-	}
-	now := time.Now().UnixMilli()
-	// consider offline if no sysinfo within threshold
-	thresholdMs := int64(30 * 1000) // 30s
-	if v := c.Request.URL.Query().Get("offline_threshold_ms"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			thresholdMs = n
+	runtimeMap := map[int64]model.NodeRuntime{}
+	if len(idList) > 0 {
+		var runs []model.NodeRuntime
+		_ = dbpkg.DB.Where("node_id in ?", idList).Find(&runs).Error
+		for _, r := range runs {
+			runtimeMap[r.NodeID] = r
 		}
 	}
-	// map to output adding cycleMonths for clarity; keep other fields
+
 	outs := make([]map[string]any, 0, len(nodes))
 	for _, n := range nodes {
 		// read last known health flags (in-memory)
@@ -124,10 +124,12 @@ func NodeList(c *gin.Context) {
 			"gostApi":     ifThen(ok && hf.GostAPI, 1, 0),
 			"gostRunning": ifThen(ok && hf.GostRunning, 1, 0),
 		}
-		// override status by last-seen if stale
-		if ts, ok2 := lastSeen[n.ID]; ok2 {
-			if now-ts > thresholdMs {
-				m["status"] = 0
+		if rt, ok := runtimeMap[n.ID]; ok {
+			if rt.UsedPorts != nil && *rt.UsedPorts != "" {
+				var list []int
+				if json.Unmarshal([]byte(*rt.UsedPorts), &list) == nil {
+					m["usedPorts"] = list
+				}
 			}
 		}
 		// derive cycleMonths from stored cycleDays
@@ -217,6 +219,62 @@ func NodeUpdate(c *gin.Context) {
 	dbpkg.DB.Model(&model.Tunnel{}).Where("in_node_id = ?", n.ID).Update("in_ip", n.IP)
 	dbpkg.DB.Model(&model.Tunnel{}).Where("out_node_id = ?", n.ID).Update("out_ip", n.ServerIP)
 	c.JSON(http.StatusOK, response.OkMsg("节点更新成功"))
+}
+
+// NodeSelfCheck runs a quick outbound connectivity check from the node.
+// @Summary 节点自检
+// @Tags node
+// @Accept json
+// @Produce json
+// @Param data body NodeSelfCheckRequest true "节点ID"
+// @Success 200 {object} SwaggerResp
+// @Router /api/v1/node/self-check [post]
+func NodeSelfCheck(c *gin.Context) {
+	var req NodeSelfCheckRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.NodeID <= 0 {
+		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+		return
+	}
+	var n model.Node
+	if err := dbpkg.DB.First(&n, req.NodeID).Error; err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("节点不存在"))
+		return
+	}
+	avg, loss, ok, msg, rid := diagnosePingFromNodeCtx(
+		req.NodeID,
+		"1.1.1.1",
+		3,
+		1500,
+		map[string]any{"src": "node", "step": "ping", "nodeId": req.NodeID},
+	)
+	avg2, loss2, ok2, msg2, rid2 := diagnoseFromNodeCtx(
+		req.NodeID,
+		"1.1.1.1",
+		80,
+		2,
+		1500,
+		map[string]any{"src": "node", "step": "tcp", "nodeId": req.NodeID},
+	)
+	c.JSON(http.StatusOK, response.Ok(map[string]any{
+		"ping": map[string]any{
+			"success":     ok,
+			"averageTime": avg,
+			"packetLoss":  loss,
+			"message":     msg,
+			"requestId":   rid,
+			"target":      "1.1.1.1",
+			"targetType":  "icmp",
+		},
+		"tcp": map[string]any{
+			"success":     ok2,
+			"averageTime": avg2,
+			"packetLoss":  loss2,
+			"message":     msg2,
+			"requestId":   rid2,
+			"target":      "1.1.1.1:80",
+			"targetType":  "tcp",
+		},
+	}))
 }
 
 func monthsToDays(m int) int {
@@ -484,6 +542,7 @@ type nqStreamReq struct {
 	Chunk     string `json:"chunk"`
 	Done      bool   `json:"done"`
 	TimeMs    *int64 `json:"timeMs"`
+	ExitCode  *int   `json:"exitCode"`
 }
 
 // NodeNQStreamPush NodeQuality 流式回传

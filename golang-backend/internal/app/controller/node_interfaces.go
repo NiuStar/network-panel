@@ -65,7 +65,7 @@ func NodeInterfaces(c *gin.Context) {
 	req := map[string]interface{}{
 		"requestId":  fmt.Sprintf("%d", time.Now().UnixNano()),
 		"timeoutSec": 8,
-		"content":    "#!/bin/sh\nset +e\nIP4=$(curl -4 -fsS ip.sb 2>/dev/null || wget -4 -qO- ip.sb 2>/dev/null); IP6=$(curl -6 -fsS ip.sb 2>/dev/null || wget -6 -qO- ip.sb 2>/dev/null); echo IP4=$IP4; echo IP6=$IP6; exit 0\n",
+		"content":    "#!/bin/sh\nset +e\nIP4=\"\"; IP6=\"\";\nif command -v ip >/dev/null 2>&1; then\n  if ip -o -4 addr show up scope global 2>/dev/null | grep -q .; then\n    IP4=$(curl -4 -fsS --connect-timeout 2 --max-time 3 ip.sb 2>/dev/null || wget -4 -qO- --timeout=3 --tries=1 ip.sb 2>/dev/null);\n  fi\n  if ip -o -6 addr show up scope global 2>/dev/null | grep -q .; then\n    IP6=$(curl -6 -fsS --connect-timeout 2 --max-time 3 ip.sb 2>/dev/null || wget -6 -qO- --timeout=3 --tries=1 ip.sb 2>/dev/null);\n  fi\nelse\n  IP4=$(curl -4 -fsS --connect-timeout 2 --max-time 3 ip.sb 2>/dev/null || wget -4 -qO- --timeout=3 --tries=1 ip.sb 2>/dev/null);\n  IP6=$(curl -6 -fsS --connect-timeout 2 --max-time 3 ip.sb 2>/dev/null || wget -6 -qO- --timeout=3 --tries=1 ip.sb 2>/dev/null);\nfi\necho IP4=$IP4; echo IP6=$IP6; exit 0\n",
 	}
 	if res, ok := RequestOp(p.NodeID, "RunScript", req, 9*time.Second); ok {
 		if data, _ := res["data"].(map[string]interface{}); data != nil {

@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 
 import { shareNetworkList, shareNetworkStats } from "@/api";
+import VirtualGrid from "@/components/VirtualGrid";
 
 const ranges = [
   { key: "1h", label: "每小时" },
@@ -12,6 +13,12 @@ const ranges = [
   { key: "7d", label: "每七天" },
   { key: "30d", label: "每月" },
 ];
+
+const CARD_STYLE: CSSProperties = {
+  contentVisibility: "auto",
+  containIntrinsicSize: "260px 220px",
+};
+
 
 export default function ShareNetworkPage() {
   const params = useParams();
@@ -134,14 +141,6 @@ export default function ShareNetworkPage() {
     render();
   }, [grouped]);
 
-  const fmtTraffic = (bytes: number) => {
-    if (!bytes) return "0 B";
-    const k = 1024,
-      u = ["B", "KB", "MB", "GB", "TB"];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-
-    return `${(bytes / Math.pow(k, i)).toFixed(2)} ${u[i]}`;
-  };
   const formatUptime = (seconds: number) => {
     if (!seconds) return "-";
     const d = Math.floor(seconds / 86400);
@@ -149,16 +148,6 @@ export default function ShareNetworkPage() {
     const m = Math.floor((seconds % 3600) / 60);
 
     return d > 0 ? `${d}天${h}小时` : h > 0 ? `${h}小时${m}分钟` : `${m}分钟`;
-  };
-  const remainDays = (n: any) => {
-    if (!n.cycleDays || !n.startDateMs) return "";
-    const now = Date.now();
-    const cycleMs = n.cycleDays * 24 * 3600 * 1000;
-    const elapsed = Math.max(0, now - n.startDateMs);
-    const remain = cycleMs - (elapsed % cycleMs);
-    const days = Math.ceil(remain / (24 * 3600 * 1000));
-
-    return `${days} 天`;
   };
 
   return (
@@ -205,8 +194,13 @@ export default function ShareNetworkPage() {
             <div className="font-semibold">节点网络概览（{range}）</div>
           </CardHeader>
           <CardBody>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {nodes.map((n: any) => {
+            <VirtualGrid
+              className="w-full"
+              estimateRowHeight={220}
+              items={nodes}
+              maxColumns={4}
+              minItemWidth={260}
+              renderItem={(n: any) => {
                 const s = stats?.[n.id] || {};
                 const avg = s.avg ?? null;
                 const latest = s.latest ?? null;
@@ -218,6 +212,7 @@ export default function ShareNetworkPage() {
                     key={n.id}
                     className="p-3 rounded border border-divider hover:shadow-sm transition cursor-pointer"
                     onClick={() => navigate(`/share/network/${n.id}`)}
+                    style={CARD_STYLE}
                   >
                     <div className="flex items-start justify-between mb-2">
                       <div className="font-semibold truncate">{n.name}</div>
@@ -253,41 +248,18 @@ export default function ShareNetworkPage() {
                       <div>
                         <div className="text-default-600 mb-0.5">网络</div>
                         <div className="font-mono">
-                          {latest != null ? `${latest} ms` : "-"}
-                          {avg != null ? ` · 平均 ${avg} ms` : ""}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-default-600 mb-0.5">
-                          ↑ 上行流量
-                        </div>
-                        <div className="font-mono">
-                          {online && ss ? fmtTraffic(ss.bytes_tx || 0) : "-"}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-default-600 mb-0.5">
-                          ↓ 下行流量
-                        </div>
-                        <div className="font-mono">
-                          {online && ss ? fmtTraffic(ss.bytes_rx || 0) : "-"}
+                          {avg != null ? `${avg.toFixed(1)} ms` : "-"}
                         </div>
                       </div>
                     </div>
-                    {(n.priceCents || n.cycleDays) && (
-                      <div className="mt-2 text-xs text-default-600">
-                        计费：
-                        {n.priceCents
-                          ? `¥${(n.priceCents / 100).toFixed(2)}`
-                          : ""}
-                        {n.cycleDays ? ` / ${n.cycleDays}天` : ""}
-                        {n.startDateMs ? ` · 剩余${remainDays(n)}` : ""}
-                      </div>
-                    )}
+
+                    <div className="flex justify-between text-xs text-default-500 mt-3">
+                      <span>最近: {latest != null ? `${latest}ms` : "-"}</span>
+                    </div>
                   </div>
                 );
-              })}
-            </div>
+              }}
+            />
           </CardBody>
         </Card>
       )}

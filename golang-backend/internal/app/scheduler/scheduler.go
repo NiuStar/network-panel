@@ -23,6 +23,7 @@ func Start() {
 	go billingChecker()
 	go controllerHeartbeat()
 	go pruneOldData()
+	controller.StartNodeOfflineMonitor()
 }
 
 func billingChecker() {
@@ -194,7 +195,7 @@ func postHeartbeat(endpoint, kind, uid, version, osName, arch string, createdAt 
 func pruneOldData() {
 	ticker := time.NewTicker(24 * time.Hour)
 	defer ticker.Stop()
-	cutoff := func() int64 { return time.Now().Add(-72 * time.Hour).UnixMilli() }
+	cutoff := func() int64 { return time.Now().Add(-time.Duration(getPruneWindowHours()) * time.Hour).UnixMilli() }
 	clean := func(table any, col string) {
 		_ = dbpkg.DB.Where(col+" < ?", cutoff()).Delete(table).Error
 	}
@@ -206,4 +207,29 @@ func pruneOldData() {
 		clean(&model.NQResult{}, "time_ms")
 		<-ticker.C
 	}
+}
+
+func getPruneWindowHours() int {
+	if v := strings.TrimSpace(os.Getenv("PRUNE_HOURS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("PRUNE_DAYS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n * 24
+		}
+	}
+	var cfg model.ViteConfig
+	if err := dbpkg.DB.Where("name = ?", "prune_hours").First(&cfg).Error; err == nil {
+		if n, err := strconv.Atoi(strings.TrimSpace(cfg.Value)); err == nil && n > 0 {
+			return n
+		}
+	}
+	if err := dbpkg.DB.Where("name = ?", "prune_days").First(&cfg).Error; err == nil {
+		if n, err := strconv.Atoi(strings.TrimSpace(cfg.Value)); err == nil && n > 0 {
+			return n * 24
+		}
+	}
+	return 72
 }

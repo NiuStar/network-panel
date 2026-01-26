@@ -6,12 +6,14 @@ export type SiteConfig = typeof siteConfig;
 const CACHE_PREFIX = "vite_config_";
 const VERSION = "";
 const APP_VERSION = "1.0.4";
+const BUILD_DATE = import.meta.env.VITE_BUILD_DATE || "";
 
 const getInitialConfig = () => {
   if (typeof window === "undefined") {
     return {
       name: "network",
       app_version: APP_VERSION,
+      build_date: BUILD_DATE,
     };
   }
 
@@ -22,6 +24,7 @@ const getInitialConfig = () => {
       name: cachedAppName,
       version: VERSION,
       app_version: APP_VERSION,
+      build_date: BUILD_DATE,
     };
   }
 
@@ -29,6 +32,7 @@ const getInitialConfig = () => {
     name: "network",
     version: VERSION,
     app_version: APP_VERSION,
+    build_date: BUILD_DATE,
   };
 };
 

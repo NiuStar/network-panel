@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import { Card, CardBody, CardHeader } from "@heroui/card";
-import { Spinner } from "@heroui/spinner";
 import { Switch } from "@heroui/switch";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
@@ -91,7 +90,8 @@ const Section = ({
       <CardBody className="overflow-x-auto">
         {!data ? (
           <div className="flex items-center gap-2 text-sm text-gray-500">
-            <Spinner size="sm" /> 读取中...
+            <div className="skeleton-line w-20" />
+            <span className="skeleton-text">读取中...</span>
           </div>
         ) : !items || items.length === 0 ? (
           <div className="text-sm text-gray-500">暂无数据</div>

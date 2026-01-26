@@ -106,6 +106,7 @@ func RegisterRoutes(r *gin.Engine) {
 		node.POST("/ops", controller.NodeOps)
 		node.POST("/restart-gost", controller.NodeRestartGost)
 		node.POST("/enable-gost-api", controller.NodeEnableGostAPI)
+		node.POST("/self-check", controller.NodeSelfCheck)
 	}
 	// Terminal WS: 自带 token/admin 校验，不使用 Auth 中间件
 	api.GET("/node/:id/terminal", controller.NodeTerminalWS)
@@ -259,6 +260,8 @@ func RegisterRoutes(r *gin.Engine) {
 		agent.POST("/probe-targets", controller.AgentProbeTargets)
 		agent.POST("/report-probe", controller.AgentReportProbe)
 	}
+	// easytier stream from agent (secret-auth)
+	api.POST("/easytier/stream", controller.EasyTierStreamPush)
 
 	// easytier networking (admin)
 	easy := api.Group("/easytier")
@@ -273,6 +276,13 @@ func RegisterRoutes(r *gin.Engine) {
 		easy.POST("/change-peer", controller.EasyTierChangePeer)
 		easy.POST("/auto-assign", controller.EasyTierAutoAssign)
 		easy.POST("/redeploy-master", controller.EasyTierRedeployMaster)
+		easy.GET("/version", controller.EasyTierVersion)
+		easy.POST("/update-all", controller.EasyTierUpdateAll)
+		easy.POST("/reapply", controller.EasyTierReapply)
+		easy.POST("/operate", controller.EasyTierOperate)
+		easy.POST("/operate-batch", controller.EasyTierOperateBatch)
+		easy.POST("/log", controller.EasyTierLog)
+		easy.GET("/log/stream", controller.EasyTierLogStream)
 		easy.GET("/ghproxy/*path", controller.EasyTierProxy)
 	}
 

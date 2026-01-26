@@ -11,7 +11,6 @@ import {
   ModalFooter,
 } from "@heroui/modal";
 import { Chip } from "@heroui/chip";
-import { Spinner } from "@heroui/spinner";
 import toast from "react-hot-toast";
 
 import {
@@ -21,6 +20,7 @@ import {
   deleteSpeedLimit,
   getTunnelList,
 } from "@/api";
+import VirtualGrid from "@/components/VirtualGrid";
 
 interface SpeedLimitRule {
   id: number;
@@ -218,10 +218,14 @@ export default function LimitPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="flex items-center gap-3">
-          <Spinner size="sm" />
-          <span className="text-default-600">正在加载...</span>
+      <div className="px-3 lg:px-6 py-8 space-y-4">
+        <div className="flex justify-end">
+          <div className="skeleton-line w-20" />
+        </div>
+        <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+          {Array.from({ length: 8 }).map((_, idx) => (
+            <div key={`limit-skel-${idx}`} className="skeleton-card" />
+          ))}
         </div>
       </div>
     );
@@ -240,11 +244,16 @@ export default function LimitPage() {
 
       {/* 统一卡片网格 */}
       {rules.length > 0 ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
-          {rules.map((rule) => (
+        <VirtualGrid
+          className="w-full"
+          estimateRowHeight={240}
+          items={rules}
+          maxColumns={5}
+          minItemWidth={260}
+          renderItem={(rule) => (
             <Card
               key={rule.id}
-              className="shadow-sm border border-gray-200 dark:border-gray-700"
+              className="list-card shadow-sm border border-gray-200 dark:border-gray-700"
             >
               <CardHeader className="pb-3">
                 <div className="flex justify-between items-start w-full">
@@ -337,8 +346,8 @@ export default function LimitPage() {
                 </div>
               </CardBody>
             </Card>
-          ))}
-        </div>
+          )}
+        />
       ) : (
         /* 空状态 */
         <Card className="shadow-sm border border-gray-200 dark:border-gray-700">

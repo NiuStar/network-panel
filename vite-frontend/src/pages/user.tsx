@@ -50,6 +50,7 @@ import {
   resetUserFlow,
 } from "@/api";
 import { getCachedConfig } from "@/config/site";
+import { usePageVisibility } from "@/hooks/usePageVisibility";
 import {
   SearchIcon,
   EditIcon,
@@ -57,6 +58,7 @@ import {
   UserIcon,
   SettingsIcon,
 } from "@/components/icons";
+import VirtualGrid from "@/components/VirtualGrid";
 
 // 工具函数
 const formatFlow = (value: number, unit: string = "bytes"): string => {
@@ -213,6 +215,7 @@ export default function UserPage() {
   // 其他数据
   const [tunnels, setTunnels] = useState<Tunnel[]>([]);
   const [speedLimits, setSpeedLimits] = useState<SpeedLimit[]>([]);
+  const pageVisible = usePageVisibility();
 
   // 生命周期
   useEffect(() => {
@@ -237,6 +240,7 @@ export default function UserPage() {
   useEffect(() => {
     let timer: any;
     const tick = async () => {
+      if (!pageVisible) return;
       try {
         // 刷新用户列表（静默，不影响加载状态）
         const res: any = await getAllUsers({
@@ -272,6 +276,7 @@ export default function UserPage() {
     searchKeyword,
     isTunnelModalOpen,
     currentUser?.id,
+    pageVisible,
   ]);
 
   // 数据加载函数
@@ -673,10 +678,14 @@ export default function UserPage() {
 
       {/* 用户列表 */}
       {loading ? (
-        <div className="flex items-center justify-center h-64">
-          <div className="flex items-center gap-3">
-            <Spinner size="sm" />
-            <span className="text-default-600">正在加载...</span>
+        <div className="space-y-4">
+          <div className="flex justify-end">
+            <div className="skeleton-line w-28" />
+          </div>
+          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+            {Array.from({ length: 8 }).map((_, idx) => (
+              <div key={`user-skel-${idx}`} className="skeleton-card" />
+            ))}
           </div>
         </div>
       ) : users.length === 0 ? (
@@ -698,8 +707,13 @@ export default function UserPage() {
           </CardBody>
         </Card>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
-          {users.map((user) => {
+        <VirtualGrid
+          className="w-full"
+          estimateRowHeight={340}
+          items={users}
+          maxColumns={5}
+          minItemWidth={260}
+          renderItem={(user) => {
             const userStatus = getUserStatus(user);
             const expStatus = user.expTime
               ? getExpireStatus(user.expTime)
@@ -716,7 +730,7 @@ export default function UserPage() {
             return (
               <Card
                 key={user.id}
-                className="shadow-sm border border-divider hover:shadow-md transition-shadow duration-200"
+                className="list-card shadow-sm border border-divider hover:shadow-md transition-shadow duration-200"
               >
                 <CardHeader className="pb-2">
                   <div className="flex justify-between items-start w-full">
@@ -888,8 +902,8 @@ export default function UserPage() {
                 </CardBody>
               </Card>
             );
-          })}
-        </div>
+          }}
+        />
       )}
 
       {/* 用户表单模态框 */}

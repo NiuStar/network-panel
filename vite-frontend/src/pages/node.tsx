@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback, memo } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Button } from "@heroui/button";
@@ -24,18 +24,22 @@ import { Divider } from "@heroui/divider";
 import toast from "react-hot-toast";
 
 import OpsLogModal from "@/components/OpsLogModal";
+import VirtualGrid from "@/components/VirtualGrid";
 import {
   queryNodeServices,
   getNodeNetworkStatsBatch,
   getVersionInfo,
 } from "@/api";
 import { getCachedConfig } from "@/config/site";
+import { usePageVisibility } from "@/hooks/usePageVisibility";
 import {
   createNode,
   getNodeList,
   updateNode,
   deleteNode,
   getNodeInstallCommand,
+  getNodeConnections,
+  nodeSelfCheck,
   setExitNode,
   getExitNode,
   restartGost,
@@ -54,6 +58,7 @@ interface Node {
   portSta: number;
   portEnd: number;
   version?: string;
+  usedPorts?: number[];
   status: number; // 1: 在线, 0: 离线
   connectionStatus: "online" | "offline";
   priceCents?: number;
@@ -91,30 +96,900 @@ type InstallCommands = {
   local?: string;
 };
 
+const EXIT_METHODS = [
+  "AEAD_CHACHA20_POLY1305",
+  "chacha20-ietf-poly1305",
+  "AEAD_AES_128_GCM",
+  "AEAD_AES_256_GCM",
+];
+const EXIT_TYPES = [
+  { key: "ss", label: "Shadowsocks (SS)" },
+  { key: "anytls", label: "AnyTLS" },
+];
+
+const PERIOD_OPTIONS = [
+  { key: "1", label: "月" },
+  { key: "3", label: "季度" },
+  { key: "6", label: "半年" },
+  { key: "12", label: "年" },
+];
+
+const addMonths = (ts: number, months: number): number => {
+  const d = new Date(ts);
+  const day = d.getDate();
+  const targetMonth = d.getMonth() + months;
+  const y = d.getFullYear() + Math.floor(targetMonth / 12);
+  const m = ((targetMonth % 12) + 12) % 12;
+  const lastDay = new Date(y, m + 1, 0).getDate();
+  const newDay = Math.min(day, lastDay);
+  const nd = new Date(
+    y,
+    m,
+    newDay,
+    d.getHours(),
+    d.getMinutes(),
+    d.getSeconds(),
+    d.getMilliseconds(),
+  );
+
+  return nd.getTime();
+};
+
+const computeNextExpire = (start?: number, cycle?: number): number | null => {
+  if (!start || !cycle) return null;
+  let months = 0;
+
+  switch (cycle) {
+    case 30:
+      months = 1;
+      break;
+    case 90:
+      months = 3;
+      break;
+    case 180:
+      months = 6;
+      break;
+    case 365:
+      months = 12;
+      break;
+    default:
+      months = 0;
+      break;
+  }
+  if (months > 0) {
+    let exp = addMonths(start, months);
+    const now = Date.now();
+
+    while (exp <= now) exp = addMonths(exp, months);
+
+    return exp;
+  }
+  const cycleMs = cycle * 24 * 3600 * 1000;
+  const now = Date.now();
+
+  if (now <= start) return start + cycleMs;
+  const elapsed = now - start;
+  const k = Math.ceil(elapsed / cycleMs);
+
+  return start + k * cycleMs;
+};
+
+type NodeEditModalProps = {
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
+  editNode: Node | null;
+  onSaved: () => void;
+};
+
+const DEFAULT_NODE_FORM: NodeForm = {
+  id: null,
+  name: "",
+  ipString: "",
+  serverIp: "",
+  portSta: 1000,
+  portEnd: 65535,
+};
+
+const NodeEditModal = memo(
+  ({ isOpen, onOpenChange, editNode, onSaved }: NodeEditModalProps) => {
+    const isEdit = !!editNode;
+    const [form, setForm] = useState<NodeForm>(DEFAULT_NODE_FORM);
+    const [errors, setErrors] = useState<Record<string, string>>({});
+    const [submitLoading, setSubmitLoading] = useState(false);
+    const [priceCents, setPriceCents] = useState<number | undefined>(undefined);
+    const [cycleMonths, setCycleMonths] = useState<number | undefined>(
+      undefined,
+    );
+    const [startDateMs, setStartDateMs] = useState<number | undefined>(
+      undefined,
+    );
+
+    useEffect(() => {
+      if (!isOpen) return;
+      setErrors({});
+      if (editNode) {
+        setForm({
+          id: editNode.id,
+          name: editNode.name,
+          ipString: editNode.ip
+            ? editNode.ip
+                .split(",")
+                .map((ip) => ip.trim())
+                .join("\n")
+            : "",
+          serverIp: editNode.serverIp || "",
+          portSta: editNode.portSta,
+          portEnd: editNode.portEnd,
+        });
+        setPriceCents(editNode.priceCents);
+        setCycleMonths(editNode.cycleMonths);
+        setStartDateMs(editNode.startDateMs);
+      } else {
+        setForm(DEFAULT_NODE_FORM);
+        setPriceCents(undefined);
+        setCycleMonths(undefined);
+        setStartDateMs(undefined);
+      }
+    }, [editNode, isOpen]);
+
+    const validateIp = (ip: string): boolean => {
+      if (!ip || !ip.trim()) return false;
+      const trimmedIp = ip.trim();
+
+      const ipv4Regex =
+        /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+      const ipv6Regex =
+        /^(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))$/;
+
+      if (
+        ipv4Regex.test(trimmedIp) ||
+        ipv6Regex.test(trimmedIp) ||
+        trimmedIp === "localhost"
+      ) {
+        return true;
+      }
+
+      if (/^\d+$/.test(trimmedIp)) return false;
+
+      const domainRegex =
+        /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
+      const singleLabelDomain = /^[a-zA-Z][a-zA-Z0-9-]{0,62}$/;
+
+      return domainRegex.test(trimmedIp) || singleLabelDomain.test(trimmedIp);
+    };
+
+    const validateForm = (): boolean => {
+      const newErrors: Record<string, string> = {};
+
+      if (!form.name.trim()) {
+        newErrors.name = "请输入节点名称";
+      } else if (form.name.trim().length < 2) {
+        newErrors.name = "节点名称长度至少2位";
+      } else if (form.name.trim().length > 50) {
+        newErrors.name = "节点名称长度不能超过50位";
+      }
+
+      if (!form.ipString.trim()) {
+        newErrors.ipString = "请输入入口IP地址";
+      } else {
+        const ips = form.ipString
+          .split("\n")
+          .map((ip) => ip.trim())
+          .filter((ip) => ip);
+
+        if (ips.length === 0) {
+          newErrors.ipString = "请输入至少一个有效IP地址";
+        } else {
+          for (let i = 0; i < ips.length; i++) {
+            if (!validateIp(ips[i])) {
+              newErrors.ipString = `第${i + 1}行IP地址格式错误: ${ips[i]}`;
+              break;
+            }
+          }
+        }
+      }
+
+      if (!form.serverIp.trim()) {
+        newErrors.serverIp = "请输入服务器IP地址";
+      } else if (!validateIp(form.serverIp.trim())) {
+        newErrors.serverIp = "请输入有效的IPv4、IPv6地址或域名";
+      }
+
+      if (!form.portSta || form.portSta < 1 || form.portSta > 65535) {
+        newErrors.portSta = "端口范围必须在1-65535之间";
+      }
+
+      if (!form.portEnd || form.portEnd < 1 || form.portEnd > 65535) {
+        newErrors.portEnd = "端口范围必须在1-65535之间";
+      } else if (form.portEnd < form.portSta) {
+        newErrors.portEnd = "结束端口不能小于起始端口";
+      }
+
+      setErrors(newErrors);
+
+      return Object.keys(newErrors).length === 0;
+    };
+
+    const handleSubmit = async () => {
+      if (!validateForm()) return;
+
+      setSubmitLoading(true);
+      try {
+        const ipString = form.ipString
+          .split("\n")
+          .map((ip) => ip.trim())
+          .filter((ip) => ip)
+          .join(",");
+
+        const submitData: any = {
+          ...form,
+          ip: ipString,
+        };
+
+        delete (submitData as any).ipString;
+        if (priceCents != null) submitData.priceCents = priceCents;
+        if (cycleMonths != null) submitData.cycleMonths = cycleMonths;
+        if (startDateMs != null) submitData.startDateMs = startDateMs;
+
+        const apiCall = isEdit ? updateNode : createNode;
+        const data: any = isEdit
+          ? submitData
+          : {
+              name: form.name,
+              ip: ipString,
+              serverIp: form.serverIp,
+              portSta: form.portSta,
+              portEnd: form.portEnd,
+            };
+
+        if (!isEdit) {
+          if (priceCents != null) data.priceCents = priceCents;
+          if (cycleMonths != null) data.cycleMonths = cycleMonths;
+          if (startDateMs != null) data.startDateMs = startDateMs;
+        }
+
+        const res = await apiCall(data);
+
+        if (res.code === 0) {
+          toast.success(isEdit ? "更新成功" : "创建成功");
+          onOpenChange(false);
+          onSaved();
+        } else {
+          toast.error(res.msg || (isEdit ? "更新失败" : "创建失败"));
+        }
+      } catch (error) {
+        toast.error("网络错误，请重试");
+      } finally {
+        setSubmitLoading(false);
+      }
+    };
+
+    return (
+      <Modal
+        backdrop="opaque"
+        disableAnimation
+        isOpen={isOpen}
+        placement="center"
+        scrollBehavior="outside"
+        size="2xl"
+        onClose={() => onOpenChange(false)}
+      >
+        <ModalContent>
+          <ModalHeader>{isEdit ? "编辑节点" : "新增节点"}</ModalHeader>
+          <ModalBody>
+            <div className="space-y-4">
+              <Input
+                errorMessage={errors.name}
+                isInvalid={!!errors.name}
+                label="节点名称"
+                placeholder="请输入节点名称"
+                value={form.name}
+                variant="bordered"
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, name: e.target.value }))
+                }
+              />
+
+              <Input
+                errorMessage={errors.serverIp}
+                isInvalid={!!errors.serverIp}
+                label="服务器IP"
+                placeholder="请输入服务器IP地址，如: 192.168.1.100 或 example.com"
+                value={form.serverIp}
+                variant="bordered"
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, serverIp: e.target.value }))
+                }
+              />
+
+              <Textarea
+                description="支持多个IP，每行一个地址"
+                errorMessage={errors.ipString}
+                isInvalid={!!errors.ipString}
+                label="入口IP"
+                maxRows={5}
+                minRows={3}
+                placeholder="一行一个IP地址或域名，例如:&#10;192.168.1.100&#10;example.com"
+                value={form.ipString}
+                variant="bordered"
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, ipString: e.target.value }))
+                }
+              />
+
+              <div className="grid grid-cols-2 gap-4">
+                <Input
+                  errorMessage={errors.portSta}
+                  isInvalid={!!errors.portSta}
+                  label="起始端口"
+                  max={65535}
+                  min={1}
+                  placeholder="1000"
+                  type="number"
+                  value={form.portSta.toString()}
+                  variant="bordered"
+                  onChange={(e) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      portSta: parseInt(e.target.value) || 1000,
+                    }))
+                  }
+                />
+
+                <Input
+                  errorMessage={errors.portEnd}
+                  isInvalid={!!errors.portEnd}
+                  label="结束端口"
+                  max={65535}
+                  min={1}
+                  placeholder="65535"
+                  type="number"
+                  value={form.portEnd.toString()}
+                  variant="bordered"
+                  onChange={(e) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      portEnd: parseInt(e.target.value) || 65535,
+                    }))
+                  }
+                />
+              </div>
+
+              <div className="grid grid-cols-3 gap-4">
+                <Input
+                  label="价格(元)"
+                  placeholder="可选"
+                  type="number"
+                  value={
+                    priceCents != null ? (priceCents / 100).toString() : ""
+                  }
+                  variant="bordered"
+                  onChange={(e) => {
+                    const v = parseFloat((e.target as any).value);
+
+                    setPriceCents(isNaN(v) ? undefined : Math.round(v * 100));
+                  }}
+                />
+                <Select
+                  label="周期"
+                  selectedKeys={
+                    cycleMonths ? new Set([String(cycleMonths)]) : new Set()
+                  }
+                  variant="bordered"
+                  onChange={(e) => {
+                    const v = parseInt((e.target as any).value);
+
+                    setCycleMonths(isNaN(v) ? undefined : v);
+                  }}
+                >
+                  {PERIOD_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.key}>{opt.label}</SelectItem>
+                  ))}
+                </Select>
+                <Input
+                  label="开始日期"
+                  type="date"
+                  value={
+                    startDateMs
+                      ? new Date(startDateMs).toISOString().slice(0, 10)
+                      : ""
+                  }
+                  variant="bordered"
+                  onChange={(e) => {
+                    const s = (e.target as any).value;
+
+                    setStartDateMs(
+                      s ? new Date(s + "T00:00:00").getTime() : undefined,
+                    );
+                  }}
+                />
+              </div>
+
+              <div className="text-xs text-default-600">
+                {(() => {
+                  const exp = computeNextExpire(startDateMs, cycleMonths);
+
+                  if (!exp) return "到期时间：-";
+                  const daysLeft = Math.max(
+                    0,
+                    Math.ceil((exp - Date.now()) / (24 * 3600 * 1000)),
+                  );
+                  const dt = new Date(exp);
+                  const yyyy = dt.getFullYear();
+                  const mm = String(dt.getMonth() + 1).padStart(2, "0");
+                  const dd = String(dt.getDate()).padStart(2, "0");
+
+                  return `到期时间：${yyyy}-${mm}-${dd}（剩余 ${daysLeft} 天）`;
+                })()}
+              </div>
+
+              <Alert
+                className="mt-4"
+                color="primary"
+                description="服务器ip是你要添加的服务器的ip地址，不是面板的ip地址。入口ip是用于展示在转发页面，面向用户的访问地址。实在理解不到说明你没这个需求，都填节点的服务器ip就行！"
+                variant="flat"
+              />
+            </div>
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="flat" onPress={() => onOpenChange(false)}>
+              取消
+            </Button>
+            <Button
+              color="primary"
+              isLoading={submitLoading}
+              onPress={handleSubmit}
+            >
+              {submitLoading ? "提交中..." : "确定"}
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+    );
+  },
+);
+
+type ExitServiceModalProps = {
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
+  node: Node | null;
+};
+
+const ExitServiceModal = memo(
+  ({ isOpen, onOpenChange, node }: ExitServiceModalProps) => {
+    const [exitType, setExitType] = useState<string>("ss");
+    const [exitPort, setExitPort] = useState<number>(10000);
+    const [exitPassword, setExitPassword] = useState<string>("");
+    const [exitMethod, setExitMethod] = useState<string>(EXIT_METHODS[0]);
+    const [exitSubmitting, setExitSubmitting] = useState(false);
+    const [exitObserver, setExitObserver] = useState<string>("console");
+    const [exitLimiter, setExitLimiter] = useState<string>("");
+    const [exitRLimiter, setExitRLimiter] = useState<string>("");
+    const [exitMetaItems, setExitMetaItems] = useState<
+      Array<{ id: number; key: string; value: string }>
+    >([]);
+    const [exitIfaces, setExitIfaces] = useState<string[]>([]);
+    const [exitIfaceSel, setExitIfaceSel] = useState<string>("");
+    const lastLoadedExitTypeRef = useRef<string>("");
+
+    const resetDefaults = useCallback(
+      (type: string) => {
+        setExitPort(node?.portSta || 10000);
+        setExitPassword("");
+        setExitMethod(EXIT_METHODS[0]);
+        setExitObserver("console");
+        setExitLimiter("");
+        setExitRLimiter("");
+        setExitMetaItems([]);
+        setExitIfaceSel("");
+        if (type === "anytls") {
+          setExitIfaces([]);
+        }
+      },
+      [node],
+    );
+
+    const loadExitConfig = useCallback(
+      async (type: string) => {
+        if (!node?.id) return;
+        resetDefaults(type);
+        lastLoadedExitTypeRef.current = type;
+
+        let dPort = node.portSta || 10000;
+        let dPwd = "";
+        let dMethod = EXIT_METHODS[0];
+        let dObserver = "console";
+        let dLimiter = "";
+        let dRLimiter = "";
+        let dMetaItems: Array<{ id: number; key: string; value: string }> = [];
+        let dIfaceSel = "";
+
+        try {
+          const res = await getExitNode(node.id, type);
+
+          if (res.code === 0 && res.data) {
+            const data = res.data as any;
+
+            if (typeof data.port === "number") dPort = data.port;
+            if (typeof data.password === "string") dPwd = data.password;
+            if (type === "ss") {
+              if (typeof data.method === "string" && data.method)
+                dMethod = data.method;
+              if (typeof data.observer === "string")
+                dObserver = data.observer || dObserver;
+              if (typeof data.limiter === "string") dLimiter = data.limiter || "";
+              if (typeof data.rlimiter === "string")
+                dRLimiter = data.rlimiter || "";
+              if (data.metadata && typeof data.metadata === "object") {
+                dMetaItems = Object.entries(data.metadata).map(([k, v]) => ({
+                  id: Date.now() + Math.random(),
+                  key: String(k),
+                  value: String(v),
+                }));
+                if (typeof (data.metadata as any).interface === "string") {
+                  dIfaceSel = String((data.metadata as any).interface);
+                }
+              }
+            }
+          }
+        } catch {}
+
+        setExitPort(dPort);
+        setExitPassword(dPwd);
+        setExitMethod(dMethod);
+        setExitObserver(dObserver);
+        setExitLimiter(dLimiter);
+        setExitRLimiter(dRLimiter);
+        setExitMetaItems(dMetaItems);
+        setExitIfaceSel(dIfaceSel);
+      },
+      [node, resetDefaults],
+    );
+
+    useEffect(() => {
+      if (!isOpen || !node) return;
+      let active = true;
+
+      setExitType("ss");
+      lastLoadedExitTypeRef.current = "";
+      void loadExitConfig("ss");
+
+      (async () => {
+        try {
+          const { getNodeInterfaces } = await import("@/api");
+          const rr: any = await getNodeInterfaces(node.id);
+          const ips =
+            rr && rr.code === 0 && Array.isArray(rr.data?.ips)
+              ? (rr.data.ips as string[])
+              : [];
+
+          if (active) setExitIfaces(ips);
+        } catch {
+          if (active) setExitIfaces([]);
+        }
+      })();
+
+      return () => {
+        active = false;
+      };
+    }, [isOpen, node, loadExitConfig]);
+
+    useEffect(() => {
+      if (!isOpen || !node) return;
+      if (lastLoadedExitTypeRef.current === exitType) return;
+      void loadExitConfig(exitType);
+    }, [exitType, isOpen, node, loadExitConfig]);
+
+    const submitExit = async () => {
+      if (!node?.id) {
+        toast.error("无效的节点");
+
+        return;
+      }
+      if (!exitPort || exitPort < 1 || exitPort > 65535) {
+        toast.error("端口无效");
+
+        return;
+      }
+      if (!exitPassword) {
+        toast.error("请填写密码");
+
+        return;
+      }
+      setExitSubmitting(true);
+      try {
+        let res;
+
+        if (exitType === "anytls") {
+          res = await setExitNode({
+            nodeId: node.id,
+            type: "anytls",
+            port: exitPort,
+            password: exitPassword,
+          } as any);
+        } else {
+          const metadata: any = {};
+
+          exitMetaItems.forEach((it: { key: string; value: string }) => {
+            if (it.key && it.value) metadata[it.key] = it.value;
+          });
+          if (exitIfaceSel) {
+            (metadata as any)["interface"] = exitIfaceSel;
+          }
+          res = await setExitNode({
+            nodeId: node.id,
+            type: "ss",
+            port: exitPort,
+            password: exitPassword,
+            method: exitMethod,
+            observer: exitObserver,
+            limiter: exitLimiter,
+            rlimiter: exitRLimiter,
+            metadata,
+          } as any);
+        }
+
+        if (res.code === 0) {
+          toast.success(exitType === "anytls" ? "AnyTLS 已创建/更新" : "出口服务已创建/更新");
+          onOpenChange(false);
+        } else {
+          toast.error(res.msg || "操作失败");
+        }
+      } catch (e) {
+        toast.error("网络错误");
+      } finally {
+        setExitSubmitting(false);
+      }
+    };
+
+    return (
+      <Modal
+        backdrop="opaque"
+        disableAnimation
+        isOpen={isOpen}
+        size="md"
+        onOpenChange={onOpenChange}
+      >
+        <ModalContent>
+          {(onClose) => (
+            <>
+              <ModalHeader>
+                设置出口节点服务{node?.name ? ` · ${node.name}` : ""}
+              </ModalHeader>
+              <ModalBody>
+                <div className="space-y-3">
+                  <Select
+                    label="出口类型"
+                    selectedKeys={[exitType]}
+                    onSelectionChange={(keys) => {
+                      const val = Array.from(keys as Set<string>)[0] || "ss";
+
+                      setExitType(val);
+                    }}
+                  >
+                    {EXIT_TYPES.map((t) => (
+                      <SelectItem key={t.key} textValue={t.label}>
+                        {t.label}
+                      </SelectItem>
+                    ))}
+                  </Select>
+                  {exitType === "anytls" && (
+                    <Alert
+                      color="primary"
+                      description="AnyTLS 将自动生成自签证书，客户端默认不校验即可使用。"
+                      variant="flat"
+                    />
+                  )}
+                  <Input
+                    label="端口"
+                    type="number"
+                    value={String(exitPort)}
+                    onChange={(e: any) => setExitPort(Number(e.target.value))}
+                  />
+                  <Input
+                    label="密码"
+                    type="text"
+                    value={exitPassword}
+                    onChange={(e: any) => setExitPassword(e.target.value)}
+                  />
+                  {exitType === "ss" && (
+                    <>
+                      <Select
+                        label="加密方法"
+                        selectedKeys={[exitMethod]}
+                        description="选择 Shadowsocks 加密方法"
+                        onSelectionChange={(keys) => {
+                          const val = Array.from(keys as Set<string>)[0] || "";
+
+                          if (val) setExitMethod(val);
+                        }}
+                      >
+                        {EXIT_METHODS.map((m) => (
+                          <SelectItem key={m} textValue={m}>
+                            {m}
+                          </SelectItem>
+                        ))}
+                      </Select>
+                      <div>
+                        <div className="text-sm text-default-600 mb-1">
+                          出口IP（metadata.interface，可选）
+                        </div>
+                        <Select
+                          isDisabled={exitIfaces.length === 0}
+                          label="请选择出口IP"
+                          placeholder={
+                            exitIfaces.length
+                              ? "选择出口IP"
+                              : "未获取到出口IP列表"
+                          }
+                          selectedKeys={exitIfaceSel ? [exitIfaceSel] : []}
+                          onSelectionChange={(keys) => {
+                            const val = Array.from(keys as Set<string>)[0] || "";
+
+                            setExitIfaceSel(val);
+                          }}
+                        >
+                          {exitIfaces.map((ip) => (
+                            <SelectItem key={ip}>{ip}</SelectItem>
+                          ))}
+                        </Select>
+                        {exitIfaceSel && (
+                          <Button
+                            className="mt-2"
+                            size="sm"
+                            variant="light"
+                            onPress={() => setExitIfaceSel("")}
+                          >
+                            清除选择
+                          </Button>
+                        )}
+                      </div>
+                      <Divider />
+                      <Input
+                        description="默认 console，可留空"
+                        label="观察器(observer)"
+                        value={exitObserver}
+                        onChange={(e: any) => setExitObserver(e.target.value)}
+                      />
+                      <Input
+                        description="可选，需在节点注册对应限速器"
+                        label="限速(limiter)"
+                        value={exitLimiter}
+                        onChange={(e: any) => setExitLimiter(e.target.value)}
+                      />
+                      <Input
+                        description="可选，需在节点注册对应限速器"
+                        label="连接限速(rlimiter)"
+                        value={exitRLimiter}
+                        onChange={(e: any) => setExitRLimiter(e.target.value)}
+                      />
+                      <Divider />
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm text-default-600">
+                            handler.metadata
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="flat"
+                            onPress={() =>
+                              setExitMetaItems((prev) => [
+                                ...prev,
+                                { id: Date.now(), key: "", value: "" },
+                              ])
+                            }
+                          >
+                            添加
+                          </Button>
+                        </div>
+                        {exitMetaItems.map(
+                          (it: { id: number; key: string; value: string }) => (
+                            <div
+                              key={it.id}
+                              className="grid grid-cols-5 gap-2 items-center"
+                            >
+                              <Input
+                                className="col-span-2"
+                                placeholder="key"
+                                value={it.key}
+                                onChange={(e: any) =>
+                                  setExitMetaItems(
+                                    (
+                                      prev: Array<{
+                                        id: number;
+                                        key: string;
+                                        value: string;
+                                      }>,
+                                    ) =>
+                                      prev.map((x: any) =>
+                                        x.id === it.id
+                                          ? { ...x, key: e.target.value }
+                                          : x,
+                                      ),
+                                  )
+                                }
+                              />
+                              <Input
+                                className="col-span-3"
+                                placeholder="value"
+                                value={it.value}
+                                onChange={(e: any) =>
+                                  setExitMetaItems(
+                                    (
+                                      prev: Array<{
+                                        id: number;
+                                        key: string;
+                                        value: string;
+                                      }>,
+                                    ) =>
+                                      prev.map((x: any) =>
+                                        x.id === it.id
+                                          ? { ...x, value: e.target.value }
+                                          : x,
+                                      ),
+                                  )
+                                }
+                              />
+                              <Button
+                                color="danger"
+                                size="sm"
+                                variant="light"
+                                onPress={() =>
+                                  setExitMetaItems(
+                                    (
+                                      prev: Array<{
+                                        id: number;
+                                        key: string;
+                                        value: string;
+                                      }>,
+                                    ) => prev.filter((x: any) => x.id !== it.id),
+                                  )
+                                }
+                              >
+                                删除
+                              </Button>
+                            </div>
+                          ),
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </ModalBody>
+              <ModalFooter>
+                <Button variant="light" onPress={onClose}>
+                  关闭
+                </Button>
+                <Button
+                  color="primary"
+                  isLoading={exitSubmitting}
+                  onPress={submitExit}
+                >
+                  保存
+                </Button>
+              </ModalFooter>
+            </>
+          )}
+        </ModalContent>
+      </Modal>
+    );
+  },
+);
+
 export default function NodePage() {
   const navigate = useNavigate();
   const [nodeList, setNodeList] = useState<Node[]>([]);
   const [loading, setLoading] = useState(false);
+  const gridWrapRef = useRef<HTMLDivElement | null>(null);
+  const [nodeRowHeight, setNodeRowHeight] = useState(520);
+  const [gridReady, setGridReady] = useState(false);
   const [dialogVisible, setDialogVisible] = useState(false);
-  const [dialogTitle, setDialogTitle] = useState("");
-  const [isEdit, setIsEdit] = useState(false);
-  const [submitLoading, setSubmitLoading] = useState(false);
+  const [editNode, setEditNode] = useState<Node | null>(null);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [nodeToDelete, setNodeToDelete] = useState<Node | null>(null);
   const [deleteAlsoUninstall, setDeleteAlsoUninstall] = useState(false);
-  const [form, setForm] = useState<NodeForm>({
-    id: null,
-    name: "",
-    ipString: "",
-    serverIp: "",
-    portSta: 1000,
-    portEnd: 65535,
-  });
-  const [priceCents, setPriceCents] = useState<number | undefined>(undefined);
-  const [cycleMonths, setCycleMonths] = useState<number | undefined>(undefined);
-  const [startDateMs, setStartDateMs] = useState<number | undefined>(undefined);
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [exitNode, setExitNode] = useState<Node | null>(null);
   const [probeStat, setProbeStat] = useState<
     Record<
       number,
@@ -139,25 +1014,6 @@ export default function NodePage() {
 
   // 出口服务设置
   const [exitModalOpen, setExitModalOpen] = useState(false);
-  const [exitNodeId, setExitNodeId] = useState<number | null>(null);
-  const [exitPort, setExitPort] = useState<number>(10000);
-  const [exitPassword, setExitPassword] = useState<string>("");
-  const EXIT_METHODS = [
-    "AEAD_CHACHA20_POLY1305",
-    "chacha20-ietf-poly1305",
-    "AEAD_AES_128_GCM",
-    "AEAD_AES_256_GCM",
-  ];
-  const [exitMethod, setExitMethod] = useState<string>(EXIT_METHODS[0]);
-  const [exitSubmitting, setExitSubmitting] = useState(false);
-  const [exitObserver, setExitObserver] = useState<string>("console");
-  const [exitLimiter, setExitLimiter] = useState<string>("");
-  const [exitRLimiter, setExitRLimiter] = useState<string>("");
-  const [exitMetaItems, setExitMetaItems] = useState<
-    Array<{ id: number; key: string; value: string }>
-  >([]);
-  const [exitIfaces, setExitIfaces] = useState<string[]>([]);
-  const [exitIfaceSel, setExitIfaceSel] = useState<string>("");
 
   // 安装命令相关状态
   const [installCommandModal, setInstallCommandModal] = useState(false);
@@ -192,10 +1048,42 @@ export default function NodePage() {
     done: false,
   });
   const [nqHasResult, setNqHasResult] = useState<Record<number, boolean>>({});
+  const [usedPortsModal, setUsedPortsModal] = useState<{
+    open: boolean;
+    nodeName: string;
+    ports: number[];
+  }>({
+    open: false,
+    nodeName: "",
+    ports: [],
+  });
+  const [connModal, setConnModal] = useState<{
+    open: boolean;
+    nodeName: string;
+    loading: boolean;
+    versions: string[];
+  }>({
+    open: false,
+    nodeName: "",
+    loading: false,
+    versions: [],
+  });
+  const [selfCheckModal, setSelfCheckModal] = useState<{
+    open: boolean;
+    nodeName: string;
+    loading: boolean;
+    result: any | null;
+  }>({
+    open: false,
+    nodeName: "",
+    loading: false,
+    result: null,
+  });
   const logScrollRef = useRef<HTMLDivElement | null>(null);
   const termContainerRef = useRef<HTMLDivElement | null>(null);
   const termWSRef = useRef<WebSocket | null>(null);
   const termRef = useRef<Terminal | null>(null);
+  const suspendRealtimeRef = useRef(false);
   const [termModal, setTermModal] = useState<{
     open: boolean;
     nodeId: number | null;
@@ -219,6 +1107,75 @@ export default function NodePage() {
     return adminFlag === "true" || rid === "0";
   })();
 
+  const anyModalOpen =
+    dialogVisible ||
+    exitModalOpen ||
+    deleteModalOpen ||
+    termModal.open ||
+    gostConfigModal.open ||
+    nqModal.open ||
+    installCommandModal ||
+    usedPortsModal.open;
+  const scrollPosRef = useRef<number | null>(null);
+
+  const getScrollEl = () => {
+    if (typeof document === "undefined") return null;
+    const main = document.querySelector("main");
+    if (main) return main as HTMLElement;
+    return (document.scrollingElement as HTMLElement) || null;
+  };
+
+  useEffect(() => {
+    suspendRealtimeRef.current = anyModalOpen;
+  }, [
+    anyModalOpen,
+  ]);
+
+  useEffect(() => {
+    if (loading || nodeList.length === 0) {
+      setGridReady(true);
+      return;
+    }
+    let active = true;
+    const measure = () => {
+      if (!active) return;
+      const el = gridWrapRef.current?.querySelector<HTMLElement>(".node-card");
+      if (el) {
+        const h = el.getBoundingClientRect().height;
+        if (h > 0) {
+          const next = Math.ceil(h + 24);
+          setNodeRowHeight((prev) => (next > prev ? next : prev));
+        }
+      }
+      setGridReady(true);
+    };
+    const raf1 = requestAnimationFrame(() => {
+      const raf2 = requestAnimationFrame(measure);
+      if (!active) cancelAnimationFrame(raf2);
+    });
+    const t1 = setTimeout(measure, 220);
+    return () => {
+      active = false;
+      cancelAnimationFrame(raf1);
+      clearTimeout(t1);
+    };
+  }, [loading, nodeList.length]);
+
+  useEffect(() => {
+    const el = getScrollEl();
+    if (!el) return;
+    if (anyModalOpen) {
+      scrollPosRef.current = el.scrollTop;
+      return;
+    }
+    if (scrollPosRef.current == null) return;
+    const pos = scrollPosRef.current;
+    const raf = requestAnimationFrame(() => {
+      el.scrollTop = pos;
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [anyModalOpen]);
+
   const websocketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
@@ -234,6 +1191,8 @@ export default function NodePage() {
   const [reapplyLoading, setReapplyLoading] = useState<Record<number, boolean>>(
     {},
   );
+  const pageVisible = usePageVisibility();
+  const [pollMs, setPollMs] = useState<number>(5000);
 
   useEffect(() => {
     loadNodes();
@@ -244,6 +1203,32 @@ export default function NodePage() {
       closeTermWS();
     };
   }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const v = await getCachedConfig("poll_interval_sec");
+        const n = Math.max(3, parseInt(String(v || "5"), 10));
+
+        setPollMs(n * 1000);
+      } catch {}
+    })();
+  }, []);
+
+  useEffect(() => {
+    let timer: any;
+    const tick = async () => {
+      if (!pageVisible) return;
+      await loadNodes(true, false);
+    };
+
+    tick();
+    timer = setInterval(tick, pollMs);
+
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [pollMs, pageVisible]);
 
   // 模拟终端：处理 \r 覆盖、保留 ANSI 颜色
   // 终端相关
@@ -649,8 +1634,8 @@ export default function NodePage() {
   }, []);
 
   // 加载节点列表
-  const loadNodes = async () => {
-    setLoading(true);
+  const loadNodes = async (silent = false, withExtras = true) => {
+    if (!silent) setLoading(true);
     try {
       const res = await getNodeList();
 
@@ -687,46 +1672,48 @@ export default function NodePage() {
         });
 
         setNodeList(mappedNodes);
-        // 预拉取各节点的 NQ 结果存在性
-        mappedNodes.forEach(async (node: any) => {
-          try {
-            const r: any = await getNQResult(node.id);
+        if (withExtras) {
+          // 预拉取各节点的 NQ 结果存在性
+          mappedNodes.forEach(async (node: any) => {
+            try {
+              const r: any = await getNQResult(node.id);
 
-            if (r.code === 0 && r.data && (r.data.content || r.data.done)) {
-              setNqHasResult((prev: Record<number, boolean>) => ({
-                ...prev,
-                [node.id]: true,
-              }));
-              const content = (r.data.content as string) || "";
-              const timeMs = r.data.timeMs || null;
+              if (r.code === 0 && r.data && (r.data.content || r.data.done)) {
+                setNqHasResult((prev: Record<number, boolean>) => ({
+                  ...prev,
+                  [node.id]: true,
+                }));
+                const content = (r.data.content as string) || "";
+                const timeMs = r.data.timeMs || null;
 
-              setNqResultCache((prev) => ({
-                ...prev,
-                [node.id]: { content, timeMs },
-              }));
-            }
-          } catch {}
-        });
-        // 批量拉取最近1小时探针概览（按配置可隐藏）
-        if (showNetwork) {
-          try {
-            const r = await getNodeNetworkStatsBatch("1h");
+                setNqResultCache((prev) => ({
+                  ...prev,
+                  [node.id]: { content, timeMs },
+                }));
+              }
+            } catch {}
+          });
+          // 批量拉取最近1小时探针概览（按配置可隐藏）
+          if (showNetwork) {
+            try {
+              const r = await getNodeNetworkStatsBatch("1h");
 
-            if (r.code === 0 && r.data) {
-              const mapped: any = {};
+              if (r.code === 0 && r.data) {
+                const mapped: any = {};
 
-              Object.keys(r.data).forEach((nid) => {
-                const item = r.data[nid];
+                Object.keys(r.data).forEach((nid) => {
+                  const item = r.data[nid];
 
-                mapped[Number(nid)] = {
-                  avg: item.avg ?? 0,
-                  latest: item.latest ?? null,
-                  target: item.latestTarget,
-                };
-              });
-              setProbeStat(mapped);
-            }
-          } catch {}
+                  mapped[Number(nid)] = {
+                    avg: item.avg ?? 0,
+                    latest: item.latest ?? null,
+                    target: item.latestTarget,
+                  };
+                });
+                setProbeStat(mapped);
+              }
+            } catch {}
+          }
         }
       } else {
         toast.error(res.msg || "加载节点列表失败");
@@ -734,94 +1721,14 @@ export default function NodePage() {
     } catch (error) {
       toast.error("网络错误，请重试");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
-  // 打开设置出口服务对话框
-  const openExitModal = async (node: Node) => {
-    setExitNodeId(node.id);
-    // default values
-    let dPort = node.portSta || 10000;
-    let dPwd = "";
-    let dMethod = "AEAD_CHACHA20_POLY1305";
-    let dObserver = "console";
-    let dLimiter = "";
-    let dRLimiter = "";
-    let dMetaItems: Array<{ id: number; key: string; value: string }> = [];
-
-    try {
-      const res = await getExitNode(node.id);
-
-      if (res.code === 0 && res.data) {
-        const data = res.data as any;
-
-        if (typeof data.port === "number") dPort = data.port;
-        if (typeof data.password === "string") dPwd = data.password;
-        if (typeof data.method === "string" && data.method)
-          dMethod = data.method;
-        if (typeof data.observer === "string")
-          dObserver = data.observer || dObserver;
-        if (typeof data.limiter === "string") dLimiter = data.limiter || "";
-        if (typeof data.rlimiter === "string") dRLimiter = data.rlimiter || "";
-        if (data.metadata && typeof data.metadata === "object") {
-          dMetaItems = Object.entries(data.metadata).map(([k, v]) => ({
-            id: Date.now() + Math.random(),
-            key: String(k),
-            value: String(v),
-          }));
-          if (typeof (data.metadata as any).interface === "string") {
-            setExitIfaceSel(String((data.metadata as any).interface));
-          }
-        }
-      }
-    } catch {}
-
-    // 拉取该节点的接口IP列表（agent上报的全局地址）
-    try {
-      const { getNodeInterfaces } = await import("@/api");
-      const rr: any = await getNodeInterfaces(node.id);
-      const ips =
-        rr && rr.code === 0 && Array.isArray(rr.data?.ips)
-          ? (rr.data.ips as string[])
-          : [];
-
-      setExitIfaces(ips);
-    } catch {
-      setExitIfaces([]);
-    }
-    if (!exitIfaceSel) setExitIfaceSel("");
-
-    setExitPort(dPort);
-    setExitPassword(dPwd);
-    setExitMethod(dMethod);
-    setExitObserver(dObserver);
-    setExitLimiter(dLimiter);
-    setExitRLimiter(dRLimiter);
-    setExitMetaItems(dMetaItems);
+  const openExitModal = useCallback((node: Node) => {
+    setExitNode(node);
     setExitModalOpen(true);
-  };
-
-  const addMonths = (ts: number, months: number): number => {
-    const d = new Date(ts);
-    const day = d.getDate();
-    const targetMonth = d.getMonth() + months;
-    const y = d.getFullYear() + Math.floor(targetMonth / 12);
-    const m = ((targetMonth % 12) + 12) % 12;
-    const lastDay = new Date(y, m + 1, 0).getDate();
-    const newDay = Math.min(day, lastDay);
-    const nd = new Date(
-      y,
-      m,
-      newDay,
-      d.getHours(),
-      d.getMinutes(),
-      d.getSeconds(),
-      d.getMilliseconds(),
-    );
-
-    return nd.getTime();
-  };
+  }, []);
 
   const formatRemainDays = (node: Node) => {
     if (!node.cycleMonths || !node.startDateMs) return "";
@@ -849,52 +1756,6 @@ export default function NodePage() {
     navigate(`/network/${node.id}`);
   };
 
-  const periodOptions = [
-    { key: "1", label: "月" },
-    { key: "3", label: "季度" },
-    { key: "6", label: "半年" },
-    { key: "12", label: "年" },
-  ];
-
-  const computeNextExpire = (start?: number, cycle?: number): number | null => {
-    if (!start || !cycle) return null;
-    let months = 0;
-
-    switch (cycle) {
-      case 30:
-        months = 1;
-        break;
-      case 90:
-        months = 3;
-        break;
-      case 180:
-        months = 6;
-        break;
-      case 365:
-        months = 12;
-        break;
-      default:
-        months = 0;
-        break;
-    }
-    if (months > 0) {
-      let exp = addMonths(start, months);
-      const now = Date.now();
-
-      while (exp <= now) exp = addMonths(exp, months);
-
-      return exp;
-    }
-    // fallback by days
-    const cycleMs = cycle * 24 * 3600 * 1000;
-    const now = Date.now();
-
-    if (now <= start) return start + cycleMs;
-    const elapsed = now - start;
-    const k = Math.ceil(elapsed / cycleMs);
-
-    return start + k * cycleMs;
-  };
 
   // 刷新节点服务状态（仅查询 ss）
   const refreshServices = async (node: Node) => {
@@ -936,56 +1797,6 @@ export default function NodePage() {
     }
   };
 
-  // 提交出口服务设置
-  const submitExit = async () => {
-    if (!exitNodeId) {
-      toast.error("无效的节点");
-
-      return;
-    }
-    if (!exitPort || exitPort < 1 || exitPort > 65535) {
-      toast.error("端口无效");
-
-      return;
-    }
-    if (!exitPassword) {
-      toast.error("请填写密码");
-
-      return;
-    }
-    setExitSubmitting(true);
-    try {
-      const metadata: any = {};
-
-      exitMetaItems.forEach((it: { key: string; value: string }) => {
-        if (it.key && it.value) metadata[it.key] = it.value;
-      });
-      if (exitIfaceSel) {
-        (metadata as any)["interface"] = exitIfaceSel;
-      }
-      const res = await setExitNode({
-        nodeId: exitNodeId,
-        port: exitPort,
-        password: exitPassword,
-        method: exitMethod,
-        observer: exitObserver,
-        limiter: exitLimiter,
-        rlimiter: exitRLimiter,
-        metadata,
-      } as any);
-
-      if (res.code === 0) {
-        toast.success("出口服务已创建/更新");
-        setExitModalOpen(false);
-      } else {
-        toast.error(res.msg || "操作失败");
-      }
-    } catch (e) {
-      toast.error("网络错误");
-    } finally {
-      setExitSubmitting(false);
-    }
-  };
 
   // 初始化WebSocket连接
   const initWebSocket = () => {
@@ -1045,6 +1856,7 @@ export default function NodePage() {
 
   // 处理WebSocket消息
   const handleWebSocketMessage = (data: any) => {
+    if (suspendRealtimeRef.current) return;
     const { id, type, data: messageData } = data;
 
     if (type === "status") {
@@ -1471,119 +2283,15 @@ export default function NodePage() {
     return "danger";
   };
 
-  // 验证IP地址格式
-  const validateIp = (ip: string): boolean => {
-    if (!ip || !ip.trim()) return false;
-
-    const trimmedIp = ip.trim();
-
-    // IPv4格式验证
-    const ipv4Regex =
-      /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
-
-    // IPv6格式验证
-    const ipv6Regex =
-      /^(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))$/;
-
-    if (
-      ipv4Regex.test(trimmedIp) ||
-      ipv6Regex.test(trimmedIp) ||
-      trimmedIp === "localhost"
-    ) {
-      return true;
-    }
-
-    // 验证域名格式
-    if (/^\d+$/.test(trimmedIp)) return false;
-
-    const domainRegex =
-      /^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)+$/;
-    const singleLabelDomain = /^[a-zA-Z][a-zA-Z0-9\-]{0,62}$/;
-
-    return domainRegex.test(trimmedIp) || singleLabelDomain.test(trimmedIp);
-  };
-
-  // 表单验证
-  const validateForm = (): boolean => {
-    const newErrors: Record<string, string> = {};
-
-    if (!form.name.trim()) {
-      newErrors.name = "请输入节点名称";
-    } else if (form.name.trim().length < 2) {
-      newErrors.name = "节点名称长度至少2位";
-    } else if (form.name.trim().length > 50) {
-      newErrors.name = "节点名称长度不能超过50位";
-    }
-
-    if (!form.ipString.trim()) {
-      newErrors.ipString = "请输入入口IP地址";
-    } else {
-      const ips = form.ipString
-        .split("\n")
-        .map((ip) => ip.trim())
-        .filter((ip) => ip);
-
-      if (ips.length === 0) {
-        newErrors.ipString = "请输入至少一个有效IP地址";
-      } else {
-        for (let i = 0; i < ips.length; i++) {
-          if (!validateIp(ips[i])) {
-            newErrors.ipString = `第${i + 1}行IP地址格式错误: ${ips[i]}`;
-            break;
-          }
-        }
-      }
-    }
-
-    if (!form.serverIp.trim()) {
-      newErrors.serverIp = "请输入服务器IP地址";
-    } else if (!validateIp(form.serverIp.trim())) {
-      newErrors.serverIp = "请输入有效的IPv4、IPv6地址或域名";
-    }
-
-    if (!form.portSta || form.portSta < 1 || form.portSta > 65535) {
-      newErrors.portSta = "端口范围必须在1-65535之间";
-    }
-
-    if (!form.portEnd || form.portEnd < 1 || form.portEnd > 65535) {
-      newErrors.portEnd = "端口范围必须在1-65535之间";
-    } else if (form.portEnd < form.portSta) {
-      newErrors.portEnd = "结束端口不能小于起始端口";
-    }
-
-    setErrors(newErrors);
-
-    return Object.keys(newErrors).length === 0;
-  };
-
   // 新增节点
   const handleAdd = () => {
-    setDialogTitle("新增节点");
-    setIsEdit(false);
+    setEditNode(null);
     setDialogVisible(true);
-    resetForm();
   };
 
   // 编辑节点
   const handleEdit = (node: Node) => {
-    setDialogTitle("编辑节点");
-    setIsEdit(true);
-    setForm({
-      id: node.id,
-      name: node.name,
-      ipString: node.ip
-        ? node.ip
-            .split(",")
-            .map((ip) => ip.trim())
-            .join("\n")
-        : "",
-      serverIp: node.serverIp || "",
-      portSta: node.portSta,
-      portEnd: node.portEnd,
-    });
-    setPriceCents(node.priceCents);
-    setCycleMonths(node.cycleMonths);
-    setStartDateMs(node.startDateMs);
+    setEditNode(node);
     setDialogVisible(true);
   };
 
@@ -1665,92 +2373,80 @@ export default function NodePage() {
     }
   };
 
-  // 提交表单
-  const handleSubmit = async () => {
-    if (!validateForm()) return;
-
-    setSubmitLoading(true);
-
+  const openConnections = async (node: Node) => {
+    setConnModal({
+      open: true,
+      nodeName: node.name,
+      loading: true,
+      versions: [],
+    });
     try {
-      const ipString = form.ipString
-        .split("\n")
-        .map((ip) => ip.trim())
-        .filter((ip) => ip)
-        .join(",");
+      const res: any = await getNodeConnections();
 
-      const submitData: any = {
-        ...form,
-        ip: ipString,
-      };
+      if (res && res.code === 0 && Array.isArray(res.data)) {
+        const item = res.data.find(
+          (it: any) => Number(it.nodeId) === Number(node.id),
+        );
+        const versions = Array.isArray(item?.conns)
+          ? item.conns.map((c: any) => String(c?.version || "unknown"))
+          : [];
 
-      delete (submitData as any).ipString;
-      if (priceCents != null) submitData.priceCents = priceCents;
-      if (cycleMonths != null) submitData.cycleMonths = cycleMonths;
-      if (startDateMs != null) submitData.startDateMs = startDateMs;
-
-      const apiCall = isEdit ? updateNode : createNode;
-      const data: any = isEdit
-        ? submitData
-        : {
-            name: form.name,
-            ip: ipString,
-            serverIp: form.serverIp,
-            portSta: form.portSta,
-            portEnd: form.portEnd,
-          };
-
-      if (!isEdit) {
-        if (priceCents != null) data.priceCents = priceCents;
-        if (cycleMonths != null) data.cycleMonths = cycleMonths;
-        if (startDateMs != null) data.startDateMs = startDateMs;
-      }
-
-      const res = await apiCall(data);
-
-      if (res.code === 0) {
-        toast.success(isEdit ? "更新成功" : "创建成功");
-        setDialogVisible(false);
-
-        if (isEdit) {
-          setNodeList((prev) =>
-            prev.map((n) =>
-              n.id === form.id
-                ? {
-                    ...n,
-                    name: form.name,
-                    ip: ipString,
-                    serverIp: form.serverIp,
-                    portSta: form.portSta,
-                    portEnd: form.portEnd,
-                  }
-                : n,
-            ),
-          );
-        } else {
-          loadNodes();
-        }
+        setConnModal({
+          open: true,
+          nodeName: node.name,
+          loading: false,
+          versions,
+        });
       } else {
-        toast.error(res.msg || (isEdit ? "更新失败" : "创建失败"));
+        setConnModal((prev) => ({ ...prev, loading: false }));
+        toast.error(res?.msg || "获取连接信息失败");
       }
-    } catch (error) {
-      toast.error("网络错误，请重试");
-    } finally {
-      setSubmitLoading(false);
+    } catch {
+      setConnModal((prev) => ({ ...prev, loading: false }));
+      toast.error("获取连接信息失败");
     }
   };
 
-  // 重置表单
-  const resetForm = () => {
-    setForm({
-      id: null,
-      name: "",
-      ipString: "",
-      serverIp: "",
-      portSta: 1000,
-      portEnd: 65535,
+  const runSelfCheck = async (node: Node) => {
+    setSelfCheckModal({
+      open: true,
+      nodeName: node.name,
+      loading: true,
+      result: null,
     });
-    setErrors({});
+    try {
+      const res: any = await nodeSelfCheck(node.id);
+
+      if (res && res.code === 0) {
+        setSelfCheckModal({
+          open: true,
+          nodeName: node.name,
+          loading: false,
+          result: res.data || null,
+        });
+      } else {
+        setSelfCheckModal((prev) => ({ ...prev, loading: false }));
+        toast.error(res?.msg || "自检失败");
+      }
+    } catch {
+      setSelfCheckModal((prev) => ({ ...prev, loading: false }));
+      toast.error("自检失败");
+    }
   };
+
+  const handleNodeSaved = () => {
+    loadNodes();
+  };
+
+  const handleNodeModalChange = useCallback((open: boolean) => {
+    setDialogVisible(open);
+    if (!open) setEditNode(null);
+  }, []);
+
+  const handleExitModalChange = useCallback((open: boolean) => {
+    setExitModalOpen(open);
+    if (!open) setExitNode(null);
+  }, []);
 
   return (
     <div className="px-3 lg:px-6 py-8">
@@ -1788,10 +2484,19 @@ export default function NodePage() {
 
       {/* 节点列表 */}
       {loading ? (
-        <div className="flex items-center justify-center h-64">
-          <div className="flex items-center gap-3">
-            <Spinner size="sm" />
-            <span className="text-default-600">正在加载...</span>
+        <div className="space-y-4">
+          <div className="flex items-center justify-center h-24">
+            <div className="flex items-center gap-3">
+              <Spinner size="sm" />
+              <span className="text-default-600 skeleton-text">
+                正在加载...
+              </span>
+            </div>
+          </div>
+          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+            {Array.from({ length: 8 }).map((_, idx) => (
+              <div key={`node-skel-${idx}`} className="skeleton-card" />
+            ))}
           </div>
         </div>
       ) : nodeList.length === 0 ? (
@@ -1824,7 +2529,7 @@ export default function NodePage() {
             </div>
           </CardBody>
         </Card>
-      ) : (
+      ) : nodeList.length > 0 ? (
         <>
           <div className="flex justify-end mb-2 gap-2">
             <Button size="sm" variant="flat" onPress={() => setOpsOpen(true)}>
@@ -1861,12 +2566,20 @@ export default function NodePage() {
               批量重新应用
             </Button>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-2 2xl:grid-cols-3 gap-4">
-            {nodeList.map((node) => (
-              <Card
-                key={node.id}
-                className="shadow-sm border border-divider hover:shadow-md transition-shadow duration-200"
-              >
+          <div
+            ref={gridWrapRef}
+            style={{ visibility: gridReady ? "visible" : "hidden" }}
+          >
+            <VirtualGrid
+              className="w-full"
+              estimateRowHeight={nodeRowHeight}
+              items={nodeList}
+              minItemWidth={320}
+              renderItem={(node) => (
+                <Card
+                  key={node.id}
+                  className="list-card node-card shadow-sm border border-divider hover:shadow-md transition-shadow duration-200"
+                >
                 <CardHeader className="pb-2">
                   <div className="flex justify-between items-start w-full">
                     <div className="flex-1 min-w-0">
@@ -1900,6 +2613,28 @@ export default function NodePage() {
                           </Button>
                         </Tooltip>
                       )}
+                      <Tooltip content="连接详情">
+                        <Button
+                          isIconOnly
+                          size="sm"
+                          variant="light"
+                          onPress={() => openConnections(node)}
+                        >
+                          <svg
+                            className="w-4 h-4"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              d="M8 12a4 4 0 014-4h4m-4 8h4a4 4 0 000-8"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                        </Button>
+                      </Tooltip>
                       <Chip
                         className="text-xs"
                         color={
@@ -2216,9 +2951,9 @@ export default function NodePage() {
 
                   {/* 操作按钮 */}
                   <div className="space-y-1.5">
-                    <div className="flex gap-1.5">
+                    <div className="grid grid-cols-3 gap-1.5">
                       <Button
-                        className="flex-1 min-h-8"
+                        className="w-full min-h-8"
                         color="success"
                         isLoading={node.copyLoading}
                         size="sm"
@@ -2228,7 +2963,7 @@ export default function NodePage() {
                         安装
                       </Button>
                       <Button
-                        className="flex-1 min-h-8"
+                        className="w-full min-h-8"
                         color="warning"
                         size="sm"
                         variant="flat"
@@ -2237,7 +2972,31 @@ export default function NodePage() {
                         出口
                       </Button>
                       <Button
-                        className="flex-1 min-h-8"
+                        className="w-full min-h-8"
+                        color="default"
+                        size="sm"
+                        variant="flat"
+                        onPress={() => runSelfCheck(node)}
+                      >
+                        自检
+                      </Button>
+                      <Button
+                        className="w-full min-h-8"
+                        color="default"
+                        size="sm"
+                        variant="flat"
+                        onPress={() =>
+                          setUsedPortsModal({
+                            open: true,
+                            nodeName: node.name,
+                            ports: node.usedPorts || [],
+                          })
+                        }
+                      >
+                        占用端口
+                      </Button>
+                      <Button
+                        className="w-full min-h-8"
                         color="primary"
                         size="sm"
                         variant="flat"
@@ -2246,7 +3005,7 @@ export default function NodePage() {
                         编辑
                       </Button>
                       <Button
-                        className="flex-1 min-h-8"
+                        className="w-full min-h-8"
                         color="danger"
                         size="sm"
                         variant="flat"
@@ -2257,17 +3016,56 @@ export default function NodePage() {
                     </div>
                   </div>
                 </CardBody>
-              </Card>
-            ))}
+                </Card>
+              )}
+            />
           </div>
-          <OpsLogModal isOpen={opsOpen} onOpenChange={setOpsOpen} />
-          <Modal
-            isOpen={termModal.open}
-            placement="center"
-            scrollBehavior="inside"
-            size="5xl"
-            onOpenChange={(open) => {
-              if (!open) {
+        </>
+      ) : null}
+
+      <OpsLogModal isOpen={opsOpen} onOpenChange={setOpsOpen} />
+      <Modal
+        isOpen={termModal.open}
+        placement="center"
+        scrollBehavior="inside"
+        size="5xl"
+        onOpenChange={(open) => {
+          if (!open) {
+            closeTermWS();
+            setTermModal({
+              open: false,
+              nodeId: null,
+              nodeName: "",
+              content: "",
+              running: false,
+              connecting: false,
+            });
+          }
+        }}
+      >
+        <ModalContent>
+          <ModalHeader>
+            终端 · {termModal.nodeName}
+            <span className="text-xs text-default-500 ml-2">
+              {termModal.connecting
+                ? "连接中..."
+                : termModal.running
+                  ? "运行中"
+                  : "已断开"}
+            </span>
+          </ModalHeader>
+          <ModalBody>
+            <div className="bg-black rounded-md h-[60vh] min-h-[300px] overflow-hidden">
+              <div ref={termContainerRef} className="w-full h-full" />
+            </div>
+            <div className="text-xs text-default-500">
+              按键直接发送到节点 /bin/bash，关闭弹窗不会终止会话。
+            </div>
+          </ModalBody>
+          <ModalFooter>
+            <Button
+              variant="light"
+              onPress={() => {
                 closeTermWS();
                 setTermModal({
                   open: false,
@@ -2277,421 +3075,174 @@ export default function NodePage() {
                   running: false,
                   connecting: false,
                 });
-              }
-            }}
-          >
-            <ModalContent>
-              <ModalHeader>
-                终端 · {termModal.nodeName}
-                <span className="text-xs text-default-500 ml-2">
-                  {termModal.connecting
-                    ? "连接中..."
-                    : termModal.running
-                      ? "运行中"
-                      : "已断开"}
-                </span>
-              </ModalHeader>
-              <ModalBody>
-                <div className="bg-black rounded-md h-[60vh] min-h-[300px] overflow-hidden">
-                  <div ref={termContainerRef} className="w-full h-full" />
-                </div>
-                <div className="text-xs text-default-500">
-                  按键直接发送到节点 /bin/bash，关闭弹窗不会终止会话。
-                </div>
-              </ModalBody>
-              <ModalFooter>
-                <Button
-                  variant="light"
-                  onPress={() => {
-                    closeTermWS();
-                    setTermModal({
-                      open: false,
-                      nodeId: null,
-                      nodeName: "",
-                      content: "",
-                      running: false,
-                      connecting: false,
-                    });
-                  }}
-                >
-                  关闭
-                </Button>
-              </ModalFooter>
-            </ModalContent>
-          </Modal>
-        </>
-      )}
-
-      {/* 新增/编辑节点对话框 */}
-      <Modal
-        backdrop="blur"
-        isOpen={dialogVisible}
-        placement="center"
-        scrollBehavior="outside"
-        size="2xl"
-        onClose={() => setDialogVisible(false)}
-      >
-        <ModalContent>
-          <ModalHeader>{dialogTitle}</ModalHeader>
-          <ModalBody>
-            <div className="space-y-4">
-              <Input
-                errorMessage={errors.name}
-                isInvalid={!!errors.name}
-                label="节点名称"
-                placeholder="请输入节点名称"
-                value={form.name}
-                variant="bordered"
-                onChange={(e) =>
-                  setForm((prev) => ({ ...prev, name: e.target.value }))
-                }
-              />
-
-              <Input
-                errorMessage={errors.serverIp}
-                isInvalid={!!errors.serverIp}
-                label="服务器IP"
-                placeholder="请输入服务器IP地址，如: 192.168.1.100 或 example.com"
-                value={form.serverIp}
-                variant="bordered"
-                onChange={(e) =>
-                  setForm((prev) => ({ ...prev, serverIp: e.target.value }))
-                }
-              />
-
-              <Textarea
-                description="支持多个IP，每行一个地址"
-                errorMessage={errors.ipString}
-                isInvalid={!!errors.ipString}
-                label="入口IP"
-                maxRows={5}
-                minRows={3}
-                placeholder="一行一个IP地址或域名，例如:&#10;192.168.1.100&#10;example.com"
-                value={form.ipString}
-                variant="bordered"
-                onChange={(e) =>
-                  setForm((prev) => ({ ...prev, ipString: e.target.value }))
-                }
-              />
-
-              <div className="grid grid-cols-2 gap-4">
-                <Input
-                  errorMessage={errors.portSta}
-                  isInvalid={!!errors.portSta}
-                  label="起始端口"
-                  max={65535}
-                  min={1}
-                  placeholder="1000"
-                  type="number"
-                  value={form.portSta.toString()}
-                  variant="bordered"
-                  onChange={(e) =>
-                    setForm((prev) => ({
-                      ...prev,
-                      portSta: parseInt(e.target.value) || 1000,
-                    }))
-                  }
-                />
-
-                <Input
-                  errorMessage={errors.portEnd}
-                  isInvalid={!!errors.portEnd}
-                  label="结束端口"
-                  max={65535}
-                  min={1}
-                  placeholder="65535"
-                  type="number"
-                  value={form.portEnd.toString()}
-                  variant="bordered"
-                  onChange={(e) =>
-                    setForm((prev) => ({
-                      ...prev,
-                      portEnd: parseInt(e.target.value) || 65535,
-                    }))
-                  }
-                />
-              </div>
-
-              <div className="grid grid-cols-3 gap-4">
-                <Input
-                  label="价格(元)"
-                  placeholder="可选"
-                  type="number"
-                  value={
-                    priceCents != null ? (priceCents / 100).toString() : ""
-                  }
-                  variant="bordered"
-                  onChange={(e) => {
-                    const v = parseFloat((e.target as any).value);
-
-                    setPriceCents(isNaN(v) ? undefined : Math.round(v * 100));
-                  }}
-                />
-                <Select
-                  label="周期"
-                  selectedKeys={
-                    cycleMonths ? new Set([String(cycleMonths)]) : new Set()
-                  }
-                  variant="bordered"
-                  onChange={(e) => {
-                    const v = parseInt((e.target as any).value);
-
-                    setCycleMonths(isNaN(v) ? undefined : v);
-                  }}
-                >
-                  {periodOptions.map((opt) => (
-                    <SelectItem key={opt.key}>{opt.label}</SelectItem>
-                  ))}
-                </Select>
-                <Input
-                  label="开始日期"
-                  type="date"
-                  value={
-                    startDateMs
-                      ? new Date(startDateMs).toISOString().slice(0, 10)
-                      : ""
-                  }
-                  variant="bordered"
-                  onChange={(e) => {
-                    const s = (e.target as any).value;
-
-                    setStartDateMs(
-                      s ? new Date(s + "T00:00:00").getTime() : undefined,
-                    );
-                  }}
-                />
-              </div>
-
-              {/* 到期时间预览（根据周期与开始日期计算），显示“剩余天数” */}
-              <div className="text-xs text-default-600">
-                {(() => {
-                  const exp = computeNextExpire(startDateMs, cycleMonths);
-
-                  if (!exp) return "到期时间：-";
-                  const daysLeft = Math.max(
-                    0,
-                    Math.ceil((exp - Date.now()) / (24 * 3600 * 1000)),
-                  );
-                  const dt = new Date(exp);
-                  const yyyy = dt.getFullYear();
-                  const mm = String(dt.getMonth() + 1).padStart(2, "0");
-                  const dd = String(dt.getDate()).padStart(2, "0");
-
-                  return `到期时间：${yyyy}-${mm}-${dd}（剩余 ${daysLeft} 天）`;
-                })()}
-              </div>
-
-              <Alert
-                className="mt-4"
-                color="primary"
-                description="服务器ip是你要添加的服务器的ip地址，不是面板的ip地址。入口ip是用于展示在转发页面，面向用户的访问地址。实在理解不到说明你没这个需求，都填节点的服务器ip就行！"
-                variant="flat"
-              />
-            </div>
-          </ModalBody>
-          <ModalFooter>
-            <Button variant="flat" onPress={() => setDialogVisible(false)}>
-              取消
-            </Button>
-            <Button
-              color="primary"
-              isLoading={submitLoading}
-              onPress={handleSubmit}
+              }}
             >
-              {submitLoading ? "提交中..." : "确定"}
+              关闭
             </Button>
           </ModalFooter>
         </ModalContent>
       </Modal>
 
+      {/* 新增/编辑节点对话框 */}
+      <NodeEditModal
+        editNode={editNode}
+        isOpen={dialogVisible}
+        onOpenChange={handleNodeModalChange}
+        onSaved={handleNodeSaved}
+      />
+
       {/* 出口服务设置弹窗 */}
-      <Modal isOpen={exitModalOpen} size="md" onOpenChange={setExitModalOpen}>
+      <ExitServiceModal
+        isOpen={exitModalOpen}
+        node={exitNode}
+        onOpenChange={handleExitModalChange}
+      />
+
+      {/* 已占用端口弹窗 */}
+      <Modal
+        backdrop="opaque"
+        disableAnimation
+        isOpen={usedPortsModal.open}
+        placement="center"
+        scrollBehavior="outside"
+        size="2xl"
+        onOpenChange={(open) =>
+          setUsedPortsModal((prev) => ({ ...prev, open }))
+        }
+      >
         <ModalContent>
           {(onClose) => (
             <>
-              <ModalHeader>设置出口节点服务</ModalHeader>
+              <ModalHeader>
+                已占用端口 · {usedPortsModal.nodeName}
+              </ModalHeader>
               <ModalBody>
-                <div className="space-y-3">
-                  <Input
-                    label="端口"
-                    type="number"
-                    value={String(exitPort)}
-                    onChange={(e: any) => setExitPort(Number(e.target.value))}
+                {usedPortsModal.ports.length > 0 ? (
+                  <Textarea
+                    readOnly
+                    className="font-mono text-xs"
+                    minRows={6}
+                    value={usedPortsModal.ports.join(", ")}
                   />
-                  <Input
-                    label="密码"
-                    type="text"
-                    value={exitPassword}
-                    onChange={(e: any) => setExitPassword(e.target.value)}
-                  />
-                  <Select
-                    label="加密方法"
-                    selectedKeys={[exitMethod]}
-                    description="选择 Shadowsocks 加密方法"
-                    onSelectionChange={(keys) => {
-                      const val = Array.from(keys as Set<string>)[0] || "";
-
-                      if (val) setExitMethod(val);
-                    }}
-                  >
-                    {EXIT_METHODS.map((m) => (
-                      <SelectItem key={m} textValue={m}>
-                        {m}
-                      </SelectItem>
-                    ))}
-                  </Select>
-                  <div>
-                    <div className="text-sm text-default-600 mb-1">
-                      出口IP（metadata.interface，可选）
-                    </div>
-                    <Select
-                      isDisabled={exitIfaces.length === 0}
-                      label="请选择出口IP"
-                      placeholder={
-                        exitIfaces.length ? "选择出口IP" : "未获取到出口IP列表"
-                      }
-                      selectedKeys={exitIfaceSel ? [exitIfaceSel] : []}
-                      onSelectionChange={(keys) => {
-                        const val = Array.from(keys as Set<string>)[0] || "";
-
-                        setExitIfaceSel(val);
-                      }}
-                    >
-                      {exitIfaces.map((ip) => (
-                        <SelectItem key={ip}>{ip}</SelectItem>
-                      ))}
-                    </Select>
-                    {exitIfaceSel && (
-                      <Button
-                        className="mt-2"
-                        size="sm"
-                        variant="light"
-                        onPress={() => setExitIfaceSel("")}
-                      >
-                        清除选择
-                      </Button>
-                    )}
+                ) : (
+                  <div className="text-sm text-default-500">
+                    暂无上报或无占用端口
                   </div>
-                  <Divider />
-                  <Input
-                    description="默认 console，可留空"
-                    label="观察器(observer)"
-                    value={exitObserver}
-                    onChange={(e: any) => setExitObserver(e.target.value)}
-                  />
-                  <Input
-                    description="可选，需在节点注册对应限速器"
-                    label="限速(limiter)"
-                    value={exitLimiter}
-                    onChange={(e: any) => setExitLimiter(e.target.value)}
-                  />
-                  <Input
-                    description="可选，需在节点注册对应限速器"
-                    label="连接限速(rlimiter)"
-                    value={exitRLimiter}
-                    onChange={(e: any) => setExitRLimiter(e.target.value)}
-                  />
-                  <Divider />
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-default-600">
-                        handler.metadata
-                      </span>
-                      <Button
-                        size="sm"
-                        variant="flat"
-                        onPress={() =>
-                          setExitMetaItems((prev) => [
-                            ...prev,
-                            { id: Date.now(), key: "", value: "" },
-                          ])
-                        }
-                      >
-                        添加
-                      </Button>
-                    </div>
-                    {exitMetaItems.map(
-                      (it: { id: number; key: string; value: string }) => (
-                        <div
-                          key={it.id}
-                          className="grid grid-cols-5 gap-2 items-center"
-                        >
-                          <Input
-                            className="col-span-2"
-                            placeholder="key"
-                            value={it.key}
-                            onChange={(e: any) =>
-                              setExitMetaItems(
-                                (
-                                  prev: Array<{
-                                    id: number;
-                                    key: string;
-                                    value: string;
-                                  }>,
-                                ) =>
-                                  prev.map((x: any) =>
-                                    x.id === it.id
-                                      ? { ...x, key: e.target.value }
-                                      : x,
-                                  ),
-                              )
-                            }
-                          />
-                          <Input
-                            className="col-span-3"
-                            placeholder="value"
-                            value={it.value}
-                            onChange={(e: any) =>
-                              setExitMetaItems(
-                                (
-                                  prev: Array<{
-                                    id: number;
-                                    key: string;
-                                    value: string;
-                                  }>,
-                                ) =>
-                                  prev.map((x: any) =>
-                                    x.id === it.id
-                                      ? { ...x, value: e.target.value }
-                                      : x,
-                                  ),
-                              )
-                            }
-                          />
-                          <Button
-                            color="danger"
-                            size="sm"
-                            variant="light"
-                            onPress={() =>
-                              setExitMetaItems(
-                                (
-                                  prev: Array<{
-                                    id: number;
-                                    key: string;
-                                    value: string;
-                                  }>,
-                                ) => prev.filter((x: any) => x.id !== it.id),
-                              )
-                            }
-                          >
-                            删除
-                          </Button>
-                        </div>
-                      ),
-                    )}
-                  </div>
-                </div>
+                )}
               </ModalBody>
               <ModalFooter>
                 <Button variant="light" onPress={onClose}>
                   关闭
                 </Button>
-                <Button
-                  color="primary"
-                  isLoading={exitSubmitting}
-                  onPress={submitExit}
-                >
-                  保存
+              </ModalFooter>
+            </>
+          )}
+        </ModalContent>
+      </Modal>
+
+      {/* 连接详情弹窗 */}
+      <Modal
+        backdrop="opaque"
+        disableAnimation
+        isOpen={connModal.open}
+        placement="center"
+        scrollBehavior="outside"
+        size="2xl"
+        onOpenChange={(open) => setConnModal((prev) => ({ ...prev, open }))}
+      >
+        <ModalContent>
+          {(onClose) => (
+            <>
+              <ModalHeader>连接详情 · {connModal.nodeName}</ModalHeader>
+              <ModalBody>
+                {connModal.loading ? (
+                  <div className="text-sm text-default-500">加载中...</div>
+                ) : connModal.versions.length > 0 ? (
+                  <div className="space-y-2 text-sm">
+                    <div className="text-default-500">
+                      连接数：{connModal.versions.length}
+                    </div>
+                    <Textarea
+                      readOnly
+                      className="font-mono text-xs"
+                      minRows={4}
+                      value={connModal.versions.join("\n")}
+                    />
+                  </div>
+                ) : (
+                  <div className="text-sm text-default-500">暂无连接</div>
+                )}
+              </ModalBody>
+              <ModalFooter>
+                <Button variant="light" onPress={onClose}>
+                  关闭
+                </Button>
+              </ModalFooter>
+            </>
+          )}
+        </ModalContent>
+      </Modal>
+
+      {/* 节点自检弹窗 */}
+      <Modal
+        backdrop="opaque"
+        disableAnimation
+        isOpen={selfCheckModal.open}
+        placement="center"
+        scrollBehavior="outside"
+        size="2xl"
+        onOpenChange={(open) =>
+          setSelfCheckModal((prev) => ({ ...prev, open }))
+        }
+      >
+        <ModalContent>
+          {(onClose) => (
+            <>
+              <ModalHeader>节点自检 · {selfCheckModal.nodeName}</ModalHeader>
+              <ModalBody>
+                {selfCheckModal.loading ? (
+                  <div className="text-sm text-default-500">检测中...</div>
+                ) : selfCheckModal.result ? (
+                  <div className="space-y-3 text-sm">
+                    {["ping", "tcp"].map((key) => {
+                      const item = selfCheckModal.result?.[key];
+                      if (!item) return null;
+                      return (
+                        <div
+                          key={key}
+                          className="border border-default-200 rounded-lg p-3"
+                        >
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="font-medium">
+                              {key === "ping" ? "ICMP Ping" : "TCP 测试"}
+                            </span>
+                            <Chip
+                              color={item.success ? "success" : "danger"}
+                              size="sm"
+                              variant="flat"
+                            >
+                              {item.success ? "正常" : "失败"}
+                            </Chip>
+                          </div>
+                          <div className="text-xs text-default-500">
+                            目标: {item.target || "-"} · 平均延迟:{" "}
+                            {item.averageTime ?? "-"} ms · 丢包:{" "}
+                            {item.packetLoss ?? "-"}%
+                          </div>
+                          <div className="text-xs text-default-500 mt-1">
+                            {item.message || "-"}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="text-sm text-default-500">暂无结果</div>
+                )}
+              </ModalBody>
+              <ModalFooter>
+                <Button variant="light" onPress={onClose}>
+                  关闭
                 </Button>
               </ModalFooter>
             </>

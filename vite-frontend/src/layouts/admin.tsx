@@ -487,8 +487,12 @@ export default function AdminLayout({
 
   return (
     <div
-      className={`flex ${isMobile ? "min-h-screen" : "h-screen"} bg-gray-100 dark:bg-black`}
+      className={`flex ${isMobile ? "min-h-screen" : "h-screen"} apple-shell`}
     >
+      <div className="apple-backdrop">
+        <span className="apple-orb orb-a" />
+        <span className="apple-orb orb-b" />
+      </div>
       {/* 移动端遮罩层 */}
       {isMobile && mobileMenuVisible && (
         <div
@@ -503,9 +507,7 @@ export default function AdminLayout({
         ${isMobile ? "fixed" : "relative"} 
         ${isMobile && !mobileMenuVisible ? "-translate-x-full" : "translate-x-0"}
         ${isMobile ? "w-64" : "w-72"} 
-        bg-white dark:bg-black 
-        shadow-lg 
-        border-r border-gray-200 dark:border-gray-600
+        apple-sidebar
         z-50 
         transition-transform duration-300 ease-in-out
         flex flex-col
@@ -524,6 +526,7 @@ export default function AdminLayout({
             </div>
           </div>
         </div>
+        <div className="apple-divider mx-3" />
 
         {/* 菜单导航 */}
         <nav className="flex-1 px-4 py-6 overflow-y-auto">
@@ -535,13 +538,9 @@ export default function AdminLayout({
                 <li key={item.path}>
                   <button
                     className={`
-                       w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left
-                       transition-colors duration-200 min-h-[44px]
-                       ${
-                         isActive
-                           ? "bg-primary-100 dark:bg-primary-600/20 text-primary-600 dark:text-primary-300"
-                           : "text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-900"
-                       }
+                       w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left
+                       transition-colors duration-200 min-h-[44px] apple-menu-item
+                       ${isActive ? "apple-menu-item-active" : ""}
                      `}
                     onClick={() => handleMenuClick(item.path)}
                   >
@@ -595,7 +594,7 @@ export default function AdminLayout({
         className={`flex flex-col flex-1 ${isMobile ? "min-h-0" : "h-full overflow-hidden"}`}
       >
         {/* 顶部导航栏 */}
-        <header className="bg-white dark:bg-black shadow-md border-b border-gray-200 dark:border-gray-600 h-14 flex items-center justify-between px-4 lg:px-6 relative z-10">
+        <header className="apple-topbar h-14 flex items-center justify-between px-4 lg:px-6 relative z-10">
           <div className="flex items-center gap-4">
             {/* 移动端菜单按钮 */}
             {isMobile && (
@@ -619,6 +618,12 @@ export default function AdminLayout({
                   />
                 </svg>
               </Button>
+            )}
+            {siteConfig.build_date && (
+              <div className="text-xs text-gray-500 dark:text-gray-400">
+                v{siteConfig.version || siteConfig.app_version} · build{" "}
+                {new Date(siteConfig.build_date).toLocaleString()}
+              </div>
             )}
           </div>
 
@@ -721,7 +726,7 @@ export default function AdminLayout({
 
         {/* 主内容 */}
         <main
-          className={`flex-1 bg-gray-100 dark:bg-black ${isMobile ? "" : "overflow-y-auto"}`}
+          className={`flex-1 apple-content ${isMobile ? "" : "overflow-y-auto"}`}
         >
           {children}
         </main>

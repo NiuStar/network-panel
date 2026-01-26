@@ -43,6 +43,7 @@ export const checkNodeStatus = (nodeId?: number) => {
 // 设置出口节点（在节点上创建/更新 SS 服务）
 export const setExitNode = (data: {
   nodeId: number;
+  type?: string;
   port: number;
   password: string;
   method?: string;
@@ -52,8 +53,8 @@ export const setExitNode = (data: {
   metadata?: Record<string, any>;
 }) => Network.post("/node/set-exit", data);
 // 获取节点上次保存的出口设置
-export const getExitNode = (nodeId: number) =>
-  Network.post("/node/get-exit", { nodeId });
+export const getExitNode = (nodeId: number, type?: string) =>
+  Network.post("/node/get-exit", type ? { nodeId, type } : { nodeId });
 // 查询节点上的服务
 export const queryNodeServices = (data: { nodeId: number; filter?: string }) =>
   Network.post("/node/query-services", data);
@@ -101,6 +102,7 @@ export const etEnable = (data: {
   masterNodeId: number;
   ip: string;
   port: number;
+  autoJoin?: boolean;
 }) => Network.post("/easytier/enable", data);
 export const etNodes = () => Network.post("/easytier/nodes", {});
 export const etJoin = (data: {
@@ -120,6 +122,16 @@ export const etAutoAssign = (mode: string = "chain") =>
   Network.post("/easytier/auto-assign", { mode });
 export const etRedeployMaster = () =>
   Network.post("/easytier/redeploy-master", {});
+export const etVersion = () => Network.get("/easytier/version");
+export const etUpdateAll = () => Network.post("/easytier/update-all", {});
+export const etReapplyBatch = (nodeIds: number[]) =>
+  Network.post("/easytier/reapply", { nodeIds });
+export const etOperate = (nodeId: number, action: string) =>
+  Network.post("/easytier/operate", { nodeId, action });
+export const etOperateBatch = (nodeIds: number[], action: string) =>
+  Network.post("/easytier/operate-batch", { nodeIds, action });
+export const etLog = (requestId: string) =>
+  Network.post("/easytier/log", { requestId });
 export const listNodeOps = (params: {
   nodeId?: number;
   limit?: number;
@@ -216,6 +228,8 @@ export const verifyCaptcha = (data: { captchaId: string; trackData: string }) =>
 export const agentReconcileNode = (nodeId: number) =>
   Network.post("/agent/reconcile-node", { nodeId });
 export const getNodeConnections = () => Network.get("/node/connections");
+export const nodeSelfCheck = (nodeId: number) =>
+  Network.post("/node/self-check", { nodeId });
 
 // 探针目标管理（管理员）
 export const listProbeTargets = () => Network.post("/probe/list");

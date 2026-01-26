@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from "react";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Button } from "@heroui/button";
 import { Input } from "@heroui/input";
@@ -15,6 +15,7 @@ import { Chip } from "@heroui/chip";
 import { Spinner } from "@heroui/spinner";
 import { Alert } from "@heroui/alert";
 import { Accordion, AccordionItem } from "@heroui/accordion";
+import { Switch } from "@heroui/switch";
 import toast from "react-hot-toast";
 import {
   DndContext,
@@ -35,6 +36,7 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
 import OpsLogModal from "@/components/OpsLogModal";
+import VirtualGrid from "@/components/VirtualGrid";
 import {
   createForward,
   getForwardList,
@@ -56,6 +58,7 @@ import {
 } from "@/api";
 import { JwtUtil } from "@/utils/jwt";
 import { getCachedConfig } from "@/config/site";
+import { usePageVisibility } from "@/hooks/usePageVisibility";
 
 interface Forward {
   id: number;
@@ -64,6 +67,7 @@ interface Forward {
   tunnelName: string;
   inIp: string;
   inPort: number;
+  outPort?: number;
   remoteAddr: string;
   interfaceName?: string;
   strategy: string;
@@ -78,6 +82,106 @@ interface Forward {
   configOk?: boolean;
 }
 
+const getStrategyDisplay = (strategy: string) => {
+  switch (strategy) {
+    case "fifo":
+      return { color: "primary", text: "主备" };
+    case "round":
+      return { color: "success", text: "轮询" };
+    case "rand":
+      return { color: "warning", text: "随机" };
+    default:
+      return { color: "default", text: "未知" };
+  }
+};
+
+const formatInAddress = (ipString: string, port: number): string => {
+  if (!ipString || !port) return "";
+
+  const ips = ipString
+    .split(",")
+    .map((ip) => ip.trim())
+    .filter((ip) => ip);
+
+  if (ips.length === 0) return "";
+
+  if (ips.length === 1) {
+    const ip = ips[0];
+
+    if (ip.includes(":") && !ip.startsWith("[")) {
+      return `[${ip}]:${port}`;
+    } else {
+      return `${ip}:${port}`;
+    }
+  }
+
+  const firstIp = ips[0];
+  let formattedFirstIp;
+
+  if (firstIp.includes(":") && !firstIp.startsWith("[")) {
+    formattedFirstIp = `[${firstIp}]`;
+  } else {
+    formattedFirstIp = firstIp;
+  }
+
+  return `${formattedFirstIp}:${port} (+${ips.length - 1})`;
+};
+
+const formatRemoteAddress = (addressString: string): string => {
+  if (!addressString) return "";
+
+  const addresses = addressString
+    .split(",")
+    .map((addr) => addr.trim())
+    .filter((addr) => addr);
+
+  if (addresses.length === 0) return "";
+  if (addresses.length === 1) return addresses[0];
+
+  return `${addresses[0]} (+${addresses.length - 1})`;
+};
+
+const hasMultipleAddresses = (addressString: string): boolean => {
+  if (!addressString) return false;
+  const addresses = addressString
+    .split(",")
+    .map((addr) => addr.trim())
+    .filter((addr) => addr);
+
+  return addresses.length > 1;
+};
+
+type SortableForwardCardProps = {
+  forward: Forward;
+  renderCard: (forward: Forward, listeners?: any) => JSX.Element;
+};
+
+const SortableForwardCard = memo(
+  ({ forward, renderCard }: SortableForwardCardProps) => {
+    if (!forward || !forward.id) return null;
+
+    const {
+      attributes,
+      listeners,
+      setNodeRef,
+      transform,
+      transition,
+      isDragging,
+    } = useSortable({ id: forward.id });
+
+    const style = {
+      transform: transform ? CSS.Transform.toString(transform) : undefined,
+      transition: transition || undefined,
+      opacity: isDragging ? 0.5 : 1,
+    };
+
+    return (
+      <div ref={setNodeRef} style={style} {...attributes}>
+        {renderCard(forward, listeners)}
+      </div>
+    );
+  },
+);
 interface Tunnel {
   id: number;
   name: string;
@@ -101,11 +205,1191 @@ interface ForwardForm {
   // SS 参数移除，统一在节点信息“出口服务”里设置
 }
 
+type ForwardEditModalProps = {
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
+  editForward: Forward | null;
+  tunnels: Tunnel[];
+  forwards: Forward[];
+  previewTunnelMap: Record<number, any>;
+  nodesCache: any[];
+  ifaceCacheRef: React.MutableRefObject<Map<number, string[]>>;
+  ifaceInflightRef: React.MutableRefObject<Set<number>>;
+  onSaved: (payload: { isEdit: boolean; forwardId?: number }) => void;
+  onOpsLogOpen: (requestId: string) => void;
+};
+
+const DEFAULT_FORWARD_FORM: ForwardForm = {
+  name: "",
+  tunnelId: null,
+  inPort: null,
+  remoteAddr: "",
+  interfaceName: "",
+  strategy: "fifo",
+};
+
 interface AddressItem {
   id: number;
   address: string;
   copying: boolean;
 }
+
+const ForwardIfacePicker = memo(
+  ({
+    selectedTunnel,
+    entryNodeId,
+    currentValue,
+    onSelect,
+    active,
+    cacheRef,
+    inflightRef,
+  }: {
+    selectedTunnel: Tunnel | null;
+    entryNodeId: number | null;
+    currentValue?: string;
+    onSelect: (ip: string) => void;
+    active: boolean;
+    cacheRef: React.MutableRefObject<Map<number, string[]>>;
+    inflightRef: React.MutableRefObject<Set<number>>;
+  }) => {
+    const [ips, setIps] = useState<string[]>([]);
+    const [loadingIps, setLoadingIps] = useState<boolean>(false);
+    const lastNodeIdRef = useRef<number | null>(null);
+
+    const doRefresh = async (nodeId?: number) => {
+      const t = selectedTunnel;
+      const type = t?.type ?? 1;
+      const nid =
+        nodeId ??
+        Number(
+          t
+            ? type === 2 && t.outNodeId
+              ? t.outNodeId
+              : t.inNodeId
+            : entryNodeId || 0,
+        );
+
+      if (!nid) return;
+      if (inflightRef.current.has(nid)) return;
+      inflightRef.current.add(nid);
+      // 仅在本地没有列表时显示 loading，避免 UI 抖动
+      if (ips.length === 0) setLoadingIps(true);
+      try {
+        const res: any = await getNodeInterfaces(nid);
+        const list =
+          res && res.code === 0 && Array.isArray(res.data?.ips)
+            ? (res.data.ips as string[])
+            : [];
+
+        cacheRef.current.set(nid, list);
+        setIps(list);
+      } catch {
+        /* noop */
+      } finally {
+        inflightRef.current.delete(nid);
+        setLoadingIps(false);
+      }
+    };
+
+    // 自动：弹窗打开且切换到新隧道时，若无缓存则自动拉取一次
+    useEffect(() => {
+      if (!active) return;
+      const t = selectedTunnel;
+      const type = t?.type ?? 1;
+      const nodeId = Number(
+        t && type === 2 && t.outNodeId ? t.outNodeId : t?.inNodeId,
+      );
+
+      lastNodeIdRef.current = nodeId || null;
+      if (!nodeId) {
+        setIps([]);
+        setLoadingIps(false);
+
+        return;
+      }
+      if (cacheRef.current.has(nodeId)) {
+        setIps(cacheRef.current.get(nodeId) || []);
+        setLoadingIps(false);
+
+        return;
+      }
+      // 无缓存则自动拉一次（有并发锁保护）
+      void doRefresh(nodeId);
+    }, [selectedTunnel?.id, active]);
+
+    return (
+      <Select
+        description={
+          loadingIps
+            ? "正在获取接口IP…"
+            : ips.length
+              ? "请选择出口IP"
+              : "未获取到接口IP"
+        }
+        label="出口IP"
+        placeholder={"出口IP列表"}
+        selectedKeys={currentValue ? [currentValue] : []}
+        size="sm"
+        variant="bordered"
+        onSelectionChange={(keys) => {
+          const k = Array.from(keys)[0] as string;
+
+          if (k) onSelect(k);
+        }}
+      >
+        {ips.map((ip) => (
+          <SelectItem key={ip}>{ip}</SelectItem>
+        ))}
+      </Select>
+    );
+  },
+);
+
+const ForwardEditModal = memo(
+  ({
+    isOpen,
+    onOpenChange,
+    editForward,
+    tunnels,
+    forwards,
+    previewTunnelMap,
+    nodesCache,
+    ifaceCacheRef,
+    ifaceInflightRef,
+    onSaved,
+    onOpsLogOpen,
+  }: ForwardEditModalProps) => {
+    const isEdit = !!editForward;
+    const [form, setForm] = useState<ForwardForm>(DEFAULT_FORWARD_FORM);
+    const [errors, setErrors] = useState<{ [key: string]: string }>({});
+    const [submitLoading, setSubmitLoading] = useState(false);
+    const [selectedTunnel, setSelectedTunnel] = useState<Tunnel | null>(null);
+    const [entryNodeId, setEntryNodeId] = useState<number | null>(null);
+    const [entryApiOn, setEntryApiOn] = useState<boolean | null>(null);
+    const [previewType, setPreviewType] = useState<number | undefined>(
+      undefined,
+    );
+    const [previewInNodeId, setPreviewInNodeId] = useState<
+      number | undefined
+    >(undefined);
+    const [previewOutNodeId, setPreviewOutNodeId] = useState<
+      number | undefined
+    >(undefined);
+    const [previewPath, setPreviewPath] = useState<number[]>([]);
+    const [previewBind, setPreviewBind] = useState<Record<number, string>>({});
+    const [previewIface, setPreviewIface] = useState<Record<number, string>>({});
+    const [previewExitBind, setPreviewExitBind] = useState<string>("");
+    const [inPortAuto, setInPortAuto] = useState(true);
+    const [outPort, setOutPort] = useState<number | null>(null);
+    const [outPortTouched, setOutPortTouched] = useState(false);
+    const [midPorts, setMidPorts] = useState<Record<number, number | null>>({});
+    const [midPortsTouched, setMidPortsTouched] = useState<Set<number>>(
+      new Set(),
+    );
+    const [portPrefsLoading, setPortPrefsLoading] = useState(false);
+    const portPrefsKeyRef = useRef<string>("");
+
+    const nodeNameMap = useMemo(() => {
+      const nMap: Record<number, string> = {};
+
+      (nodesCache || []).forEach((n: any) => {
+        if (n && (n as any).id != null)
+          nMap[Number((n as any).id)] = String(
+            (n as any).name || "节点" + (n as any).id,
+          );
+      });
+
+      return nMap;
+    }, [nodesCache]);
+
+    const getNodePortRange = useCallback(
+      (nodeId?: number) => {
+        if (!nodeId) return { min: 1, max: 65535, label: "" };
+        const node = (nodesCache || []).find(
+          (n: any) => Number(n?.id || 0) === Number(nodeId),
+        );
+        const min = Number(node?.portSta || 1);
+        const max = Number(node?.portEnd || 65535);
+        const label =
+          node?.portSta && node?.portEnd ? `${min}-${max}` : "";
+
+        return { min, max, label };
+      },
+      [nodesCache],
+    );
+
+    const getAddressCount = (addressString: string): number => {
+      if (!addressString) return 0;
+      const addresses = addressString
+        .split("\n")
+        .map((addr) => addr.trim())
+        .filter((addr) => addr);
+
+      return addresses.length;
+    };
+
+    const tunnelOptions = useMemo(
+      () =>
+        tunnels.map((tunnel) => (
+          <SelectItem key={tunnel.id} textValue={tunnel.name}>
+            {tunnel.name}
+          </SelectItem>
+        )),
+      [tunnels],
+    );
+    const nodeOptions = useMemo(
+      () =>
+        (nodesCache || []).map((node: any) => (
+          <SelectItem key={node.id} textValue={node.name}>
+            {node.name || `节点${node.id}`}
+          </SelectItem>
+        )),
+      [nodesCache],
+    );
+
+    const usedPortsByNode = useMemo(() => {
+      const map = new Map<number, Set<number>>();
+      const add = (nodeId: number, port: number) => {
+        if (!nodeId || !port) return;
+        if (!map.has(nodeId)) map.set(nodeId, new Set<number>());
+        map.get(nodeId)!.add(port);
+      };
+
+      (nodesCache || []).forEach((node: any) => {
+        const nodeId = Number(node?.id || 0);
+        if (!nodeId) return;
+        const used = Array.isArray(node?.usedPorts) ? node.usedPorts : [];
+        used.forEach((p: any) => {
+          const port = Number(p);
+          if (port > 0) add(nodeId, port);
+        });
+      });
+
+      (forwards || []).forEach((f) => {
+        if (!f?.inPort) return;
+        if (editForward && f.id === editForward.id) return;
+        const tInfo =
+          previewTunnelMap?.[f.tunnelId] ||
+          tunnels.find((t) => t.id === f.tunnelId);
+        const nodeId = Number(tInfo?.inNodeId || 0);
+        if (nodeId) add(nodeId, Number(f.inPort));
+      });
+
+      return map;
+    }, [nodesCache, forwards, previewTunnelMap, tunnels, editForward]);
+
+    const getSuggestedInPort = useCallback(
+      (nodeId: number, minPort: number, maxPort: number) => {
+        if (!nodeId) return null;
+        const used = usedPortsByNode.get(nodeId) || new Set<number>();
+
+        for (let port = minPort; port <= maxPort; port += 1) {
+          if (!used.has(port)) return port;
+        }
+
+        return null;
+      },
+      [usedPortsByNode],
+    );
+
+    const suggestedInPort = useMemo(() => {
+      let nodeId = 0;
+      let minPort = 10000;
+      let maxPort = 65535;
+
+      if (selectedTunnel?.id) {
+        const tInfo =
+          previewTunnelMap?.[selectedTunnel.id] ||
+          tunnels.find((t) => t.id === selectedTunnel.id);
+        nodeId = Number(tInfo?.inNodeId || 0);
+        const node = (nodesCache || []).find(
+          (n: any) => Number(n?.id || 0) === nodeId,
+        );
+        minPort = Number(tInfo?.inNodePortSta || node?.portSta || minPort);
+        maxPort = Number(tInfo?.inNodePortEnd || node?.portEnd || maxPort);
+      } else if (entryNodeId) {
+        nodeId = Number(entryNodeId);
+        const node = (nodesCache || []).find(
+          (n: any) => Number(n?.id || 0) === nodeId,
+        );
+        minPort = Number(node?.portSta || minPort);
+        maxPort = Number(node?.portEnd || maxPort);
+      }
+
+      if (!nodeId) return null;
+      return getSuggestedInPort(nodeId, minPort, maxPort);
+    }, [
+      selectedTunnel,
+      previewTunnelMap,
+      tunnels,
+      nodesCache,
+      entryNodeId,
+      getSuggestedInPort,
+    ]);
+
+    const loadTunnelPreview = useCallback(
+      async (tunnelId: number) => {
+        const tInfo = previewTunnelMap[tunnelId];
+
+        if (tInfo) {
+          setPreviewType(tInfo.type);
+          setPreviewInNodeId(tInfo.inNodeId);
+          setPreviewOutNodeId(tInfo.outNodeId || undefined);
+          setEntryNodeId(tInfo.inNodeId || null);
+        } else {
+          setPreviewType(undefined);
+          setPreviewInNodeId(undefined);
+          setPreviewOutNodeId(undefined);
+          setEntryNodeId(null);
+        }
+
+        try {
+          const [rp, rb, ri] = await Promise.all([
+            getTunnelPath(tunnelId),
+            getTunnelBind(tunnelId),
+            getTunnelIface(tunnelId),
+          ]);
+
+          if (rp.code === 0 && Array.isArray(rp.data?.path))
+            setPreviewPath(rp.data.path as number[]);
+          else setPreviewPath([]);
+          const bMap: Record<number, string> = {};
+
+          if (rb.code === 0 && Array.isArray(rb.data?.binds)) {
+            rb.data.binds.forEach((x: any) => {
+              if (x?.nodeId) bMap[Number(x.nodeId)] = String(x.ip || "");
+            });
+          }
+          setPreviewBind(bMap);
+          const iMap: Record<number, string> = {};
+
+          if (ri.code === 0 && Array.isArray(ri.data?.ifaces)) {
+            ri.data.ifaces.forEach((x: any) => {
+              if (x?.nodeId) iMap[Number(x.nodeId)] = String(x.ip || "");
+            });
+          }
+          setPreviewIface(iMap);
+          const outId = previewTunnelMap[tunnelId]?.outNodeId || undefined;
+
+          if (outId && bMap[outId]) setPreviewExitBind(bMap[outId]);
+          else setPreviewExitBind("");
+        } catch {
+          setPreviewPath([]);
+          setPreviewBind({});
+          setPreviewIface({});
+          setPreviewExitBind("");
+        }
+      },
+      [previewTunnelMap],
+    );
+
+    const loadForwardPortPrefs = useCallback(
+      async (forwardId: number, pathLen: number) => {
+        setPortPrefsLoading(true);
+        try {
+          const r: any = await getForwardStatusDetail(forwardId);
+
+          if (r && r.code === 0) {
+            const nodes: any[] = Array.isArray(r.data?.nodes)
+              ? r.data.nodes
+              : [];
+            const exitNode = nodes.find((n) => n?.role === "exit");
+            const exitPortRaw =
+              exitNode?.expectedPort ?? exitNode?.actualPort ?? null;
+            const nextOutPort =
+              exitPortRaw != null ? Number(exitPortRaw) : null;
+            const mids = nodes.filter((n) => n?.role === "mid");
+            const mp: Record<number, number | null> = {};
+
+            for (let i = 0; i < pathLen; i++) {
+              const node = mids[i];
+              const raw = node?.expectedPort ?? node?.actualPort ?? null;
+              mp[i] = raw != null ? Number(raw) : null;
+            }
+            setOutPort(nextOutPort && nextOutPort > 0 ? nextOutPort : null);
+            setMidPorts(mp);
+            setOutPortTouched(false);
+            setMidPortsTouched(new Set());
+          } else {
+            setOutPort(null);
+            setMidPorts({});
+            setOutPortTouched(false);
+            setMidPortsTouched(new Set());
+          }
+        } catch {
+          setOutPort(null);
+          setMidPorts({});
+          setOutPortTouched(false);
+          setMidPortsTouched(new Set());
+        } finally {
+          setPortPrefsLoading(false);
+        }
+      },
+      [],
+    );
+
+    const handleTunnelChange = useCallback(
+      (tunnelId: string) => {
+        const tid = parseInt(tunnelId);
+        const tunnel = tunnels.find((t) => t.id === tid);
+
+        setSelectedTunnel(tunnel || null);
+        setForm((prev) => ({ ...prev, tunnelId: tid }));
+        void loadTunnelPreview(tid);
+      },
+      [tunnels, loadTunnelPreview],
+    );
+
+    useEffect(() => {
+      if (!isOpen) return;
+      setErrors({});
+      if (editForward) {
+        setForm({
+          id: editForward.id,
+          userId: editForward.userId,
+          name: editForward.name,
+          tunnelId: editForward.tunnelId,
+          inPort: editForward.inPort,
+          remoteAddr: editForward.remoteAddr.split(",").join("\n"),
+          interfaceName: editForward.interfaceName || "",
+          strategy: editForward.strategy || "fifo",
+        });
+        const tunnel = tunnels.find((t) => t.id === editForward.tunnelId);
+
+        setSelectedTunnel(tunnel || null);
+        setInPortAuto(false);
+        setOutPort(null);
+        setMidPorts({});
+        setOutPortTouched(false);
+        setMidPortsTouched(new Set());
+        portPrefsKeyRef.current = "";
+        void loadTunnelPreview(editForward.tunnelId);
+      } else {
+        setForm(DEFAULT_FORWARD_FORM);
+        setSelectedTunnel(null);
+        setEntryNodeId(null);
+        setEntryApiOn(null);
+        setPreviewType(undefined);
+        setPreviewInNodeId(undefined);
+        setPreviewOutNodeId(undefined);
+        setPreviewPath([]);
+        setPreviewBind({});
+        setPreviewIface({});
+        setPreviewExitBind("");
+        setInPortAuto(true);
+        setOutPort(null);
+        setMidPorts({});
+        setOutPortTouched(false);
+        setMidPortsTouched(new Set());
+        portPrefsKeyRef.current = "";
+      }
+    }, [editForward, isOpen, loadTunnelPreview, tunnels]);
+
+    useEffect(() => {
+      if (!isOpen) return;
+      if (isEdit) return;
+      if (!selectedTunnel?.id && !entryNodeId) return;
+      if (!inPortAuto) return;
+      if (form.inPort !== null) return;
+
+      const suggested = suggestedInPort;
+
+      if (suggested) {
+        setForm((prev) => ({ ...prev, inPort: suggested }));
+      }
+    }, [
+      isOpen,
+      isEdit,
+      selectedTunnel,
+      entryNodeId,
+      inPortAuto,
+      form.inPort,
+      suggestedInPort,
+    ]);
+
+    useEffect(() => {
+      if (!entryNodeId) {
+        setEntryApiOn(null);
+
+        return;
+      }
+      const node: any = (nodesCache || []).find(
+        (n: any) => Number(n.id) === Number(entryNodeId),
+      );
+
+      setEntryApiOn(
+        typeof node?.gostApi !== "undefined" ? node.gostApi === 1 : null,
+      );
+    }, [entryNodeId, nodesCache]);
+
+    useEffect(() => {
+      if (!isOpen || !isEdit || !editForward) return;
+      if (previewType !== 2) {
+        setOutPort(null);
+        setMidPorts({});
+        setOutPortTouched(false);
+        setMidPortsTouched(new Set());
+        portPrefsKeyRef.current = "";
+        return;
+      }
+      const key = `${editForward.id || 0}:${previewPath.length}`;
+      if (!editForward.id || portPrefsKeyRef.current === key) return;
+      portPrefsKeyRef.current = key;
+      void loadForwardPortPrefs(editForward.id, previewPath.length);
+    }, [
+      isOpen,
+      isEdit,
+      editForward,
+      previewType,
+      previewPath.length,
+      loadForwardPortPrefs,
+    ]);
+
+    const validateForm = (): boolean => {
+      const newErrors: { [key: string]: string } = {};
+
+      if (!form.name.trim()) {
+        newErrors.name = "请输入转发名称";
+      } else if (form.name.length < 2 || form.name.length > 50) {
+        newErrors.name = "转发名称长度应在2-50个字符之间";
+      }
+
+      if (!form.tunnelId && !entryNodeId) {
+        newErrors.tunnelId = "请选择隧道或入口节点";
+      }
+
+      if (!form.remoteAddr.trim()) {
+        newErrors.remoteAddr = "请输入远程地址";
+      } else {
+        const addresses = form.remoteAddr
+          .split("\n")
+          .map((addr) => addr.trim())
+          .filter((addr) => addr);
+        const ipv4Pattern =
+          /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?):\d+$/;
+        const ipv6FullPattern =
+          /^\[((([0-9a-fA-F]{1,4}:){7}([0-9a-fA-F]{1,4}|:))|(([0-9a-fA-F]{1,4}:){6}(:[0-9a-fA-F]{1,4}|((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})|:))|(([0-9a-fA-F]{1,4}:){5}(((:[0-9a-fA-F]{1,4}){1,2})|:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})|:))|(([0-9a-fA-F]{1,4}:){4}(((:[0-9a-fA-F]{1,4}){1,3})|((:[0-9a-fA-F]{1,4})?:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9a-fA-F]{1,4}:){3}(((:[0-9a-fA-F]{1,4}){1,4})|((:[0-9a-fA-F]{1,4}){0,2}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9a-fA-F]{1,4}:){2}(((:[0-9a-fA-F]{1,4}){1,5})|((:[0-9a-fA-F]{1,4}){0,3}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9a-fA-F]{1,4}:){1}(((:[0-9a-fA-F]{1,4}){1,6})|((:[0-9a-fA-F]{1,4}){0,4}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(:(((:[0-9a-fA-F]{1,4}){1,7})|((:[0-9a-fA-F]{1,4}){0,5}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:)))\]:\d+$/;
+        const domainPattern =
+          /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*:\d+$/;
+
+        for (let i = 0; i < addresses.length; i++) {
+          const addr = addresses[i];
+
+          if (
+            !ipv4Pattern.test(addr) &&
+            !ipv6FullPattern.test(addr) &&
+            !domainPattern.test(addr)
+          ) {
+            newErrors.remoteAddr = `第${i + 1}行地址格式错误`;
+            break;
+          }
+        }
+      }
+
+      if (form.inPort !== null && (form.inPort < 1 || form.inPort > 65535)) {
+        newErrors.inPort = "端口号必须在1-65535之间";
+      }
+
+      if (form.inPort) {
+        if (
+          selectedTunnel &&
+          selectedTunnel.inNodePortSta &&
+          selectedTunnel.inNodePortEnd
+        ) {
+          if (
+            form.inPort < selectedTunnel.inNodePortSta ||
+            form.inPort > selectedTunnel.inNodePortEnd
+          ) {
+            newErrors.inPort = `端口号必须在${selectedTunnel.inNodePortSta}-${selectedTunnel.inNodePortEnd}范围内`;
+          }
+        } else if (entryNodeId) {
+          const node = (nodesCache || []).find(
+            (n: any) => Number(n?.id || 0) === Number(entryNodeId),
+          );
+          if (node?.portSta && node?.portEnd) {
+            if (form.inPort < node.portSta || form.inPort > node.portEnd) {
+              newErrors.inPort = `端口号必须在${node.portSta}-${node.portEnd}范围内`;
+            }
+          }
+        }
+      }
+
+      if (isEdit && previewType === 2) {
+        if (outPortTouched || outPort !== null) {
+          if (outPort !== null) {
+            if (outPort < 1 || outPort > 65535) {
+              newErrors.outPort = "端口号必须在1-65535之间";
+            } else {
+              const range = getNodePortRange(previewOutNodeId || undefined);
+              if (
+                range.label &&
+                (outPort < range.min || outPort > range.max)
+              ) {
+                newErrors.outPort = `端口号必须在${range.label}范围内`;
+              }
+            }
+          }
+        }
+        previewPath.forEach((nid, idx) => {
+          const touched = midPortsTouched.has(idx);
+          const value = midPorts[idx];
+
+          if (!touched && value == null) return;
+          if (value == null) return;
+          if (value < 1 || value > 65535) {
+            newErrors[`midPort_${idx}`] = "端口号必须在1-65535之间";
+            return;
+          }
+          const range = getNodePortRange(nid);
+          if (range.label && (value < range.min || value > range.max)) {
+            newErrors[`midPort_${idx}`] = `端口号必须在${range.label}范围内`;
+          }
+        });
+      }
+
+      setErrors(newErrors);
+
+      return Object.keys(newErrors).length === 0;
+    };
+
+    const handleSubmit = async () => {
+      if (!validateForm()) return;
+
+      setSubmitLoading(true);
+      try {
+        const processedRemoteAddr = form.remoteAddr
+          .split("\n")
+          .map((addr) => addr.trim())
+          .filter((addr) => addr)
+          .join(",");
+
+        const addressCount = processedRemoteAddr.split(",").length;
+
+        let res;
+
+        if (isEdit) {
+          const updateData: any = {
+            id: form.id,
+            userId: form.userId,
+            name: form.name,
+            tunnelId: form.tunnelId,
+            inPort: form.inPort,
+            remoteAddr: processedRemoteAddr,
+            interfaceName: form.interfaceName,
+            strategy: addressCount > 1 ? form.strategy : "fifo",
+          };
+
+          if (previewType === 2) {
+            if (outPortTouched) {
+              updateData.outPort = outPort ? outPort : 0;
+            }
+            if (midPortsTouched.size > 0) {
+              updateData.midPorts = Array.from(midPortsTouched)
+                .sort((a, b) => a - b)
+                .map((idx) => ({
+                  idx,
+                  port: midPorts[idx] ? midPorts[idx] : 0,
+                }));
+            }
+          }
+
+          res = await updateForward(updateData);
+        } else {
+          const createData = {
+            name: form.name,
+            tunnelId: form.tunnelId || 0,
+            entryNodeId: form.tunnelId ? undefined : entryNodeId,
+            inPort: form.inPort,
+            remoteAddr: processedRemoteAddr,
+            interfaceName: form.interfaceName,
+            strategy: addressCount > 1 ? form.strategy : "fifo",
+          };
+
+          res = await createForward(createData);
+        }
+
+        if (res.code === 0) {
+          toast.success(isEdit ? "修改成功" : "创建成功");
+          try {
+            const rid =
+              res.data && (res.data as any).requestId
+                ? String((res.data as any).requestId)
+                : "";
+
+            if (rid) {
+              onOpsLogOpen(rid);
+              toast.custom(
+                (t) => (
+                  <div className="px-4 py-3 bg-content1 rounded shadow border border-default-200 flex items-center gap-3">
+                    <span>{isEdit ? "修改成功" : "创建成功"}</span>
+                    <button
+                      className="text-primary underline"
+                      onClick={() => {
+                        onOpsLogOpen(rid);
+                        toast.dismiss(t.id);
+                      }}
+                    >
+                      查看日志
+                    </button>
+                  </div>
+                ),
+                { duration: 5000 },
+              );
+            }
+          } catch {}
+          try {
+            const { enableGostApi } = await import("@/api");
+            const tid = form.tunnelId as number;
+            const tInfo = previewTunnelMap[tid];
+            const inNodeId = tInfo?.inNodeId as number | undefined;
+
+            if (inNodeId) {
+              const node: any = nodesCache.find(
+                (n: any) => Number(n.id) === Number(inNodeId),
+              );
+              const apiOn = !!(node && node.gostApi === 1);
+
+              if (!apiOn) {
+                toast.custom(
+                  (t) => (
+                    <div className="px-4 py-3 bg-warning-50 rounded shadow border border-warning-200 flex items-center gap-3">
+                      <span>该入口节点未启用 GOST API，无法下发服务。</span>
+                      <button
+                        className="text-primary underline"
+                        onClick={async () => {
+                          try {
+                            await enableGostApi(inNodeId);
+                            toast.success("已发送开启 GOST API 指令");
+                          } catch (e: any) {
+                            toast.error(e?.message || "发送失败");
+                          } finally {
+                            toast.dismiss(t.id);
+                          }
+                        }}
+                      >
+                        开启 GOST API
+                      </button>
+                    </div>
+                  ),
+                  { duration: 8000 },
+                );
+              }
+            }
+          } catch {}
+          onOpenChange(false);
+          onSaved({ isEdit, forwardId: form.id });
+        } else {
+          toast.error(res.msg || "操作失败");
+        }
+      } catch (error) {
+        console.error("提交失败:", error);
+        toast.error("操作失败");
+      } finally {
+        setSubmitLoading(false);
+      }
+    };
+
+    return (
+      <Modal
+        backdrop="opaque"
+        disableAnimation
+        isOpen={isOpen}
+        placement="top-center"
+        scrollBehavior="inside"
+        size="2xl"
+        onOpenChange={onOpenChange}
+      >
+        <ModalContent>
+          {(onClose) => (
+            <>
+              <ModalHeader className="flex flex-col gap-1">
+                <h2 className="text-xl font-bold">
+                  {isEdit ? "编辑转发" : "新增转发"}
+                </h2>
+                <p className="text-small text-default-500">
+                  {isEdit ? "修改现有转发配置的信息" : "创建新的转发配置"}
+                </p>
+              </ModalHeader>
+              <ModalBody>
+                <div className="space-y-4 pb-4">
+                  <Input
+                    errorMessage={errors.name}
+                    isInvalid={!!errors.name}
+                    label="转发名称"
+                    placeholder="请输入转发名称"
+                    value={form.name}
+                    variant="bordered"
+                    onChange={(e) =>
+                      setForm((prev) => ({ ...prev, name: e.target.value }))
+                    }
+                  />
+
+                  <Select
+                    errorMessage={errors.tunnelId}
+                    isInvalid={!!errors.tunnelId}
+                    label="选择隧道（可选）"
+                    placeholder="可不选，直接转发将自动创建线路"
+                    selectedKeys={
+                      form.tunnelId ? [form.tunnelId.toString()] : []
+                    }
+                    variant="bordered"
+                    onSelectionChange={(keys) => {
+                      const selectedKey = Array.from(keys)[0] as string;
+
+                      if (selectedKey) {
+                        handleTunnelChange(selectedKey);
+                      }
+                    }}
+                  >
+                    {tunnelOptions}
+                  </Select>
+
+                  {!form.tunnelId && (
+                    <Select
+                      errorMessage={errors.tunnelId}
+                      isInvalid={!!errors.tunnelId}
+                      label="入口节点（直连）"
+                      placeholder="请选择入口节点"
+                      selectedKeys={
+                        entryNodeId ? [entryNodeId.toString()] : []
+                      }
+                      variant="bordered"
+                      onSelectionChange={(keys) => {
+                        const selectedKey = Array.from(keys)[0] as string;
+                        const next = selectedKey ? Number(selectedKey) : null;
+
+                        setEntryNodeId(next);
+                      }}
+                    >
+                      {nodeOptions}
+                    </Select>
+                  )}
+
+                  {entryNodeId ? (
+                    <div className="p-3 border border-default-200 rounded-lg flex items-center justify-between">
+                      <div className="text-sm">
+                        <div className="text-default-600">入口节点 API</div>
+                        <div className="text-xs text-default-500 mt-1">
+                          {entryApiOn === null
+                            ? "检测中…"
+                            : entryApiOn
+                              ? "已启用，可直接下发服务"
+                              : "未启用，需先开启后再保存"}
+                        </div>
+                      </div>
+                      {entryApiOn === false && (
+                        <Button
+                          color="primary"
+                          size="sm"
+                          variant="flat"
+                          onPress={async () => {
+                            try {
+                              const { enableGostApi } = await import("@/api");
+
+                              await enableGostApi(entryNodeId);
+                              toast.success(
+                                "已发送开启 GOST API 指令，请稍候刷新",
+                              );
+                            } catch (e: any) {
+                              toast.error(e?.message || "发送失败");
+                            }
+                          }}
+                        >
+                          开启 GOST API
+                        </Button>
+                      )}
+                    </div>
+                  ) : null}
+
+                  <Input
+                    description={
+                      selectedTunnel &&
+                      selectedTunnel.inNodePortSta &&
+                      selectedTunnel.inNodePortEnd
+                        ? `允许范围: ${selectedTunnel.inNodePortSta}-${selectedTunnel.inNodePortEnd}（默认建议端口可修改）`
+                        : entryNodeId
+                          ? (() => {
+                              const node = (nodesCache || []).find(
+                                (n: any) =>
+                                  Number(n?.id || 0) === Number(entryNodeId),
+                              );
+                              if (node?.portSta && node?.portEnd) {
+                                return `允许范围: ${node.portSta}-${node.portEnd}（默认建议端口可修改）`;
+                              }
+                              return "默认建议端口可修改，清空将自动分配";
+                            })()
+                          : "默认建议端口可修改，清空将自动分配"
+                    }
+                    errorMessage={errors.inPort}
+                    isInvalid={!!errors.inPort}
+                    label="入口端口"
+                    placeholder="默认建议端口，可修改"
+                    type="number"
+                    value={form.inPort?.toString() || ""}
+                    variant="bordered"
+                    onChange={(e) => {
+                      const next = e.target.value
+                        ? parseInt(e.target.value)
+                        : null;
+
+                      setInPortAuto(false);
+                      setForm((prev) => ({
+                        ...prev,
+                        inPort: next,
+                      }));
+                    }}
+                  />
+                  <div className="flex items-center justify-between text-xs text-default-500">
+                    <span>
+                      建议端口:{" "}
+                      {suggestedInPort ? suggestedInPort : "暂无可用"}
+                    </span>
+                    {suggestedInPort ? (
+                      <Button
+                        size="sm"
+                        variant="flat"
+                        onPress={() => {
+                          setInPortAuto(false);
+                          setForm((prev) => ({
+                            ...prev,
+                            inPort: suggestedInPort,
+                          }));
+                        }}
+                        isDisabled={form.inPort === suggestedInPort}
+                      >
+                        使用建议端口
+                      </Button>
+                    ) : null}
+                  </div>
+
+                  <Textarea
+                    description="格式: IP:端口 或 域名:端口，支持多个地址（每行一个）"
+                    errorMessage={errors.remoteAddr}
+                    isInvalid={!!errors.remoteAddr}
+                    label="远程地址"
+                    maxRows={6}
+                    minRows={3}
+                    placeholder="请输入远程地址，多个地址用换行分隔&#10;例如:&#10;192.168.1.100:8080&#10;example.com:3000"
+                    value={form.remoteAddr}
+                    variant="bordered"
+                    onChange={(e) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        remoteAddr: e.target.value,
+                      }))
+                    }
+                  />
+
+                  <ForwardIfacePicker
+                    active={isOpen}
+                    cacheRef={ifaceCacheRef}
+                    currentValue={form.interfaceName || ""}
+                    inflightRef={ifaceInflightRef}
+                    entryNodeId={entryNodeId}
+                    selectedTunnel={selectedTunnel}
+                    onSelect={(ip) =>
+                      setForm((prev) => ({ ...prev, interfaceName: ip }))
+                    }
+                  />
+
+                  {selectedTunnel && (
+                    <Card className="border border-default-200">
+                      <CardHeader>
+                        <div className="font-semibold">
+                          隧道多级路径（只读）
+                        </div>
+                      </CardHeader>
+                      <CardBody>
+                        {previewInNodeId ? (
+                          <div className="space-y-2 text-sm">
+                            <div>
+                              <span className="text-default-600">入口</span>：
+                              <code className="ml-1">
+                                {nodeNameMap[previewInNodeId] ||
+                                  `#${previewInNodeId}`}
+                              </code>
+                              {previewIface[previewInNodeId] && (
+                                <span className="ml-2 text-default-500">
+                                  出站IP:{" "}
+                                  <code>{previewIface[previewInNodeId]}</code>
+                                </span>
+                              )}
+                            </div>
+                            {previewPath.length > 0 ? (
+                              previewPath.map((nid, idx) => (
+                                <div key={nid} className="pl-4">
+                                  <span className="text-default-600">
+                                    中继{idx + 1}
+                                  </span>
+                                  ：
+                                  <code className="ml-1">
+                                    {nodeNameMap[nid] || `#${nid}`}
+                                  </code>
+                                  {previewBind[nid] && (
+                                    <span className="ml-2 text-default-500">
+                                      监听IP: <code>{previewBind[nid]}</code>
+                                    </span>
+                                  )}
+                                  {previewIface[nid] && (
+                                    <span className="ml-2 text-default-500">
+                                      出站IP: <code>{previewIface[nid]}</code>
+                                    </span>
+                                  )}
+                                </div>
+                              ))
+                            ) : (
+                              <div className="pl-4 text-default-400">
+                                未配置中继节点
+                              </div>
+                            )}
+                            {previewType === 2 && previewOutNodeId ? (
+                              <div className="pl-4">
+                                <span className="text-default-600">出口</span>：
+                                <code className="ml-1">
+                                  {nodeNameMap[previewOutNodeId] ||
+                                    `#${previewOutNodeId}`}
+                                </code>
+                                {previewExitBind && (
+                                  <span className="ml-2 text-default-500">
+                                    监听IP: <code>{previewExitBind}</code>
+                                  </span>
+                                )}
+                              </div>
+                            ) : null}
+                            <div className="text-2xs text-default-400 mt-1">
+                              说明：路径与节点 IP 请在“隧道管理”页维护。
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="text-default-400 text-sm">
+                            未加载到隧道信息
+                          </div>
+                        )}
+                      </CardBody>
+                    </Card>
+                  )}
+
+                  {isEdit && previewType === 2 && (
+                    <Card className="border border-default-200">
+                      <CardHeader>
+                        <div className="font-semibold">隧道监听端口</div>
+                      </CardHeader>
+                      <CardBody className="space-y-3">
+                        {portPrefsLoading && (
+                          <div className="flex items-center gap-2 text-xs text-default-500">
+                            <Spinner size="sm" />
+                            <span>正在读取已有端口配置…</span>
+                          </div>
+                        )}
+                        {previewOutNodeId ? (
+                          <Input
+                            description={(() => {
+                              const range = getNodePortRange(
+                                previewOutNodeId,
+                              );
+
+                              return range.label
+                                ? `允许范围: ${range.label}，留空自动分配`
+                                : "留空自动分配";
+                            })()}
+                            errorMessage={errors.outPort}
+                            isInvalid={!!errors.outPort}
+                            label={`出口端口（${nodeNameMap[previewOutNodeId] || `#${previewOutNodeId}`})`}
+                            placeholder="留空自动分配"
+                            type="number"
+                            value={outPort?.toString() || ""}
+                            variant="bordered"
+                            onChange={(e) => {
+                              const next = e.target.value
+                                ? parseInt(e.target.value)
+                                : null;
+
+                              setOutPortTouched(true);
+                              setOutPort(next);
+                            }}
+                          />
+                        ) : null}
+                        {previewPath.map((nid, idx) => (
+                          <Input
+                            key={`${nid}-${idx}`}
+                            description={(() => {
+                              const range = getNodePortRange(nid);
+
+                              return range.label
+                                ? `允许范围: ${range.label}，留空自动分配`
+                                : "留空自动分配";
+                            })()}
+                            errorMessage={errors[`midPort_${idx}`]}
+                            isInvalid={!!errors[`midPort_${idx}`]}
+                            label={`中继${idx + 1}端口（${nodeNameMap[nid] || `#${nid}`})`}
+                            placeholder="留空自动分配"
+                            type="number"
+                            value={midPorts[idx]?.toString() || ""}
+                            variant="bordered"
+                            onChange={(e) => {
+                              const next = e.target.value
+                                ? parseInt(e.target.value)
+                                : null;
+
+                              setMidPorts((prev) => ({
+                                ...prev,
+                                [idx]: next,
+                              }));
+                              setMidPortsTouched((prev) => {
+                                const nextSet = new Set(prev);
+                                nextSet.add(idx);
+                                return nextSet;
+                              });
+                            }}
+                          />
+                        ))}
+                        <div className="text-2xs text-default-400">
+                          留空表示自动分配可用端口
+                        </div>
+                      </CardBody>
+                    </Card>
+                  )}
+
+                  {getAddressCount(form.remoteAddr) > 1 && (
+                    <Select
+                      description="多个目标地址的负载均衡策略"
+                      label="负载策略"
+                      placeholder="请选择负载均衡策略"
+                      selectedKeys={[form.strategy]}
+                      variant="bordered"
+                      onSelectionChange={(keys) => {
+                        const selectedKey = Array.from(keys)[0] as string;
+
+                        setForm((prev) => ({ ...prev, strategy: selectedKey }));
+                      }}
+                    >
+                      <SelectItem key="fifo">主备模式 - 自上而下</SelectItem>
+                      <SelectItem key="round">轮询模式 - 依次轮换</SelectItem>
+                      <SelectItem key="rand">随机模式 - 随机选择</SelectItem>
+                      <SelectItem key="hash">哈希模式 - IP哈希</SelectItem>
+                    </Select>
+                  )}
+                </div>
+              </ModalBody>
+              <ModalFooter>
+                <Button variant="light" onPress={onClose}>
+                  取消
+                </Button>
+                <Button
+                  color="primary"
+                  isLoading={submitLoading}
+                  onPress={handleSubmit}
+                >
+                  {isEdit ? "保存修改" : "创建转发"}
+                </Button>
+              </ModalFooter>
+            </>
+          )}
+        </ModalContent>
+      </Modal>
+    );
+  },
+);
 
 interface DiagnosisResult {
   forwardName: string;
@@ -168,17 +1452,31 @@ const [isMobile, setIsMobile] = useState(false);
       return "direct";
     }
   });
+  const [useWindowing, setUseWindowing] = useState(() => {
+    try {
+      const saved = localStorage.getItem("forward-windowing");
+
+      return saved !== "0";
+    } catch {
+      return true;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("forward-windowing", useWindowing ? "1" : "0");
+    } catch {}
+  }, [useWindowing]);
 
   // 拖拽排序相关状态
   const [forwardOrder, setForwardOrder] = useState<number[]>([]);
 
   // 模态框状态
   const [modalOpen, setModalOpen] = useState(false);
+  const [editForward, setEditForward] = useState<Forward | null>(null);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [addressModalOpen, setAddressModalOpen] = useState(false);
   const [diagnosisModalOpen, setDiagnosisModalOpen] = useState(false);
-  const [isEdit, setIsEdit] = useState(false);
-  const [submitLoading, setSubmitLoading] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [diagnosisLoading, setDiagnosisLoading] = useState(false);
   const [forwardToDelete, setForwardToDelete] = useState<Forward | null>(null);
@@ -219,36 +1517,18 @@ const [isMobile, setIsMobile] = useState(false);
   const [opsOpen, setOpsOpen] = useState(false);
   const [opReqId, setOpReqId] = useState<string>("");
   const [restartingNodeId, setRestartingNodeId] = useState<number | null>(null);
+  const pageVisible = usePageVisibility();
 
-  // 表单状态
-  const [form, setForm] = useState<ForwardForm>({
-    name: "",
-    tunnelId: null,
-    inPort: null,
-    remoteAddr: "",
-    interfaceName: "",
-    strategy: "fifo",
-  });
+  const tunnelOptions = useMemo(
+    () =>
+      tunnels.map((tunnel) => (
+        <SelectItem key={tunnel.id} textValue={tunnel.name}>
+          {tunnel.name}
+        </SelectItem>
+      )),
+    [tunnels],
+  );
 
-  // 表单验证错误
-  const [errors, setErrors] = useState<{ [key: string]: string }>({});
-  const [selectedTunnel, setSelectedTunnel] = useState<Tunnel | null>(null);
-  // 入口节点 API 状态（用于弹窗内提示与一键启用）
-  const [entryNodeId, setEntryNodeId] = useState<number | null>(null);
-  const [entryApiOn, setEntryApiOn] = useState<boolean | null>(null);
-  // 路径与每节点 IP 仅在“隧道管理”维护；此页提供只读预览
-  const [previewType, setPreviewType] = useState<number | undefined>(undefined);
-  const [previewInNodeId, setPreviewInNodeId] = useState<number | undefined>(
-    undefined,
-  );
-  const [previewOutNodeId, setPreviewOutNodeId] = useState<number | undefined>(
-    undefined,
-  );
-  const [previewPath, setPreviewPath] = useState<number[]>([]);
-  const [previewBind, setPreviewBind] = useState<Record<number, string>>({});
-  const [previewIface, setPreviewIface] = useState<Record<number, string>>({});
-  const [previewExitBind, setPreviewExitBind] = useState<string>("");
-  const [nodeNameMap, setNodeNameMap] = useState<Record<number, string>>({});
   const [previewTunnelMap, setPreviewTunnelMap] = useState<Record<number, any>>(
     {},
   );
@@ -324,12 +1604,18 @@ const [isMobile, setIsMobile] = useState(false);
 
   // 轮询刷新每条转发的进/出流量（当任一弹窗打开时暂停，避免编辑时界面抖动）
   const anyModalOpen =
-    modalOpen || deleteModalOpen || diagnosisModalOpen || cfgDetailOpen;
+    modalOpen ||
+    deleteModalOpen ||
+    diagnosisModalOpen ||
+    cfgDetailOpen ||
+    addressModalOpen ||
+    exportModalOpen ||
+    importModalOpen;
 
   useEffect(() => {
     let timer: any;
     const tick = async () => {
-      if (anyModalOpen) return; // 暂停轮询，避免干扰弹窗中的交互
+      if (anyModalOpen || !pageVisible) return; // 暂停轮询，避免干扰弹窗中的交互
       try {
         const res: any = await getForwardList();
 
@@ -385,108 +1671,7 @@ const [isMobile, setIsMobile] = useState(false);
     return () => {
       if (timer) clearInterval(timer);
     };
-  }, [pollMs, anyModalOpen, fetchStatusForIds]);
-
-  function ForwardIfacePicker({
-    selectedTunnel,
-    currentValue,
-    onSelect,
-    active,
-    cacheRef,
-    inflightRef,
-  }: {
-    selectedTunnel: Tunnel | null;
-    currentValue?: string;
-    onSelect: (ip: string) => void;
-    active: boolean;
-    cacheRef: React.MutableRefObject<Map<number, string[]>>;
-    inflightRef: React.MutableRefObject<Set<number>>;
-  }) {
-    const [ips, setIps] = useState<string[]>([]);
-    const [loadingIps, setLoadingIps] = useState<boolean>(false);
-    const lastNodeIdRef = useRef<number | null>(null);
-
-    const doRefresh = async (nodeId?: number) => {
-      const t = selectedTunnel;
-      const type = t?.type ?? 1;
-      const nid =
-        nodeId ??
-        Number(t && type === 2 && t.outNodeId ? t.outNodeId : t?.inNodeId);
-
-      if (!nid) return;
-      if (inflightRef.current.has(nid)) return;
-      inflightRef.current.add(nid);
-      // 仅在本地没有列表时显示 loading，避免 UI 抖动
-      if (ips.length === 0) setLoadingIps(true);
-      try {
-        const res: any = await getNodeInterfaces(nid);
-        const list =
-          res && res.code === 0 && Array.isArray(res.data?.ips)
-            ? (res.data.ips as string[])
-            : [];
-
-        cacheRef.current.set(nid, list);
-        setIps(list);
-      } catch {
-        /* noop */
-      } finally {
-        inflightRef.current.delete(nid);
-        setLoadingIps(false);
-      }
-    };
-
-    // 自动：弹窗打开且切换到新隧道时，若无缓存则自动拉取一次
-    useEffect(() => {
-      if (!active) return;
-      const t = selectedTunnel;
-      const type = t?.type ?? 1;
-      const nodeId = Number(
-        t && type === 2 && t.outNodeId ? t.outNodeId : t?.inNodeId,
-      );
-
-      lastNodeIdRef.current = nodeId || null;
-      if (!nodeId) {
-        setIps([]);
-        setLoadingIps(false);
-
-        return;
-      }
-      if (cacheRef.current.has(nodeId)) {
-        setIps(cacheRef.current.get(nodeId) || []);
-        setLoadingIps(false);
-
-        return;
-      }
-      // 无缓存则自动拉一次（有并发锁保护）
-      void doRefresh(nodeId);
-    }, [selectedTunnel?.id, active]);
-
-    return (
-      <Select
-        description={
-          loadingIps
-            ? "正在获取接口IP…"
-            : ips.length
-              ? "请选择出口IP"
-              : "未获取到接口IP"
-        }
-        label="出口IP"
-        placeholder={"出口IP列表"}
-        selectedKeys={currentValue ? [currentValue] : []}
-        size="sm"
-        variant="bordered"
-        onSelectionChange={(keys) => {
-          const k = Array.from(keys)[0] as string;
-
-          if (k) onSelect(k);
-        }}
-      >
-        {ips.map((ip) => (
-          <SelectItem key={ip}>{ip}</SelectItem>
-        ))}
-      </Select>
-    );
-  }
+  }, [pollMs, anyModalOpen, pageVisible, fetchStatusForIds]);
 
   // 切换显示模式并保存到localStorage
   const handleViewModeChange = () => {
@@ -689,12 +1874,77 @@ const [isMobile, setIsMobile] = useState(false);
     }
   };
 
+  const handleAdd = () => {
+    setEditForward(null);
+    setModalOpen(true);
+  };
+
+  const handleEdit = useCallback((forward: Forward) => {
+    setEditForward(forward);
+    setModalOpen(true);
+  }, []);
+
+  const handleDelete = (forward: Forward) => {
+    setForwardToDelete(forward);
+    setDeleteModalOpen(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!forwardToDelete) return;
+
+    setDeleteLoading(true);
+    try {
+      const res = await deleteForward(forwardToDelete.id);
+
+      if (res.code === 0) {
+        toast.success("删除成功");
+        setDeleteModalOpen(false);
+        loadData();
+      } else {
+        const confirmed = window.confirm(
+          `常规删除失败：${res.msg || "删除失败"}\n\n是否需要强制删除？\n\n⚠️ 注意：强制删除不会去验证节点端是否已经删除对应的转发服务。`,
+        );
+
+        if (confirmed) {
+          const forceRes = await forceDeleteForward(forwardToDelete.id);
+
+          if (forceRes.code === 0) {
+            toast.success("强制删除成功");
+            setDeleteModalOpen(false);
+            loadData();
+          } else {
+            toast.error(forceRes.msg || "强制删除失败");
+          }
+        }
+      }
+    } catch (error) {
+      console.error("删除失败:", error);
+      toast.error("删除失败");
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
+  const handleSaved = useCallback(
+    ({ isEdit, forwardId }: { isEdit: boolean; forwardId?: number }) => {
+      loadData().then(() => {
+        if (isEdit && forwardId) {
+          checkedForwardIdsRef.current.delete(forwardId);
+          void fetchStatusForIds([forwardId]);
+        }
+      });
+    },
+    [fetchStatusForIds, loadData],
+  );
+
+  const handleOpsLogOpen = useCallback((requestId: string) => {
+    setOpReqId(requestId);
+    setOpsOpen(true);
+  }, []);
+
   // 按用户和隧道分组转发数据
   const groupForwardsByUserAndTunnel = (): UserGroup[] => {
     const userMap = new Map<string, UserGroup>();
-
-    // 获取排序后的转发列表
-    const sortedForwards = getSortedForwards();
 
     sortedForwards.forEach((forward) => {
       const userKey = forward.userId ? forward.userId.toString() : "unknown";
@@ -736,404 +1986,6 @@ const [isMobile, setIsMobile] = useState(false);
     });
 
     return result;
-  };
-
-  // 表单验证
-  const validateForm = (): boolean => {
-    const newErrors: { [key: string]: string } = {};
-
-    if (!form.name.trim()) {
-      newErrors.name = "请输入转发名称";
-    } else if (form.name.length < 2 || form.name.length > 50) {
-      newErrors.name = "转发名称长度应在2-50个字符之间";
-    }
-
-    if (!form.tunnelId) {
-      newErrors.tunnelId = "请选择关联隧道";
-    }
-
-    if (!form.remoteAddr.trim()) {
-      newErrors.remoteAddr = "请输入远程地址";
-    } else {
-      // 验证地址格式
-      const addresses = form.remoteAddr
-        .split("\n")
-        .map((addr) => addr.trim())
-        .filter((addr) => addr);
-      const ipv4Pattern =
-        /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?):\d+$/;
-      const ipv6FullPattern =
-        /^\[((([0-9a-fA-F]{1,4}:){7}([0-9a-fA-F]{1,4}|:))|(([0-9a-fA-F]{1,4}:){6}(:[0-9a-fA-F]{1,4}|((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})|:))|(([0-9a-fA-F]{1,4}:){5}(((:[0-9a-fA-F]{1,4}){1,2})|:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})|:))|(([0-9a-fA-F]{1,4}:){4}(((:[0-9a-fA-F]{1,4}){1,3})|((:[0-9a-fA-F]{1,4})?:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9a-fA-F]{1,4}:){3}(((:[0-9a-fA-F]{1,4}){1,4})|((:[0-9a-fA-F]{1,4}){0,2}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9a-fA-F]{1,4}:){2}(((:[0-9a-fA-F]{1,4}){1,5})|((:[0-9a-fA-F]{1,4}){0,3}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9a-fA-F]{1,4}:){1}(((:[0-9a-fA-F]{1,4}){1,6})|((:[0-9a-fA-F]{1,4}){0,4}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(:(((:[0-9a-fA-F]{1,4}){1,7})|((:[0-9a-fA-F]{1,4}){0,5}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:)))\]:\d+$/;
-      const domainPattern =
-        /^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*:\d+$/;
-
-      for (let i = 0; i < addresses.length; i++) {
-        const addr = addresses[i];
-
-        if (
-          !ipv4Pattern.test(addr) &&
-          !ipv6FullPattern.test(addr) &&
-          !domainPattern.test(addr)
-        ) {
-          newErrors.remoteAddr = `第${i + 1}行地址格式错误`;
-          break;
-        }
-      }
-    }
-
-    if (form.inPort !== null && (form.inPort < 1 || form.inPort > 65535)) {
-      newErrors.inPort = "端口号必须在1-65535之间";
-    }
-
-    if (
-      selectedTunnel &&
-      selectedTunnel.inNodePortSta &&
-      selectedTunnel.inNodePortEnd &&
-      form.inPort
-    ) {
-      if (
-        form.inPort < selectedTunnel.inNodePortSta ||
-        form.inPort > selectedTunnel.inNodePortEnd
-      ) {
-        newErrors.inPort = `端口号必须在${selectedTunnel.inNodePortSta}-${selectedTunnel.inNodePortEnd}范围内`;
-      }
-    }
-
-    setErrors(newErrors);
-
-    return Object.keys(newErrors).length === 0;
-  };
-
-  // 新增转发
-  const handleAdd = () => {
-    setIsEdit(false);
-    setForm({
-      name: "",
-      tunnelId: null,
-      inPort: null,
-      remoteAddr: "",
-      interfaceName: "",
-      strategy: "fifo",
-    });
-    setSelectedTunnel(null);
-    setErrors({});
-    setModalOpen(true);
-  };
-
-  // 编辑转发
-  const handleEdit = (forward: Forward) => {
-    setIsEdit(true);
-    setForm({
-      id: forward.id,
-      userId: forward.userId,
-      name: forward.name,
-      tunnelId: forward.tunnelId,
-      inPort: forward.inPort,
-      remoteAddr: forward.remoteAddr.split(",").join("\n"),
-      interfaceName: forward.interfaceName || "",
-      strategy: forward.strategy || "fifo",
-    });
-    const tunnel = tunnels.find((t) => t.id === forward.tunnelId);
-
-    setSelectedTunnel(tunnel || null);
-    // 预取入口节点 API 状态（使用缓存，不轮询）
-    (async () => {
-      try {
-        const tInfo = previewTunnelMap[forward.tunnelId];
-        const inId = tInfo?.inNodeId as number | undefined;
-
-        setEntryNodeId(inId || null);
-        if (inId) {
-          const node: any = nodesCache.find(
-            (n: any) => Number(n.id) === Number(inId),
-          );
-
-          setEntryApiOn(
-            typeof node?.gostApi !== "undefined" ? node.gostApi === 1 : null,
-          );
-        } else {
-          setEntryApiOn(null);
-        }
-      } catch {
-        setEntryApiOn(null);
-      }
-    })();
-    setErrors({});
-    setModalOpen(true);
-  };
-
-  // 显示删除确认
-  const handleDelete = (forward: Forward) => {
-    setForwardToDelete(forward);
-    setDeleteModalOpen(true);
-  };
-
-  // 确认删除转发
-  const confirmDelete = async () => {
-    if (!forwardToDelete) return;
-
-    setDeleteLoading(true);
-    try {
-      const res = await deleteForward(forwardToDelete.id);
-
-      if (res.code === 0) {
-        toast.success("删除成功");
-        setDeleteModalOpen(false);
-        loadData();
-      } else {
-        // 删除失败，询问是否强制删除
-        const confirmed = window.confirm(
-          `常规删除失败：${res.msg || "删除失败"}\n\n是否需要强制删除？\n\n⚠️ 注意：强制删除不会去验证节点端是否已经删除对应的转发服务。`,
-        );
-
-        if (confirmed) {
-          const forceRes = await forceDeleteForward(forwardToDelete.id);
-
-          if (forceRes.code === 0) {
-            toast.success("强制删除成功");
-            setDeleteModalOpen(false);
-            loadData();
-          } else {
-            toast.error(forceRes.msg || "强制删除失败");
-          }
-        }
-      }
-    } catch (error) {
-      console.error("删除失败:", error);
-      toast.error("删除失败");
-    } finally {
-      setDeleteLoading(false);
-    }
-  };
-
-  // 处理隧道选择变化
-  const handleTunnelChange = (tunnelId: string) => {
-    const tunnel = tunnels.find((t) => t.id === parseInt(tunnelId));
-
-    setSelectedTunnel(tunnel || null);
-    setForm((prev) => ({ ...prev, tunnelId: parseInt(tunnelId) }));
-    // 只读预览：读取该隧道的路径与每节点 IP 设置
-    (async () => {
-      try {
-        const tidNum = parseInt(tunnelId);
-        const tInfo = previewTunnelMap[tidNum];
-
-        if (tInfo) {
-          setPreviewType(tInfo.type);
-          setPreviewInNodeId(tInfo.inNodeId);
-          setPreviewOutNodeId(tInfo.outNodeId || undefined);
-          setEntryNodeId(tInfo.inNodeId || null);
-        } else {
-          setPreviewType(undefined);
-          setPreviewInNodeId(undefined);
-          setPreviewOutNodeId(undefined);
-          setEntryNodeId(null);
-        }
-      } catch {
-        setPreviewType(undefined);
-        setPreviewInNodeId(undefined);
-        setPreviewOutNodeId(undefined);
-      }
-      try {
-        const [rp, rb, ri] = await Promise.all([
-          getTunnelPath(parseInt(tunnelId)),
-          getTunnelBind(parseInt(tunnelId)),
-          getTunnelIface(parseInt(tunnelId)),
-        ]);
-
-        if (rp.code === 0 && Array.isArray(rp.data?.path))
-          setPreviewPath(rp.data.path as number[]);
-        else setPreviewPath([]);
-        const bMap: Record<number, string> = {};
-
-        if (rb.code === 0 && Array.isArray(rb.data?.binds)) {
-          rb.data.binds.forEach((x: any) => {
-            if (x?.nodeId) bMap[Number(x.nodeId)] = String(x.ip || "");
-          });
-        }
-        setPreviewBind(bMap);
-        const iMap: Record<number, string> = {};
-
-        if (ri.code === 0 && Array.isArray(ri.data?.ifaces)) {
-          ri.data.ifaces.forEach((x: any) => {
-            if (x?.nodeId) iMap[Number(x.nodeId)] = String(x.ip || "");
-          });
-        }
-        setPreviewIface(iMap);
-        // 出口监听IP（仅隧道转发）
-        const outId =
-          previewTunnelMap[parseInt(tunnelId)]?.outNodeId || undefined;
-
-        if (outId && bMap[outId]) setPreviewExitBind(bMap[outId]);
-        else setPreviewExitBind("");
-        const nMap: Record<number, string> = {};
-
-        (nodesCache || []).forEach((n: any) => {
-          if (n && (n as any).id != null)
-            nMap[Number((n as any).id)] = String(
-              (n as any).name || "节点" + (n as any).id,
-            );
-        });
-        // 更新入口节点 API 状态（使用缓存）
-        const inId = previewTunnelMap[parseInt(tunnelId)]?.inNodeId as
-          | number
-          | undefined;
-
-        setEntryNodeId(inId || null);
-        if (inId) {
-          const node: any = (nodesCache || []).find(
-            (nn: any) => Number(nn.id) === Number(inId),
-          );
-
-          setEntryApiOn(!!(node && node.gostApi === 1));
-        } else {
-          setEntryApiOn(null);
-        }
-        setNodeNameMap(nMap);
-      } catch {
-        setPreviewPath([]);
-        setPreviewBind({});
-        setPreviewIface({});
-        setPreviewExitBind("");
-        setNodeNameMap({});
-      }
-    })();
-  };
-
-  // 提交表单
-  const handleSubmit = async () => {
-    if (!validateForm()) return;
-
-    setSubmitLoading(true);
-    try {
-      const processedRemoteAddr = form.remoteAddr
-        .split("\n")
-        .map((addr) => addr.trim())
-        .filter((addr) => addr)
-        .join(",");
-
-      const addressCount = processedRemoteAddr.split(",").length;
-
-      let res;
-
-      // 不在此页保存路径与每节点 IP；请在“隧道管理”维护
-      if (isEdit) {
-        // 更新时确保包含必要字段
-        const updateData = {
-          id: form.id,
-          userId: form.userId,
-          name: form.name,
-          tunnelId: form.tunnelId,
-          inPort: form.inPort,
-          remoteAddr: processedRemoteAddr,
-          interfaceName: form.interfaceName,
-          strategy: addressCount > 1 ? form.strategy : "fifo",
-        };
-
-        res = await updateForward(updateData);
-      } else {
-        // 创建时不需要id和userId（后端会自动设置）
-        const createData = {
-          name: form.name,
-          tunnelId: form.tunnelId,
-          inPort: form.inPort,
-          remoteAddr: processedRemoteAddr,
-          interfaceName: form.interfaceName,
-          strategy: addressCount > 1 ? form.strategy : "fifo",
-        };
-
-        res = await createForward(createData);
-      }
-
-      if (res.code === 0) {
-        toast.success(isEdit ? "修改成功" : "创建成功");
-        try {
-          const rid =
-            res.data && (res.data as any).requestId
-              ? String((res.data as any).requestId)
-              : "";
-
-          if (rid) {
-            setOpReqId(rid);
-            setOpsOpen(true);
-            // 提示带“查看日志”按钮
-            toast.custom(
-              (t) => (
-                <div className="px-4 py-3 bg-content1 rounded shadow border border-default-200 flex items-center gap-3">
-                  <span>{isEdit ? "修改成功" : "创建成功"}</span>
-                  <button
-                    className="text-primary underline"
-                    onClick={() => {
-                      setOpsOpen(true);
-                      toast.dismiss(t.id);
-                    }}
-                  >
-                    查看日志
-                  </button>
-                </div>
-              ),
-              { duration: 5000 },
-            );
-          }
-        } catch {}
-        // 如果入口节点未启用 GOST API，给出一键开启入口（使用缓存，不拉取列表）
-        try {
-          const { enableGostApi } = await import("@/api");
-          const tid = form.tunnelId as number;
-          const tInfo = previewTunnelMap[tid];
-          const inNodeId = tInfo?.inNodeId as number | undefined;
-
-          if (inNodeId) {
-            const node: any = nodesCache.find(
-              (n: any) => Number(n.id) === Number(inNodeId),
-            );
-            const apiOn = !!(node && node.gostApi === 1);
-
-            if (!apiOn) {
-              toast.custom(
-                (t) => (
-                  <div className="px-4 py-3 bg-warning-50 rounded shadow border border-warning-200 flex items-center gap-3">
-                    <span>该入口节点未启用 GOST API，无法下发服务。</span>
-                    <button
-                      className="text-primary underline"
-                      onClick={async () => {
-                        try {
-                          await enableGostApi(inNodeId);
-                          toast.success("已发送开启 GOST API 指令");
-                        } catch (e: any) {
-                          toast.error(e?.message || "发送失败");
-                        } finally {
-                          toast.dismiss(t.id);
-                        }
-                      }}
-                    >
-                      开启 GOST API
-                    </button>
-                  </div>
-                ),
-                { duration: 8000 },
-              );
-            }
-          }
-        } catch {}
-        // 无需再次保存路径与IP映射（创建前已保存）
-        setModalOpen(false);
-        loadData().then(() => {
-          // 新增转发：列表刷新后未校验的ID会在轮询中自动校验一次
-          if (isEdit && form.id) {
-            checkedForwardIdsRef.current.delete(form.id);
-            void fetchStatusForIds([form.id]);
-          }
-        });
-      } else {
-        toast.error(res.msg || "操作失败");
-      }
-    } catch (error) {
-      console.error("提交失败:", error);
-      toast.error("操作失败");
-    } finally {
-      setSubmitLoading(false);
-    }
   };
 
   // 诊断转发
@@ -1412,127 +2264,68 @@ const [isMobile, setIsMobile] = useState(false);
     return (value / (1024 * 1024 * 1024)).toFixed(2) + " GB";
   };
 
-  // 格式化入口地址
-  const formatInAddress = (ipString: string, port: number): string => {
-    if (!ipString || !port) return "";
-
-    const ips = ipString
-      .split(",")
-      .map((ip) => ip.trim())
-      .filter((ip) => ip);
-
-    if (ips.length === 0) return "";
-
-    if (ips.length === 1) {
-      const ip = ips[0];
-
-      if (ip.includes(":") && !ip.startsWith("[")) {
-        return `[${ip}]:${port}`;
-      } else {
-        return `${ip}:${port}`;
+  // 复制到剪贴板
+  const copyToClipboard = useCallback(
+    async (text: string, label: string = "内容") => {
+      try {
+        await navigator.clipboard.writeText(text);
+        toast.success(`已复制${label}`);
+      } catch (error) {
+        toast.error("复制失败");
       }
-    }
-
-    const firstIp = ips[0];
-    let formattedFirstIp;
-
-    if (firstIp.includes(":") && !firstIp.startsWith("[")) {
-      formattedFirstIp = `[${firstIp}]`;
-    } else {
-      formattedFirstIp = firstIp;
-    }
-
-    return `${formattedFirstIp}:${port} (+${ips.length - 1})`;
-  };
-
-  // 格式化远程地址
-  const formatRemoteAddress = (addressString: string): string => {
-    if (!addressString) return "";
-
-    const addresses = addressString
-      .split(",")
-      .map((addr) => addr.trim())
-      .filter((addr) => addr);
-
-    if (addresses.length === 0) return "";
-    if (addresses.length === 1) return addresses[0];
-
-    return `${addresses[0]} (+${addresses.length - 1})`;
-  };
-
-  // 检查是否有多个地址
-  const hasMultipleAddresses = (addressString: string): boolean => {
-    if (!addressString) return false;
-    const addresses = addressString
-      .split(",")
-      .map((addr) => addr.trim())
-      .filter((addr) => addr);
-
-    return addresses.length > 1;
-  };
+    },
+    [],
+  );
 
   // 显示地址列表弹窗
-  const showAddressModal = (
-    addressString: string,
-    port: number | null,
-    title: string,
-  ) => {
-    if (!addressString) return;
+  const showAddressModal = useCallback(
+    (addressString: string, port: number | null, title: string) => {
+      if (!addressString) return;
 
-    let addresses: string[];
+      let addresses: string[];
 
-    if (port !== null) {
-      // 入口地址处理
-      const ips = addressString
-        .split(",")
-        .map((ip) => ip.trim())
-        .filter((ip) => ip);
+      if (port !== null) {
+        const ips = addressString
+          .split(",")
+          .map((ip) => ip.trim())
+          .filter((ip) => ip);
 
-      if (ips.length <= 1) {
-        copyToClipboard(formatInAddress(addressString, port), title);
+        if (ips.length <= 1) {
+          copyToClipboard(formatInAddress(addressString, port), title);
 
-        return;
-      }
-      addresses = ips.map((ip) => {
-        if (ip.includes(":") && !ip.startsWith("[")) {
-          return `[${ip}]:${port}`;
-        } else {
-          return `${ip}:${port}`;
+          return;
         }
-      });
-    } else {
-      // 远程地址处理
-      addresses = addressString
-        .split(",")
-        .map((addr) => addr.trim())
-        .filter((addr) => addr);
-      if (addresses.length <= 1) {
-        copyToClipboard(addressString, title);
+        addresses = ips.map((ip) => {
+          if (ip.includes(":") && !ip.startsWith("[")) {
+            return `[${ip}]:${port}`;
+          } else {
+            return `${ip}:${port}`;
+          }
+        });
+      } else {
+        addresses = addressString
+          .split(",")
+          .map((addr) => addr.trim())
+          .filter((addr) => addr);
+        if (addresses.length <= 1) {
+          copyToClipboard(addressString, title);
 
-        return;
+          return;
+        }
       }
-    }
 
-    setAddressList(
-      addresses.map((address, index) => ({
-        id: index,
-        address,
-        copying: false,
-      })),
-    );
-    setAddressModalTitle(`${title} (${addresses.length}个)`);
-    setAddressModalOpen(true);
-  };
-
-  // 复制到剪贴板
-  const copyToClipboard = async (text: string, label: string = "内容") => {
-    try {
-      await navigator.clipboard.writeText(text);
-      toast.success(`已复制${label}`);
-    } catch (error) {
-      toast.error("复制失败");
-    }
-  };
+      setAddressList(
+        addresses.map((address, index) => ({
+          id: index,
+          address,
+          copying: false,
+        })),
+      );
+      setAddressModalTitle(`${title} (${addresses.length}个)`);
+      setAddressModalOpen(true);
+    },
+    [copyToClipboard],
+  );
 
   // 复制地址
   const copyAddress = async (addressItem: AddressItem) => {
@@ -1585,7 +2378,7 @@ const [isMobile, setIsMobile] = useState(false);
 
       if (viewMode === "grouped") {
         // 分组模式下，获取指定隧道的转发
-        const userGroups = groupForwardsByUserAndTunnel();
+        const userGroups = userGroupsMemo;
 
         forwardsToExport = userGroups.flatMap((userGroup) =>
           userGroup.tunnelGroups
@@ -1596,7 +2389,7 @@ const [isMobile, setIsMobile] = useState(false);
         );
       } else {
         // 直接显示模式下，过滤指定隧道的转发
-        forwardsToExport = getSortedForwards().filter(
+        forwardsToExport = sortedForwards.filter(
           (forward) => forward.tunnelId === selectedTunnelForExport,
         );
       }
@@ -1787,31 +2580,6 @@ const [isMobile, setIsMobile] = useState(false);
     }
   };
 
-  // 获取策略显示
-  const getStrategyDisplay = (strategy: string) => {
-    switch (strategy) {
-      case "fifo":
-        return { color: "primary", text: "主备" };
-      case "round":
-        return { color: "success", text: "轮询" };
-      case "rand":
-        return { color: "warning", text: "随机" };
-      default:
-        return { color: "default", text: "未知" };
-    }
-  };
-
-  // 获取地址数量
-  const getAddressCount = (addressString: string): number => {
-    if (!addressString) return 0;
-    const addresses = addressString
-      .split("\n")
-      .map((addr) => addr.trim())
-      .filter((addr) => addr);
-
-    return addresses.length;
-  };
-
   // 处理拖拽结束
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
@@ -1886,14 +2654,11 @@ const [isMobile, setIsMobile] = useState(false);
     }),
   );
 
-  // 根据排序顺序获取转发列表
-  const getSortedForwards = (): Forward[] => {
-    // 确保 forwards 数组存在且有效
+  const sortedForwards = useMemo((): Forward[] => {
     if (!forwards || forwards.length === 0) {
       return [];
     }
 
-    // 在平铺模式下，只显示当前用户的转发
     let filteredForwards = forwards;
 
     if (viewMode === "direct") {
@@ -1906,24 +2671,21 @@ const [isMobile, setIsMobile] = useState(false);
       }
     }
 
-    // 确保过滤后的转发列表有效
     if (!filteredForwards || filteredForwards.length === 0) {
       return [];
     }
 
-    // 优先使用数据库中的 inx 字段进行排序
-    const sortedForwards = [...filteredForwards].sort((a, b) => {
+    const sorted = [...filteredForwards].sort((a, b) => {
       const aInx = a.inx ?? 0;
       const bInx = b.inx ?? 0;
 
       return aInx - bInx;
     });
 
-    // 如果数据库中没有排序信息，则使用本地存储的顺序
     if (
       forwardOrder &&
       forwardOrder.length > 0 &&
-      sortedForwards.every((f) => f.inx === undefined || f.inx === 0)
+      sorted.every((f) => f.inx === undefined || f.inx === 0)
     ) {
       const forwardMap = new Map(filteredForwards.map((f) => [f.id, f]));
       const localSortedForwards: Forward[] = [];
@@ -1936,7 +2698,6 @@ const [isMobile, setIsMobile] = useState(false);
         }
       });
 
-      // 添加不在排序列表中的转发（新添加的）
       filteredForwards.forEach((forward) => {
         if (!forwardOrder.includes(forward.id)) {
           localSortedForwards.push(forward);
@@ -1946,47 +2707,27 @@ const [isMobile, setIsMobile] = useState(false);
       return localSortedForwards;
     }
 
-    return sortedForwards;
-  };
+    return sorted;
+  }, [forwards, forwardOrder, viewMode]);
 
-  // 可拖拽的转发卡片组件
-  const SortableForwardCard = ({ forward }: { forward: Forward }) => {
-    // 确保 forward 对象有效
-    if (!forward || !forward.id) {
-      return null;
-    }
-
-    const {
-      attributes,
-      listeners,
-      setNodeRef,
-      transform,
-      transition,
-      isDragging,
-    } = useSortable({ id: forward.id });
-
-    const style = {
-      transform: transform ? CSS.Transform.toString(transform) : undefined,
-      transition: transition || undefined,
-      opacity: isDragging ? 0.5 : 1,
-    };
-
-    return (
-      <div ref={setNodeRef} style={style} {...attributes}>
-        {renderForwardCard(forward, listeners)}
-      </div>
-    );
-  };
+  const sortableIds = useMemo(
+    () =>
+      sortedForwards
+        .map((f) => f.id || 0)
+        .filter((id) => id > 0),
+    [sortedForwards],
+  );
 
   // 渲染转发卡片
-  const renderForwardCard = (forward: Forward, listeners?: any) => {
+  const renderForwardCard = useCallback(
+    (forward: Forward, listeners?: any) => {
     //const statusDisplay = getStatusDisplay(forward.status);
     const strategyDisplay = getStrategyDisplay(forward.strategy);
 
     return (
       <Card
         key={forward.id}
-        className="group shadow-sm border border-divider hover:shadow-md transition-shadow duration-200"
+        className="group list-card shadow-sm border border-divider hover:shadow-md transition-shadow duration-200"
       >
         <CardHeader className="pb-2">
           <div className="flex justify-between items-start w-full">
@@ -1999,7 +2740,7 @@ const [isMobile, setIsMobile] = useState(false);
               </p>
             </div>
             <div className="flex items-center gap-1.5 ml-2">
-              {viewMode === "direct" && (
+              {viewMode === "direct" && !useWindowing && (
                 <div
                   className={`cursor-grab active:cursor-grabbing p-2 text-default-400 hover:text-default-600 transition-colors touch-manipulation ${
                     isMobile
@@ -2078,7 +2819,7 @@ const [isMobile, setIsMobile] = useState(false);
           <div className="space-y-2">
             {/* 地址信息 */}
             <div className="space-y-1">
-              <div
+            <div
                 className={`cursor-pointer px-2 py-1 bg-default-50 dark:bg-default-100/50 rounded border border-default-200 dark:border-default-300 transition-colors duration-200 ${
                   hasMultipleAddresses(forward.inIp)
                     ? "hover:bg-default-100 dark:hover:bg-default-200/50"
@@ -2258,7 +2999,9 @@ const [isMobile, setIsMobile] = useState(false);
         </CardBody>
       </Card>
     );
-  };
+  },
+    [isMobile, showAddressModal, useWindowing, viewMode],
+  );
 
   // 渲染配置详情模态框
   const renderCfgDetailModal = () => (
@@ -2374,22 +3117,30 @@ const [isMobile, setIsMobile] = useState(false);
     </Modal>
   );
 
+  const userGroupsMemo = useMemo(
+    () => groupForwardsByUserAndTunnel(),
+    [sortedForwards],
+  );
+
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="flex items-center gap-3">
-          <Spinner size="sm" />
-          <span className="text-default-600">正在加载...</span>
+      <div className="px-3 lg:px-6 py-8 space-y-4">
+        <div className="flex justify-end gap-2">
+          <div className="skeleton-line w-20" />
+          <div className="skeleton-line w-20" />
+        </div>
+        <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+          {Array.from({ length: 8 }).map((_, idx) => (
+            <div key={`forward-skel-${idx}`} className="skeleton-card" />
+          ))}
         </div>
       </div>
     );
   }
 
-  const userGroups = groupForwardsByUserAndTunnel();
-
   return (
     <div className="px-3 lg:px-6 py-8">
-      {renderCfgDetailModal()}
+      {cfgDetailOpen ? renderCfgDetailModal() : null}
       {/* 页面头部 */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex-1" />
@@ -2421,6 +3172,11 @@ const [isMobile, setIsMobile] = useState(false);
               </svg>
             )}
           </Button>
+          {viewMode === "direct" && (
+            <Switch isSelected={useWindowing} onValueChange={setUseWindowing}>
+              虚拟列表
+            </Switch>
+          )}
 
           {/* 导入按钮 */}
           <Button
@@ -2448,20 +3204,22 @@ const [isMobile, setIsMobile] = useState(false);
           </Button>
         </div>
       </div>
-      <OpsLogModal
-        isOpen={opsOpen}
-        requestId={opReqId || undefined}
-        onOpenChange={setOpsOpen}
-      />
+      {opsOpen ? (
+        <OpsLogModal
+          isOpen={opsOpen}
+          requestId={opReqId || undefined}
+          onOpenChange={setOpsOpen}
+        />
+      ) : null}
       {/* 根据显示模式渲染不同内容 */}
       {viewMode === "grouped" ? (
         /* 按用户和隧道分组的转发列表 */
-        userGroups.length > 0 ? (
+        !anyModalOpen && userGroupsMemo.length > 0 ? (
           <div className="space-y-6">
-            {userGroups.map((userGroup) => (
+            {userGroupsMemo.map((userGroup) => (
               <Card
                 key={userGroup.userId || "unknown"}
-                className="shadow-sm border border-divider w-full overflow-hidden"
+                className="list-card shadow-sm border border-divider w-full overflow-hidden"
               >
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between w-full min-w-0">
@@ -2564,7 +3322,7 @@ const [isMobile, setIsMobile] = useState(false);
               </Card>
             ))}
           </div>
-        ) : (
+        ) : !anyModalOpen ? (
           /* 空状态 */
           <Card className="shadow-sm border border-gray-200 dark:border-gray-700">
             <CardBody className="text-center py-16">
@@ -2595,31 +3353,45 @@ const [isMobile, setIsMobile] = useState(false);
               </div>
             </CardBody>
           </Card>
-        )
+        ) : null
       ) : /* 直接显示模式 */
-      forwards.length > 0 ? (
-        <DndContext
-          collisionDetection={closestCenter}
-          sensors={sensors}
-          onDragEnd={handleDragEnd}
-          onDragStart={() => {}} // 添加空的 onDragStart 处理器
-        >
-          <SortableContext
-            items={getSortedForwards()
-              .map((f) => f.id || 0)
-              .filter((id) => id > 0)}
-            strategy={rectSortingStrategy}
+      !anyModalOpen && forwards.length > 0 ? (
+        useWindowing ? (
+          <VirtualGrid
+            className="w-full"
+            estimateRowHeight={260}
+            items={sortedForwards}
+            maxColumns={5}
+            minItemWidth={260}
+            renderItem={(forward) =>
+              forward && forward.id
+                ? renderForwardCard(forward, undefined)
+                : null
+            }
+          />
+        ) : (
+          <DndContext
+            collisionDetection={closestCenter}
+            sensors={sensors}
+            onDragEnd={handleDragEnd}
+            onDragStart={() => {}} // 添加空的 onDragStart 处理器
           >
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
-              {getSortedForwards().map((forward) =>
-                forward && forward.id ? (
-                  <SortableForwardCard key={forward.id} forward={forward} />
-                ) : null,
-              )}
-            </div>
-          </SortableContext>
-        </DndContext>
-      ) : (
+            <SortableContext items={sortableIds} strategy={rectSortingStrategy}>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+                {sortedForwards.map((forward) =>
+                  forward && forward.id ? (
+                    <SortableForwardCard
+                      key={forward.id}
+                      forward={forward}
+                      renderCard={renderForwardCard}
+                    />
+                  ) : null,
+                )}
+              </div>
+            </SortableContext>
+          </DndContext>
+        )
+      ) : !anyModalOpen ? (
         /* 空状态 */
         <Card className="shadow-sm border border-gray-200 dark:border-gray-700">
           <CardBody className="text-center py-16">
@@ -2650,278 +3422,27 @@ const [isMobile, setIsMobile] = useState(false);
             </div>
           </CardBody>
         </Card>
-      )}
+      ) : null}
 
       {/* 新增/编辑模态框 */}
-      <Modal
-        backdrop="blur"
+      <ForwardEditModal
+        editForward={editForward}
+        forwards={forwards}
+        ifaceCacheRef={ifaceCacheRef}
+        ifaceInflightRef={ifaceInflightRef}
         isOpen={modalOpen}
-        placement="top-center"
-        scrollBehavior="inside"
-        size="2xl"
+        nodesCache={nodesCache}
+        previewTunnelMap={previewTunnelMap}
+        tunnels={tunnels}
         onOpenChange={setModalOpen}
-      >
-        <ModalContent>
-          {(onClose) => (
-            <>
-              <ModalHeader className="flex flex-col gap-1">
-                <h2 className="text-xl font-bold">
-                  {isEdit ? "编辑转发" : "新增转发"}
-                </h2>
-                <p className="text-small text-default-500">
-                  {isEdit ? "修改现有转发配置的信息" : "创建新的转发配置"}
-                </p>
-              </ModalHeader>
-              <ModalBody>
-                <div className="space-y-4 pb-4">
-                  <Input
-                    errorMessage={errors.name}
-                    isInvalid={!!errors.name}
-                    label="转发名称"
-                    placeholder="请输入转发名称"
-                    value={form.name}
-                    variant="bordered"
-                    onChange={(e) =>
-                      setForm((prev) => ({ ...prev, name: e.target.value }))
-                    }
-                  />
-
-                  <Select
-                    errorMessage={errors.tunnelId}
-                    isInvalid={!!errors.tunnelId}
-                    label="选择隧道"
-                    placeholder="请选择关联的隧道"
-                    selectedKeys={
-                      form.tunnelId ? [form.tunnelId.toString()] : []
-                    }
-                    variant="bordered"
-                    onSelectionChange={(keys) => {
-                      const selectedKey = Array.from(keys)[0] as string;
-
-                      if (selectedKey) {
-                        handleTunnelChange(selectedKey);
-                      }
-                    }}
-                  >
-                    {tunnels.map((tunnel) => (
-                      <SelectItem key={tunnel.id}>{tunnel.name}</SelectItem>
-                    ))}
-                  </Select>
-
-                  {/* 入口节点 GOST API 状态与一键开启 */}
-                  {entryNodeId ? (
-                    <div className="p-3 border border-default-200 rounded-lg flex items-center justify-between">
-                      <div className="text-sm">
-                        <div className="text-default-600">入口节点 API</div>
-                        <div className="text-xs text-default-500 mt-1">
-                          {entryApiOn === null
-                            ? "检测中…"
-                            : entryApiOn
-                              ? "已启用，可直接下发服务"
-                              : "未启用，需先开启后再保存"}
-                        </div>
-                      </div>
-                      {entryApiOn === false && (
-                        <Button
-                          color="primary"
-                          size="sm"
-                          variant="flat"
-                          onPress={async () => {
-                            try {
-                              const { enableGostApi } = await import("@/api");
-
-                              await enableGostApi(entryNodeId);
-                              toast.success(
-                                "已发送开启 GOST API 指令，请稍候刷新",
-                              );
-                            } catch (e: any) {
-                              toast.error(e?.message || "发送失败");
-                            }
-                          }}
-                        >
-                          开启 GOST API
-                        </Button>
-                      )}
-                    </div>
-                  ) : null}
-
-                  <Input
-                    description={
-                      selectedTunnel &&
-                      selectedTunnel.inNodePortSta &&
-                      selectedTunnel.inNodePortEnd
-                        ? `允许范围: ${selectedTunnel.inNodePortSta}-${selectedTunnel.inNodePortEnd}`
-                        : "留空将自动分配可用端口"
-                    }
-                    errorMessage={errors.inPort}
-                    isInvalid={!!errors.inPort}
-                    label="入口端口"
-                    placeholder="留空自动分配"
-                    type="number"
-                    value={form.inPort?.toString() || ""}
-                    variant="bordered"
-                    onChange={(e) =>
-                      setForm((prev) => ({
-                        ...prev,
-                        inPort: e.target.value
-                          ? parseInt(e.target.value)
-                          : null,
-                      }))
-                    }
-                  />
-
-                  <Textarea
-                    description="格式: IP:端口 或 域名:端口，支持多个地址（每行一个）"
-                    errorMessage={errors.remoteAddr}
-                    isInvalid={!!errors.remoteAddr}
-                    label="远程地址"
-                    maxRows={6}
-                    minRows={3}
-                    placeholder="请输入远程地址，多个地址用换行分隔&#10;例如:&#10;192.168.1.100:8080&#10;example.com:3000"
-                    value={form.remoteAddr}
-                    variant="bordered"
-                    onChange={(e) =>
-                      setForm((prev) => ({
-                        ...prev,
-                        remoteAddr: e.target.value,
-                      }))
-                    }
-                  />
-
-                  <ForwardIfacePicker
-                    active={modalOpen}
-                    cacheRef={ifaceCacheRef}
-                    currentValue={form.interfaceName || ""}
-                    inflightRef={ifaceInflightRef}
-                    selectedTunnel={selectedTunnel}
-                    onSelect={(ip) =>
-                      setForm((prev) => ({ ...prev, interfaceName: ip }))
-                    }
-                  />
-
-                  {/* 只读预览：当前隧道的多级路径与每节点 IP 设置（在“隧道管理”维护） */}
-                  {selectedTunnel && (
-                    <Card className="border border-default-200">
-                      <CardHeader>
-                        <div className="font-semibold">
-                          隧道多级路径（只读）
-                        </div>
-                      </CardHeader>
-                      <CardBody>
-                        {previewInNodeId ? (
-                          <div className="space-y-2 text-sm">
-                            <div>
-                              <span className="text-default-600">入口</span>：
-                              <code className="ml-1">
-                                {nodeNameMap[previewInNodeId] ||
-                                  `#${previewInNodeId}`}
-                              </code>
-                              {previewIface[previewInNodeId] && (
-                                <span className="ml-2 text-default-500">
-                                  出站IP:{" "}
-                                  <code>{previewIface[previewInNodeId]}</code>
-                                </span>
-                              )}
-                            </div>
-                            {previewPath.length > 0 ? (
-                              previewPath.map((nid, idx) => (
-                                <div key={nid} className="pl-4">
-                                  <span className="text-default-600">
-                                    中继{idx + 1}
-                                  </span>
-                                  ：
-                                  <code className="ml-1">
-                                    {nodeNameMap[nid] || `#${nid}`}
-                                  </code>
-                                  {previewBind[nid] && (
-                                    <span className="ml-2 text-default-500">
-                                      监听IP: <code>{previewBind[nid]}</code>
-                                    </span>
-                                  )}
-                                  {previewIface[nid] && (
-                                    <span className="ml-2 text-default-500">
-                                      出站IP: <code>{previewIface[nid]}</code>
-                                    </span>
-                                  )}
-                                </div>
-                              ))
-                            ) : (
-                              <div className="pl-4 text-default-400">
-                                未配置中继节点
-                              </div>
-                            )}
-                            {previewType === 2 && previewOutNodeId ? (
-                              <div className="pl-4">
-                                <span className="text-default-600">出口</span>：
-                                <code className="ml-1">
-                                  {nodeNameMap[previewOutNodeId] ||
-                                    `#${previewOutNodeId}`}
-                                </code>
-                                {previewExitBind && (
-                                  <span className="ml-2 text-default-500">
-                                    监听IP: <code>{previewExitBind}</code>
-                                  </span>
-                                )}
-                              </div>
-                            ) : null}
-                            <div className="text-2xs text-default-400 mt-1">
-                              说明：路径与节点 IP 请在“隧道管理”页维护。
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="text-default-400 text-sm">
-                            未加载到隧道信息
-                          </div>
-                        )}
-                      </CardBody>
-                    </Card>
-                  )}
-
-                  {/* 多级路径与每节点 IP 请在“隧道管理”页配置，这里不再编辑 */}
-
-                  {getAddressCount(form.remoteAddr) > 1 && (
-                    <Select
-                      description="多个目标地址的负载均衡策略"
-                      label="负载策略"
-                      placeholder="请选择负载均衡策略"
-                      selectedKeys={[form.strategy]}
-                      variant="bordered"
-                      onSelectionChange={(keys) => {
-                        const selectedKey = Array.from(keys)[0] as string;
-
-                        setForm((prev) => ({ ...prev, strategy: selectedKey }));
-                      }}
-                    >
-                      <SelectItem key="fifo">主备模式 - 自上而下</SelectItem>
-                      <SelectItem key="round">轮询模式 - 依次轮换</SelectItem>
-                      <SelectItem key="rand">随机模式 - 随机选择</SelectItem>
-                      <SelectItem key="hash">哈希模式 - IP哈希</SelectItem>
-                    </Select>
-                  )}
-
-                  {/* 隧道(SS)参数移除：请在“节点信息 → 出口服务”里设置 */}
-                </div>
-              </ModalBody>
-              <ModalFooter>
-                <Button variant="light" onPress={onClose}>
-                  取消
-                </Button>
-                <Button
-                  color="primary"
-                  isLoading={submitLoading}
-                  onPress={handleSubmit}
-                >
-                  {isEdit ? "保存修改" : "创建转发"}
-                </Button>
-              </ModalFooter>
-            </>
-          )}
-        </ModalContent>
-      </Modal>
+        onOpsLogOpen={handleOpsLogOpen}
+        onSaved={handleSaved}
+      />
 
       {/* 删除确认模态框 */}
       <Modal
-        backdrop="blur"
+        backdrop="opaque"
+        disableAnimation
         isOpen={deleteModalOpen}
         placement="center"
         scrollBehavior="outside"
@@ -2965,6 +3486,7 @@ const [isMobile, setIsMobile] = useState(false);
 
       {/* 地址列表弹窗 */}
       <Modal
+        disableAnimation
         isOpen={addressModalOpen}
         scrollBehavior="outside"
         size="lg"
@@ -3005,7 +3527,8 @@ const [isMobile, setIsMobile] = useState(false);
 
       {/* 导出数据模态框 */}
       <Modal
-        backdrop="blur"
+        backdrop="opaque"
+        disableAnimation
         isOpen={exportModalOpen}
         placement="center"
         scrollBehavior="outside"
@@ -3045,14 +3568,7 @@ const [isMobile, setIsMobile] = useState(false);
                     );
                   }}
                 >
-                  {tunnels.map((tunnel) => (
-                    <SelectItem
-                      key={tunnel.id.toString()}
-                      textValue={tunnel.name}
-                    >
-                      {tunnel.name}
-                    </SelectItem>
-                  ))}
+                  {tunnelOptions}
                 </Select>
               </div>
 
@@ -3158,7 +3674,8 @@ const [isMobile, setIsMobile] = useState(false);
 
       {/* 导入数据模态框 */}
       <Modal
-        backdrop="blur"
+        backdrop="opaque"
+        disableAnimation
         isOpen={importModalOpen}
         placement="center"
         scrollBehavior="outside"
@@ -3197,14 +3714,7 @@ const [isMobile, setIsMobile] = useState(false);
                     );
                   }}
                 >
-                  {tunnels.map((tunnel) => (
-                    <SelectItem
-                      key={tunnel.id.toString()}
-                      textValue={tunnel.name}
-                    >
-                      {tunnel.name}
-                    </SelectItem>
-                  ))}
+                  {tunnelOptions}
                 </Select>
               </div>
 
@@ -3333,7 +3843,8 @@ const [isMobile, setIsMobile] = useState(false);
 
       {/* 诊断结果模态框 */}
       <Modal
-        backdrop="blur"
+        backdrop="opaque"
+        disableAnimation
         isOpen={diagnosisModalOpen}
         placement="center"
         scrollBehavior="outside"

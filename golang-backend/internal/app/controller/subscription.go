@@ -21,6 +21,11 @@ import (
 	tpl "network-panel/golang-backend/template"
 )
 
+const (
+	cfgSubClashTemplate = "subscription_clash_template"
+	cfgSubSurgeTemplate = "subscription_surge_template"
+)
+
 type subProxy struct {
 	ID       int64
 	Name     string
@@ -595,6 +600,12 @@ func appendSkipComments(out string, skipped []subSkip, prefix string) string {
 }
 
 func buildClashConfig(items []subProxy, skipped []subSkip) string {
+	if custom := strings.TrimSpace(getConfigString(cfgSubClashTemplate)); custom != "" {
+		out := buildClashConfigWithTemplate(custom, items)
+		if strings.TrimSpace(out) != "" {
+			return appendSkipComments(out, skipped, "#")
+		}
+	}
 	tmpl, ok := tpl.Load("clash.yaml")
 	if !ok || strings.TrimSpace(tmpl) == "" {
 		return buildClashConfigLegacy(items, skipped)
@@ -605,6 +616,65 @@ func buildClashConfig(items []subProxy, skipped []subSkip) string {
 		return buildClashConfigLegacy(items, skipped)
 	}
 	return appendSkipComments(out, skipped, "#")
+}
+
+func buildClashConfigWithTemplate(tmpl string, items []subProxy) string {
+	proxies, groupMap := renderClashProxies(items)
+	if strings.Contains(tmpl, "{{PROXIES}}") || strings.Contains(tmpl, "{{GROUP:") || strings.Contains(tmpl, "{{EXTRA_GROUPS}}") {
+		return applyClashTemplate(tmpl, proxies, groupMap)
+	}
+	proxySection := "proxies:\n" + strings.TrimRight(proxies, "\n")
+	groupSection := buildClashProxyGroups(groupMap)
+	out := replaceYamlSection(tmpl, "proxies", proxySection)
+	out = replaceYamlSection(out, "proxy-groups", groupSection)
+	return out
+}
+
+func buildClashProxyGroups(groupMap map[string][]string) string {
+	groupByKey, canonical := normalizeGroupMap(groupMap)
+	if len(groupByKey) == 0 {
+		return "proxy-groups: []"
+	}
+	keys := make([]string, 0, len(groupByKey))
+	for key := range groupByKey {
+		if key == "" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return canonical[keys[i]] < canonical[keys[j]]
+	})
+	var buf bytes.Buffer
+	buf.WriteString("proxy-groups:\n")
+	buf.WriteString("  - name: GLOBAL\n")
+	buf.WriteString("    type: select\n")
+	buf.WriteString("    proxies:\n")
+	for _, key := range keys {
+		name := canonical[key]
+		if name == "" {
+			name = key
+		}
+		buf.WriteString("      - " + yamlName(name) + "\n")
+	}
+	buf.WriteString("      - DIRECT\n")
+	for _, key := range keys {
+		names := groupByKey[key]
+		if len(names) == 0 {
+			continue
+		}
+		name := canonical[key]
+		if name == "" {
+			name = key
+		}
+		buf.WriteString("  - name: " + yamlName(name) + "\n")
+		buf.WriteString("    type: select\n")
+		buf.WriteString("    proxies:\n")
+		for _, n := range names {
+			buf.WriteString("      - " + yamlName(n) + "\n")
+		}
+	}
+	return strings.TrimRight(buf.String(), "\n")
 }
 
 func writeClashAnyTLS(buf *bytes.Buffer, it subProxy, params map[string]interface{}) {
@@ -779,6 +849,12 @@ func buildShadowrocket(items []subProxy, skipped []subSkip) string {
 }
 
 func buildSurgeConfig(items []subProxy, skipped []subSkip, ver string, sourceURL string) string {
+	if custom := strings.TrimSpace(getConfigString(cfgSubSurgeTemplate)); custom != "" {
+		out := buildSurgeConfigWithTemplate(custom, items)
+		if strings.TrimSpace(out) != "" {
+			return appendSkipComments(out, skipped, ";")
+		}
+	}
 	tmpl, ok := tpl.Load("surge.surgeconfig")
 	if !ok || strings.TrimSpace(tmpl) == "" {
 		return buildSurgeConfigLegacy(items, skipped, ver, sourceURL)
@@ -803,6 +879,40 @@ func buildSurgeConfig(items []subProxy, skipped []subSkip, ver string, sourceURL
 	return appendSkipComments(out, skipped, ";")
 }
 
+func buildSurgeConfigWithTemplate(tmpl string, items []subProxy) string {
+	proxies, groupMap := renderSurgeProxies(items)
+	if strings.Contains(tmpl, "{{PROXIES}}") || strings.Contains(tmpl, "{{EXTRA_GROUPS}}") {
+		out := strings.ReplaceAll(tmpl, "{{PROXIES}}", strings.TrimRight(proxies, "\n"))
+		groupByKey, canonical := normalizeGroupMap(groupMap)
+		typeMap, defaultType := parseGroupTypeDirectives(tmpl)
+		out, templateGroups, templateNames := applySurgeGroupProxies(out, groupByKey, canonical)
+		out = forceSurgeProxyIncludeGroups(out, buildSurgeProxyIncludeGroups(canonical, templateNames))
+		extra := buildSurgeExtraGroups(groupByKey, canonical, templateGroups, typeMap, defaultType)
+		out = strings.ReplaceAll(out, "{{EXTRA_GROUPS}}", strings.TrimRight(extra, "\n"))
+		return out
+	}
+	proxySection := strings.TrimRight(proxies, "\n")
+	groupSection := buildSurgeProxyGroupSection(tmpl, groupMap)
+	out := replaceSurgeSection(tmpl, "Proxy", proxySection)
+	out = replaceSurgeSection(out, "Proxy Group", groupSection)
+	return out
+}
+
+func buildSurgeProxyGroupSection(tmpl string, groupMap map[string][]string) string {
+	groupByKey, canonical := normalizeGroupMap(groupMap)
+	typeMap, defaultType := parseGroupTypeDirectives(tmpl)
+	proxyLine := extractSurgeProxyLine(tmpl)
+	if strings.TrimSpace(proxyLine) == "" {
+		proxyLine = "Proxy = select"
+	}
+	proxyLine = normalizeIncludeOtherGroup(proxyLine, buildSurgeProxyIncludeGroups(canonical, nil))
+	extra := buildSurgeExtraGroups(groupByKey, canonical, map[string]struct{}{}, typeMap, defaultType)
+	if strings.TrimSpace(extra) == "" {
+		return proxyLine
+	}
+	return proxyLine + "\n" + extra
+}
+
 func buildSurgeConfigLegacy(items []subProxy, skipped []subSkip, ver string, sourceURL string) string {
 	var buf bytes.Buffer
 	if sourceURL == "" {
@@ -823,7 +933,11 @@ func buildSurgeConfigLegacy(items []subProxy, skipped []subSkip, ver string, sou
 			params = map[string]interface{}{}
 		}
 		if raw := paramString(params, "surge"); raw != "" {
-			buf.WriteString(formatSurgeLine(raw, it))
+			line := formatSurgeLine(raw, it)
+			if normalizeProtocol(it.Type) == "anytls" {
+				line = stripSurgePasswordPrefix(line)
+			}
+			buf.WriteString(line)
 			continue
 		}
 		switch typ {
@@ -1065,7 +1179,6 @@ func buildExtraClashGroups(groupMap map[string][]string, canonical map[string]st
 		buf.WriteString("  - name: " + yamlName(name) + "\n")
 		buf.WriteString("    type: " + typ + "\n")
 		buf.WriteString("    proxies:\n")
-		buf.WriteString("      - DIRECT\n")
 		for _, n := range names {
 			buf.WriteString("      - " + yamlName(n) + "\n")
 		}
@@ -1086,6 +1199,9 @@ func renderSurgeProxies(items []subProxy) (string, map[string][]string) {
 		line := ""
 		if raw := paramString(params, "surge"); raw != "" {
 			line = formatSurgeLine(raw, it)
+			if typ == "anytls" {
+				line = stripSurgePasswordPrefix(line)
+			}
 		} else {
 			switch typ {
 			case "ss":
@@ -1339,6 +1455,117 @@ func mergeGroupLists(base []string, extra []string) []string {
 		out = append(out, key)
 	}
 	return out
+}
+
+func extractSurgeProxyLine(content string) string {
+	lines := strings.Split(content, "\n")
+	inGroup := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			section := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]"))
+			inGroup = strings.EqualFold(section, "Proxy Group")
+			continue
+		}
+		if !inGroup || trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		group := strings.TrimSpace(parts[0])
+		if strings.EqualFold(group, "Proxy") {
+			return strings.TrimSpace(line)
+		}
+	}
+	return ""
+}
+
+func replaceSurgeSection(content string, section string, body string) string {
+	lines := strings.Split(content, "\n")
+	start := -1
+	end := len(lines)
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			name := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]"))
+			if strings.EqualFold(name, section) {
+				start = i
+				continue
+			}
+			if start >= 0 {
+				end = i
+				break
+			}
+		}
+	}
+	if start >= 0 {
+		head := append([]string{}, lines[:start+1]...)
+		bodyLines := []string{}
+		if strings.TrimSpace(body) != "" {
+			bodyLines = strings.Split(strings.TrimRight(body, "\n"), "\n")
+		}
+		tail := append([]string{}, lines[end:]...)
+		return strings.Join(append(append(head, bodyLines...), tail...), "\n")
+	}
+	buf := strings.TrimRight(content, "\n")
+	if buf != "" {
+		buf += "\n\n"
+	}
+	buf += "[" + section + "]"
+	if strings.TrimSpace(body) != "" {
+		buf += "\n" + strings.TrimRight(body, "\n")
+	}
+	return buf
+}
+
+func replaceYamlSection(content string, key string, section string) string {
+	lines := strings.Split(content, "\n")
+	start := -1
+	end := len(lines)
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, key+":") && len(strings.TrimLeft(line, " \t")) == len(line) {
+			start = i
+			continue
+		}
+		if start >= 0 && i > start {
+			if isRootYamlKeyLine(line) {
+				end = i
+				break
+			}
+		}
+	}
+	if start >= 0 {
+		head := append([]string{}, lines[:start]...)
+		bodyLines := []string{}
+		if strings.TrimSpace(section) != "" {
+			bodyLines = strings.Split(strings.TrimRight(section, "\n"), "\n")
+		}
+		tail := append([]string{}, lines[end:]...)
+		return strings.Join(append(append(head, bodyLines...), tail...), "\n")
+	}
+	buf := strings.TrimRight(content, "\n")
+	if buf != "" {
+		buf += "\n"
+	}
+	buf += strings.TrimRight(section, "\n")
+	return buf
+}
+
+func isRootYamlKeyLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	if strings.HasPrefix(trimmed, "#") {
+		return false
+	}
+	if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+		return false
+	}
+	return strings.Contains(trimmed, ":")
 }
 
 func buildSurgeExtraGroups(groupMap map[string][]string, canonical map[string]string, templateGroups map[string]struct{}, typeMap map[string]string, defaultType string) string {
@@ -1737,6 +1964,11 @@ func formatSurgeLine(raw string, it subProxy) string {
 		return line
 	}
 	return line + "\n"
+}
+
+func stripSurgePasswordPrefix(line string) string {
+	re := regexp.MustCompile(`(?i)(password\\s*=\\s*)u\\d+:`)
+	return re.ReplaceAllString(line, "${1}")
 }
 
 func buildSurgeGenericLine(typ string, it subProxy, params map[string]interface{}) string {

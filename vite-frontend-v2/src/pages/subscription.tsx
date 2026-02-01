@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
-import { Input } from "@heroui/input";
+import { Input, Textarea } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
 import { toast } from "react-hot-toast";
 import QRCode from "qrcode";
+import { getConfigByName, updateConfig } from "@/api";
 
 const buildBaseUrl = () => {
   const raw =
@@ -39,6 +40,13 @@ export default function SubscriptionPage() {
   const encodedToken = encodeURIComponent(token);
   const [qrKey, setQrKey] = useState("clash");
   const [qrDataUrl, setQrDataUrl] = useState<string>("");
+  const [clashTemplate, setClashTemplate] = useState("");
+  const [surgeTemplate, setSurgeTemplate] = useState("");
+  const [clashFileName, setClashFileName] = useState("");
+  const [surgeFileName, setSurgeFileName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const templateKeyClash = "subscription_clash_template";
+  const templateKeySurge = "subscription_surge_template";
 
   const links = useMemo(
     () => [
@@ -108,6 +116,65 @@ export default function SubscriptionPage() {
       .then((url) => setQrDataUrl(url))
       .catch(() => setQrDataUrl(""));
   }, [qrLink]);
+
+  useEffect(() => {
+    getConfigByName(templateKeyClash).then((resp) => {
+      if (resp.code === 0 && typeof resp.data === "string") {
+        setClashTemplate(resp.data || "");
+      }
+    });
+    getConfigByName(templateKeySurge).then((resp) => {
+      if (resp.code === 0 && typeof resp.data === "string") {
+        setSurgeTemplate(resp.data || "");
+      }
+    });
+  }, []);
+
+  const readTemplateFile = (
+    file: File,
+    setter: (v: string) => void,
+    nameSetter: (v: string) => void,
+  ) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const content = typeof reader.result === "string" ? reader.result : "";
+      setter(content);
+      nameSetter(file.name);
+    };
+    reader.onerror = () => {
+      toast.error("读取模板失败");
+    };
+    reader.readAsText(file);
+  };
+
+  const handleSaveTemplate = async (key: string, value: string) => {
+    setSaving(true);
+    try {
+      const resp = await updateConfig(key, value);
+      if (resp.code === 0) {
+        toast.success("模板已保存");
+      } else {
+        toast.error(resp.msg || "保存失败");
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleClearTemplate = async (key: string, setter: (v: string) => void) => {
+    setSaving(true);
+    try {
+      const resp = await updateConfig(key, "");
+      if (resp.code === 0) {
+        setter("");
+        toast.success("模板已清空");
+      } else {
+        toast.error(resp.msg || "清空失败");
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="np-page">
@@ -184,6 +251,135 @@ export default function SubscriptionPage() {
         </Card>
 
         <div className="flex flex-col gap-6">
+          <Card className="np-card">
+            <CardHeader>
+              <h3 className="text-base font-semibold">订阅模板</h3>
+            </CardHeader>
+            <CardBody className="space-y-6">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-semibold">Clash 模板</div>
+                    <div className="text-xs text-default-500">
+                      支持 {"{{PROXIES}}"} / {"{{EXTRA_GROUPS}}"} 占位符，不填则自动替换 proxies / proxy-groups
+                    </div>
+                  </div>
+                  <div className="text-xs text-default-400">
+                    {clashTemplate ? "已启用" : "未设置"}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Input
+                    readOnly
+                    value={clashFileName || (clashTemplate ? "已加载模板" : "")}
+                    placeholder="上传 .yaml 模板"
+                  />
+                  <Button
+                    size="sm"
+                    variant="bordered"
+                    onPress={() => {
+                      const input = document.createElement("input");
+                      input.type = "file";
+                      input.accept = ".yaml,.yml,.txt";
+                      input.onchange = (e) => {
+                        const file = (e.target as HTMLInputElement)?.files?.[0];
+                        if (file) readTemplateFile(file, setClashTemplate, setClashFileName);
+                      };
+                      input.click();
+                    }}
+                  >
+                    上传
+                  </Button>
+                </div>
+                <Textarea
+                  minRows={6}
+                  value={clashTemplate}
+                  onValueChange={setClashTemplate}
+                  placeholder="粘贴 Clash 模板内容"
+                />
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    color="primary"
+                    isDisabled={saving}
+                    onPress={() => handleSaveTemplate(templateKeyClash, clashTemplate)}
+                  >
+                    保存 Clash 模板
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="bordered"
+                    isDisabled={saving || !clashTemplate}
+                    onPress={() => handleClearTemplate(templateKeyClash, setClashTemplate)}
+                  >
+                    清空
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-semibold">Surge 模板</div>
+                    <div className="text-xs text-default-500">
+                      支持 {"{{PROXIES}}"} / {"{{EXTRA_GROUPS}}"} 占位符，不填则自动替换 [Proxy] / [Proxy Group]
+                    </div>
+                  </div>
+                  <div className="text-xs text-default-400">
+                    {surgeTemplate ? "已启用" : "未设置"}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Input
+                    readOnly
+                    value={surgeFileName || (surgeTemplate ? "已加载模板" : "")}
+                    placeholder="上传 .conf 模板"
+                  />
+                  <Button
+                    size="sm"
+                    variant="bordered"
+                    onPress={() => {
+                      const input = document.createElement("input");
+                      input.type = "file";
+                      input.accept = ".conf,.txt";
+                      input.onchange = (e) => {
+                        const file = (e.target as HTMLInputElement)?.files?.[0];
+                        if (file) readTemplateFile(file, setSurgeTemplate, setSurgeFileName);
+                      };
+                      input.click();
+                    }}
+                  >
+                    上传
+                  </Button>
+                </div>
+                <Textarea
+                  minRows={6}
+                  value={surgeTemplate}
+                  onValueChange={setSurgeTemplate}
+                  placeholder="粘贴 Surge 模板内容"
+                />
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    color="primary"
+                    isDisabled={saving}
+                    onPress={() => handleSaveTemplate(templateKeySurge, surgeTemplate)}
+                  >
+                    保存 Surge 模板
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="bordered"
+                    isDisabled={saving || !surgeTemplate}
+                    onPress={() => handleClearTemplate(templateKeySurge, setSurgeTemplate)}
+                  >
+                    清空
+                  </Button>
+                </div>
+              </div>
+            </CardBody>
+          </Card>
+
           <Card className="np-card">
             <CardHeader>
               <h3 className="text-base font-semibold">订阅二维码</h3>

@@ -81,7 +81,7 @@ func wsWriteControl(c *websocket.Conn, mt int, data []byte, deadline time.Time) 
 
 // versionBase is the agent semantic version (without role prefix).
 // final reported version is: go-agent-<versionBase> or go-agent2-<versionBase>
-var versionBase = "2.0.0.0"
+var versionBase = "2.0.0.1"
 var version = ""      // computed in main()
 var apiBootDone int32 // 0=not attempted, 1=attempted
 var apiUse int32      // 1=Web API usable

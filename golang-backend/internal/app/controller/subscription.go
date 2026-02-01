@@ -402,16 +402,44 @@ func extractToken(c *gin.Context) string {
 }
 
 func subscriptionEntryHost(t model.Tunnel, n model.Node) string {
-	if t.InIP != "" && t.InIP != "0.0.0.0" && t.InIP != "::" {
-		return t.InIP
+	if ip := strings.TrimSpace(t.InIP); ip != "" && ip != "0.0.0.0" && ip != "::" {
+		return ip
 	}
-	if n.ServerIP != "" {
-		return n.ServerIP
+	if host := listenAddrHost(t.TCPListenAddr); host != "" {
+		return host
+	}
+	if host := listenAddrHost(t.UDPListenAddr); host != "" {
+		return host
 	}
 	if n.IP != "" {
 		return n.IP
 	}
+	if n.ServerIP != "" {
+		return n.ServerIP
+	}
 	return t.InIP
+}
+
+func listenAddrHost(addr *string) string {
+	if addr == nil {
+		return ""
+	}
+	raw := strings.TrimSpace(*addr)
+	if raw == "" {
+		return ""
+	}
+	host := raw
+	if strings.Contains(raw, ":") {
+		if h, _, err := net.SplitHostPort(raw); err == nil {
+			host = h
+		}
+	}
+	host = strings.TrimPrefix(host, "[")
+	host = strings.TrimSuffix(host, "]")
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return ""
+	}
+	return host
 }
 
 func parseExitConfig(raw *string) map[string]interface{} {
@@ -696,7 +724,6 @@ func buildClashConfigLegacy(items []subProxy, skipped []subSkip) string {
 		for _, n := range groupMap[g] {
 			buf.WriteString("      - " + yamlName(n) + "\n")
 		}
-		buf.WriteString("      - DIRECT\n")
 	}
 	buf.WriteString("rules:\n")
 	buf.WriteString("  - MATCH,GLOBAL\n")
@@ -766,7 +793,8 @@ func buildSurgeConfig(items []subProxy, skipped []subSkip, ver string, sourceURL
 	out := strings.ReplaceAll(tmpl, "{{PROXIES}}", strings.TrimRight(proxies, "\n"))
 	groupByKey, canonical := normalizeGroupMap(groupMap)
 	typeMap, defaultType := parseGroupTypeDirectives(tmpl)
-	out, templateGroups := applySurgeGroupProxies(out, groupByKey, canonical)
+	out, templateGroups, templateNames := applySurgeGroupProxies(out, groupByKey, canonical)
+	out = forceSurgeProxyIncludeGroups(out, buildSurgeProxyIncludeGroups(canonical, templateNames))
 	extra := buildSurgeExtraGroups(groupByKey, canonical, templateGroups, typeMap, defaultType)
 	out = strings.ReplaceAll(out, "{{EXTRA_GROUPS}}", strings.TrimRight(extra, "\n"))
 	if strings.TrimSpace(out) == "" {
@@ -813,6 +841,7 @@ func buildSurgeConfigLegacy(items []subProxy, skipped []subSkip, ver string, sou
 			if pass == "" {
 				pass = paramString(params, "password")
 			}
+			pass = stripUserPrefix(pass)
 			if pass == "" {
 				continue
 			}
@@ -845,7 +874,7 @@ func buildSurgeConfigLegacy(items []subProxy, skipped []subSkip, ver string, sou
 			for _, n := range groupMap[g] {
 				buf.WriteString(", " + n)
 			}
-			buf.WriteString(", DIRECT\n")
+			buf.WriteString("\n")
 		}
 	}
 	buf.WriteString("\n[Rule]\n")
@@ -1073,6 +1102,7 @@ func renderSurgeProxies(items []subProxy) (string, map[string][]string) {
 				if pass == "" {
 					pass = paramString(params, "password")
 				}
+				pass = stripUserPrefix(pass)
 				if pass == "" {
 					continue
 				}
@@ -1099,11 +1129,11 @@ func renderSurgeProxies(items []subProxy) (string, map[string][]string) {
 	return strings.TrimRight(buf.String(), "\n"), groupMap
 }
 
-func applySurgeGroupProxies(content string, groupMap map[string][]string, canonical map[string]string) (string, map[string]struct{}) {
+func applySurgeGroupProxies(content string, groupMap map[string][]string, canonical map[string]string) (string, map[string]struct{}, map[string]string) {
 	lines := strings.Split(content, "\n")
 	inGroup := false
 	templateGroups := map[string]struct{}{}
-	proxyIncludeGroups := buildSurgeProxyIncludeGroups(canonical)
+	templateNames := map[string]string{}
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
@@ -1127,6 +1157,7 @@ func applySurgeGroupProxies(content string, groupMap map[string][]string, canoni
 			continue
 		}
 		templateGroups[key] = struct{}{}
+		templateNames[key] = group
 		names := groupMap[key]
 		if len(names) == 0 {
 			continue
@@ -1143,25 +1174,20 @@ func applySurgeGroupProxies(content string, groupMap map[string][]string, canoni
 			appendList = append(appendList, name)
 		}
 		if len(appendList) == 0 {
-			if strings.EqualFold(group, "Proxy") && len(proxyIncludeGroups) > 0 {
-				lines[i] = appendIncludeOtherGroup(line, proxyIncludeGroups)
-			}
 			continue
 		}
 		nextLine := strings.TrimRight(line, " ") + ", " + strings.Join(appendList, ", ")
-		if strings.EqualFold(group, "Proxy") && len(proxyIncludeGroups) > 0 {
-			nextLine = appendIncludeOtherGroup(nextLine, proxyIncludeGroups)
-		}
 		lines[i] = nextLine
 	}
-	return strings.Join(lines, "\n"), templateGroups
+	return strings.Join(lines, "\n"), templateGroups, templateNames
 }
 
-func buildSurgeProxyIncludeGroups(canonical map[string]string) []string {
+func buildSurgeProxyIncludeGroups(canonical map[string]string, templateNames map[string]string) []string {
 	if len(canonical) == 0 {
 		return nil
 	}
 	names := make([]string, 0, len(canonical))
+	seen := map[string]struct{}{}
 	for key, name := range canonical {
 		if key == "" || name == "" {
 			continue
@@ -1169,6 +1195,19 @@ func buildSurgeProxyIncludeGroups(canonical map[string]string) []string {
 		if strings.EqualFold(key, "proxy") || strings.EqualFold(strings.TrimSpace(name), "proxy") {
 			continue
 		}
+		if templateNames != nil {
+			if tname := templateNames[key]; strings.TrimSpace(tname) != "" {
+				name = tname
+			}
+		}
+		dupKey := strings.ToLower(strings.TrimSpace(name))
+		if dupKey == "" {
+			continue
+		}
+		if _, ok := seen[dupKey]; ok {
+			continue
+		}
+		seen[dupKey] = struct{}{}
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -1200,6 +1239,62 @@ func appendIncludeOtherGroup(line string, groups []string) string {
 		return line
 	}
 	return strings.TrimRight(line, " ") + `, include-other-group="` + strings.Join(merged, ", ") + `"`
+}
+
+func forceSurgeProxyIncludeGroups(content string, groups []string) string {
+	if len(groups) == 0 {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	inGroup := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			section := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]"))
+			inGroup = strings.EqualFold(section, "Proxy Group")
+			continue
+		}
+		if !inGroup || trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		group := strings.TrimSpace(parts[0])
+		if strings.EqualFold(group, "Proxy") {
+			lines[i] = normalizeIncludeOtherGroup(line, groups)
+			break
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func normalizeIncludeOtherGroup(line string, groups []string) string {
+	if len(groups) == 0 {
+		return line
+	}
+	reQuoted := regexp.MustCompile(`(?i),?\\s*include-other-group\\s*=\\s*\"[^\"]*\"`)
+	rePlain := regexp.MustCompile(`(?i),?\\s*include-other-group\\s*=\\s*[^,]+`)
+	out := reQuoted.ReplaceAllString(line, "")
+	out = rePlain.ReplaceAllString(out, "")
+	out = strings.TrimRight(strings.TrimSpace(out), ",")
+	if out == "" {
+		out = "Proxy = select"
+	}
+	return strings.TrimRight(out, " ") + `, include-other-group="` + strings.Join(groups, ", ") + `"`
+}
+
+func stripUserPrefix(pass string) string {
+	pass = strings.TrimSpace(pass)
+	if pass == "" {
+		return ""
+	}
+	re := regexp.MustCompile(`^u\d+:(.+)$`)
+	if m := re.FindStringSubmatch(pass); len(m) == 2 {
+		return m[1]
+	}
+	return pass
 }
 
 func splitGroupList(raw string) []string {
@@ -1278,7 +1373,7 @@ func buildSurgeExtraGroups(groupMap map[string][]string, canonical map[string]st
 		for _, name := range names {
 			buf.WriteString(", " + name)
 		}
-		buf.WriteString(", DIRECT\n")
+		buf.WriteString("\n")
 	}
 	return strings.TrimRight(buf.String(), "\n")
 }
@@ -1662,6 +1757,9 @@ func buildSurgeGenericLine(typ string, it subProxy, params map[string]interface{
 		appendParam("username", u)
 	}
 	if u := paramString(params, "password"); u != "" {
+		if typ == "anytls" {
+			u = stripUserPrefix(u)
+		}
 		appendParam("password", u)
 	}
 	if u := paramString(params, "psk"); u != "" {

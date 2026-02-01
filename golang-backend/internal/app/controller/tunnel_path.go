@@ -34,7 +34,8 @@ func TunnelPathGet(c *gin.Context) {
     if cfg.Value != "" {
         _ = json.Unmarshal([]byte(cfg.Value), &ids)
     }
-    c.JSON(http.StatusOK, response.Ok(map[string]any{"path": ids}))
+    modes := getTunnelLinkModes(p.TunnelID)
+    c.JSON(http.StatusOK, response.Ok(map[string]any{"path": ids, "linkModes": modes}))
 }
 
 // TunnelPathSet 设置隧道多级路径
@@ -46,7 +47,11 @@ func TunnelPathGet(c *gin.Context) {
 // @Success 200 {object} BaseSwaggerResp
 // @Router /api/v1/tunnel/path/set [post]
 func TunnelPathSet(c *gin.Context) {
-    var p struct{ TunnelID int64 `json:"tunnelId" binding:"required"`; Path []int64 `json:"path"` }
+    var p struct{
+        TunnelID int64 `json:"tunnelId" binding:"required"`
+        Path []int64 `json:"path"`
+        LinkModes []string `json:"linkModes"`
+    }
     if err := c.ShouldBindJSON(&p); err != nil {
         c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
         return
@@ -74,6 +79,19 @@ func TunnelPathSet(c *gin.Context) {
         _ = dbpkg.DB.Save(&cfg).Error
     } else {
         _ = dbpkg.DB.Create(&model.ViteConfig{Name: key, Value: string(b), Time: now}).Error
+    }
+    if len(p.LinkModes) > 0 {
+        modes := normalizeLinkModes(p.LinkModes, len(uniq)+1, "direct")
+        mb, _ := json.Marshal(modes)
+        mkey := tunnelLinkModeKey(p.TunnelID)
+        var mc model.ViteConfig
+        if err := dbpkg.DB.Where("name = ?", mkey).First(&mc).Error; err == nil {
+            mc.Value = string(mb)
+            mc.Time = now
+            _ = dbpkg.DB.Save(&mc).Error
+        } else {
+            _ = dbpkg.DB.Create(&model.ViteConfig{Name: mkey, Value: string(mb), Time: now}).Error
+        }
     }
     // 使用 Web API 动态配置，无需重启；重连或编辑保存时会按路径自动下发服务
     var t model.Tunnel

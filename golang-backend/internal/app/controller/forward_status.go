@@ -37,14 +37,16 @@ func ForwardStatusList(c *gin.Context) {
 	// read forwards filtered
 	type row struct {
 		model.Forward
-		TType     int    `gorm:"column:t_type"`
-		InNodeID  int64  `gorm:"column:in_node_id"`
-		OutNodeID *int64 `gorm:"column:out_node_id"`
-		TunnelID  int64  `gorm:"column:tunnel_id"`
-		UserID    int64  `gorm:"column:user_id"`
+		TType     int     `gorm:"column:t_type"`
+		InNodeID  int64   `gorm:"column:in_node_id"`
+		OutNodeID *int64  `gorm:"column:out_node_id"`
+		OutExitID *int64  `gorm:"column:out_exit_id"`
+		Protocol  *string `gorm:"column:protocol"`
+		TunnelID  int64   `gorm:"column:tunnel_id"`
+		UserID    int64   `gorm:"column:user_id"`
 	}
 	q := dbpkg.DB.Table("forward f").
-		Select("f.*, t.type as t_type, t.in_node_id, t.out_node_id").
+		Select("f.*, t.type as t_type, t.in_node_id, t.out_node_id, t.out_exit_id, t.protocol").
 		Joins("left join tunnel t on t.id = f.tunnel_id")
 	if len(p.ForwardIds) > 0 {
 		q = q.Where("f.id in ?", p.ForwardIds)
@@ -58,12 +60,25 @@ func ForwardStatusList(c *gin.Context) {
 	// strict list uses live fetch; no snapshot window needed
 
 	type item struct {
-		ForwardID int64 `json:"forwardId"`
-		Ok        bool  `json:"ok"`
+		ForwardID        int64 `json:"forwardId"`
+		Ok               bool  `json:"ok"`
+		SubscriptionOnly bool  `json:"subscriptionOnly,omitempty"`
 	}
 	list := make([]item, 0, len(rows))
 
 	for _, r := range rows {
+		tun := model.Tunnel{
+			BaseEntity: model.BaseEntity{ID: r.TunnelID},
+			InNodeID:   r.InNodeID,
+			OutNodeID:  r.OutNodeID,
+			OutExitID:  r.OutExitID,
+			Type:       r.TType,
+			Protocol:   r.Protocol,
+		}
+		if isDirectExitForward(tun, r.InPort) {
+			list = append(list, item{ForwardID: r.ID, Ok: true, SubscriptionOnly: true})
+			continue
+		}
 		name := buildServiceName(r.ID, r.UserID, r.TunnelID)
 		okAll := true
 		// entry strict: same-name service with expected port listening
@@ -215,9 +230,16 @@ func ForwardStatusDetail(c *gin.Context) {
 		Actual       map[string]any `json:"actual,omitempty"`
 	}
 	out := struct {
-		ForwardID int64      `json:"forwardId"`
-		Nodes     []nodeItem `json:"nodes"`
+		ForwardID        int64      `json:"forwardId"`
+		SubscriptionOnly bool       `json:"subscriptionOnly,omitempty"`
+		Nodes            []nodeItem `json:"nodes"`
 	}{ForwardID: f.ID}
+
+	if isDirectExitForward(t, f.InPort) {
+		out.SubscriptionOnly = true
+		c.JSON(http.StatusOK, response.Ok(out))
+		return
+	}
 
 	name := buildServiceName(f.ID, f.UserID, f.TunnelID)
 	// entry expected subset
@@ -230,7 +252,7 @@ func ForwardStatusDetail(c *gin.Context) {
 	expEntry := buildServiceConfig(name, f.InPort, f.RemoteAddr, inIface)
 	expEntryMeta := map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false}
 	expEntry["metadata"] = expEntryMeta
-	attachLimiter(expEntry, t.InNodeID)
+	attachLimiter(expEntry, t.InNodeID, f.UserID)
 	expEntryPort := f.InPort
 	okEntry := false
 	act := map[string]any(nil)

@@ -28,7 +28,7 @@ Notes
 - Gost-related operations in services are currently no-ops returning OK.
 
 Docker
-- One image bundles frontend (vite-frontend) and backend (golang-backend).
+- One image bundles frontend (vite-frontend-v2) and backend (golang-backend).
 - Dockerfile at repo root builds both and serves frontend via Gin static files.
 - Build: `docker build -t network-panel:latest .`
 - Run: `PORT=6365 JWT_SECRET=... DB_HOST=... DB_NAME=... DB_USER=... DB_PASSWORD=... docker run -p 6365:6365 --name network-panel --rm network-panel:latest`

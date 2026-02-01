@@ -66,6 +66,12 @@ func SpeedLimitUpdate(c *gin.Context) {
 		return
 	}
 	applyLimiterForTunnel(sl.TunnelID)
+	// refresh anytls per-user speed rules for nodes referencing this speed id
+	var nodeIDs []int64
+	dbpkg.DB.Model(&model.UserNode{}).Distinct("node_id").Where("speed_id = ?", sl.ID).Pluck("node_id", &nodeIDs)
+	for _, nodeID := range nodeIDs {
+		go pushAnyTLSConfigToNode(nodeID)
+	}
 	c.JSON(http.StatusOK, response.OkMsg("限速规则更新成功"))
 }
 
@@ -125,7 +131,7 @@ func applyLimiterForTunnel(tunnelID int64) {
 		if svc == nil {
 			continue
 		}
-		if mergeLimiterIntoService(svc, r.InNodeID) {
+		if mergeLimiterIntoService(svc, r.InNodeID, r.UserID) {
 			byNode[r.InNodeID] = append(byNode[r.InNodeID], svc)
 		}
 	}

@@ -164,7 +164,7 @@ func heartbeatEndpoint() string {
 	if v := strings.TrimSpace(os.Getenv("HEARTBEAT_ENDPOINT")); v != "" {
 		return v
 	}
-	return "https://flux.529851.xyz/api/v1/stats/heartbeat"
+	return "https://flux.199028.xyz/api/v1/stats/heartbeat"
 }
 
 func postHeartbeat(endpoint, kind, uid, version, osName, arch string, createdAt int64, mode string, ip string) error {

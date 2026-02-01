@@ -62,7 +62,7 @@ func BuildTunnelEntryObserverPatches(nodeID int64) []map[string]any {
 				"observer":   obsName,
 				"_observers": []any{spec},
 			}
-			attachLimiter(svc, nodeID)
+			attachLimiter(svc, nodeID, r.UserID)
 			patches = append(patches, svc)
 		}
 	}
@@ -134,7 +134,7 @@ func BuildTunnelEntryServices(nodeID int64) []map[string]any {
 			svc["observer"] = obsName
 			svc["_observers"] = []any{spec}
 		}
-		attachLimiter(svc, nodeID)
+		attachLimiter(svc, nodeID, r.UserID)
 
 		chainName := "chain_" + name
 		hopName := "hop_" + name
@@ -343,7 +343,7 @@ func BuildPathServicesForReconnect(rootNode int64) map[int64][]map[string]any {
 					svc["_observers"] = []any{spec}
 				}
 				if i == 0 {
-					attachLimiter(svc, nodeID)
+					attachLimiter(svc, nodeID, r.UserID)
 				}
 				out[nodeID] = append(out[nodeID], svc)
 			}
@@ -418,7 +418,7 @@ func BuildPathServicesForReconnect(rootNode int64) map[int64][]map[string]any {
 				inSvc["observer"] = obsName
 				inSvc["_observers"] = []any{spec}
 			}
-			attachLimiter(inSvc, r.InNodeID)
+			attachLimiter(inSvc, r.InNodeID, r.UserID)
 			// first mid target
 			firstID := path[0]
 			var firstN model.Node

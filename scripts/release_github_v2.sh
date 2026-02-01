@@ -10,19 +10,20 @@ SERVER_BUILD="$ROOT_DIR/scripts/build_server_all.sh"
 ASSETS_DIR_AGENT="$ROOT_DIR/golang-backend/public/flux-agent"
 ASSETS_DIR_SERVER="$ROOT_DIR/golang-backend/public/server"
 # Frontend
-FRONTEND_DIR="$ROOT_DIR/vite-frontend"
+FRONTEND_DIR="$ROOT_DIR/vite-frontend-v2"
 ASSETS_DIR_FRONTEND="$ROOT_DIR/golang-backend/public/frontend"
 FRONTEND_ZIP="$ASSETS_DIR_FRONTEND/frontend-dist.zip"
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [-v <tag>] [--force] [--no-build] [--no-release]
+Usage: $(basename "$0") [-v <tag>] [--force] [--no-build] [--no-release] [--upload-only]
 
 Options:
   -v <tag>       Tag name to use (e.g., v1.2.3). Defaults to vYYYYMMDD-HHMMSS.
   --force        Skip clean working tree check.
   --no-build     Do not run build scripts (reuse existing artifacts).
   --no-release   Do not create a GitHub Release even if gh is available.
+  --upload-only  Only upload assets to an existing release (skip build/tag/push).
 
 Behavior:
   - Builds frontend (vite) and zips to frontend-dist.zip.
@@ -37,6 +38,8 @@ TAG=""
 FORCE=0
 DO_BUILD=1
 DO_RELEASE=1
+DO_TAG=1
+UPLOAD_ONLY=0
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -45,6 +48,7 @@ while [[ $# -gt 0 ]]; do
     --force) FORCE=1; shift ;;
     --no-build) DO_BUILD=0; shift ;;
     --no-release) DO_RELEASE=0; shift ;;
+    --upload-only) DO_BUILD=0; DO_TAG=0; DO_RELEASE=1; UPLOAD_ONLY=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
   esac
@@ -62,7 +66,7 @@ git -C "$ROOT_DIR" rev-parse --git-dir >/dev/null 2>&1 || {
 }
 
 # Ensure working tree is clean unless --force
-if [[ "$FORCE" -eq 0 ]]; then
+if [[ "$FORCE" -eq 0 && "$UPLOAD_ONLY" -eq 0 ]]; then
   if [[ -n "$(git -C "$ROOT_DIR" status --porcelain)" ]]; then
     echo "Working tree not clean. Commit/stash changes or use --force." >&2
     exit 1
@@ -71,7 +75,7 @@ fi
 
 # Build artifacts (unless skipped)
 if [[ "$DO_BUILD" -eq 1 ]]; then
-  echo "==> Building frontend (vite-frontend)"
+  echo "==> Building frontend (vite-frontend-v2)"
   (
     set -e
     cd "$FRONTEND_DIR"
@@ -94,18 +98,22 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
   bash "$SERVER_BUILD"
 fi
 
-echo "==> Ensuring git tag $TAG exists"
-# Create local tag if not present
-if git -C "$ROOT_DIR" rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
-  echo "Tag $TAG already exists locally, skipping tag creation."
+if [[ "$DO_TAG" -eq 1 ]]; then
+  echo "==> Ensuring git tag $TAG exists"
+  # Create local tag if not present
+  if git -C "$ROOT_DIR" rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+    echo "Tag $TAG already exists locally, skipping tag creation."
+  else
+    git -C "$ROOT_DIR" tag -a "$TAG" -m "Release $TAG"
+  fi
+  # Push tag to origin if not already there
+  if git -C "$ROOT_DIR" ls-remote --tags origin "$TAG" | grep -q "$TAG"; then
+    echo "Tag $TAG already exists on origin, not pushing."
+  else
+    git -C "$ROOT_DIR" push origin "$TAG"
+  fi
 else
-  git -C "$ROOT_DIR" tag -a "$TAG" -m "Release $TAG"
-fi
-# Push tag to origin if not already there
-if git -C "$ROOT_DIR" ls-remote --tags origin "$TAG" | grep -q "$TAG"; then
-  echo "Tag $TAG already exists on origin, not pushing."
-else
-  git -C "$ROOT_DIR" push origin "$TAG"
+  echo "==> Skipping tag creation/push (--upload-only)"
 fi
 
 if [[ "$DO_RELEASE" -eq 0 ]]; then
@@ -149,6 +157,10 @@ if command -v gh >/dev/null 2>&1 && [[ -n "$owner" && -n "$repo" ]]; then
       gh release upload -R "$owner/$repo" "$TAG" "${assets[@]}" --clobber
     fi
   else
+    if [[ "$UPLOAD_ONLY" -eq 1 ]]; then
+      echo "Release $TAG does not exist; --upload-only requires an existing release." >&2
+      exit 1
+    fi
     echo "Release $TAG does not exist; creating draft release."
     if [[ ${#assets[@]} -gt 0 ]]; then
       # Create release as draft and attach assets
@@ -194,6 +206,10 @@ if [[ "$status" == "200" ]]; then
   is_draft=$(jq -r .draft "$release_json")
   echo "Release $TAG already exists (draft=$is_draft); using existing release ID=$rel_id."
 else
+  if [[ "$UPLOAD_ONLY" -eq 1 ]]; then
+    echo "Release $TAG does not exist; --upload-only requires an existing release." >&2
+    exit 1
+  fi
   echo "Release $TAG not found; creating a new draft release."
   payload=$(jq -n --arg tag "$TAG" --arg name "Flux Panel $TAG" --arg body "$DESC" \
                '{tag_name:$tag, name:$name, body:$body, draft:true, prerelease:false}')

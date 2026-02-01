@@ -1,16 +1,16 @@
 # Multi-stage build: frontend + backend into a single minimal image
 
 # --- Frontend (two options) ---
-# Option A: use prebuilt assets from local workspace (vite-frontend/dist)
+# Option A: use prebuilt assets from local workspace (vite-frontend-v2/dist)
 FROM scratch AS fe_local
-COPY vite-frontend/dist /fe/dist
+COPY vite-frontend-v2/dist /fe/dist
 
 # Option B: build inside Docker (default)
 FROM node:22-alpine AS fe_build
 WORKDIR /fe
-COPY vite-frontend/package*.json ./
+COPY vite-frontend-v2/package*.json ./
 RUN npm install --legacy-peer-deps --no-audit --no-fund
-COPY vite-frontend/ .
+COPY vite-frontend-v2/ .
 RUN npm run build
 
 # --- Backend build ---

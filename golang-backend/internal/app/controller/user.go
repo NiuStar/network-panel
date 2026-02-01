@@ -409,8 +409,10 @@ func UserPackage(c *gin.Context) {
 
 // recentFlowSeries aggregates last 24h per-hour billed bytes using flow_timeseries
 func recentFlowSeries(userID int64) []struct {
-	Time string `json:"time"`
-	Flow int64  `json:"flow"`
+	Time      string `json:"time"`
+	Flow      int64  `json:"flow"`
+	GostFlow  int64  `json:"gostFlow"`
+	AnyTLSFlow int64 `json:"anytlsFlow"`
 } {
 	cst := time.FixedZone("UTC+8", 8*3600)
 	now := time.Now().In(cst)
@@ -420,10 +422,19 @@ func recentFlowSeries(userID int64) []struct {
 		Order("time_ms asc").Find(&rows)
 
 	buckets := map[string]int64{}
+	srcBuckets := map[string]map[string]int64{}
 	for _, r := range rows {
 		t := time.UnixMilli(r.TimeMs).In(cst)
 		key := t.Format("01-02 15:00")
 		buckets[key] += r.BilledBytes
+		src := strings.ToLower(strings.TrimSpace(r.Source))
+		if src == "" {
+			src = "gost"
+		}
+		if srcBuckets[key] == nil {
+			srcBuckets[key] = map[string]int64{}
+		}
+		srcBuckets[key][src] += r.BilledBytes
 	}
 	labels := make([]string, 0, 24)
 	for i := 23; i >= 0; i-- {
@@ -431,14 +442,23 @@ func recentFlowSeries(userID int64) []struct {
 		labels = append(labels, t.Format("01-02 15:00"))
 	}
 	out := make([]struct {
-		Time string `json:"time"`
-		Flow int64  `json:"flow"`
+		Time      string `json:"time"`
+		Flow      int64  `json:"flow"`
+		GostFlow  int64  `json:"gostFlow"`
+		AnyTLSFlow int64 `json:"anytlsFlow"`
 	}, 0, len(labels))
 	for _, k := range labels {
 		out = append(out, struct {
-			Time string `json:"time"`
-			Flow int64  `json:"flow"`
-		}{Time: k, Flow: buckets[k]})
+			Time      string `json:"time"`
+			Flow      int64  `json:"flow"`
+			GostFlow  int64  `json:"gostFlow"`
+			AnyTLSFlow int64 `json:"anytlsFlow"`
+		}{
+			Time:       k,
+			Flow:       buckets[k],
+			GostFlow:   srcBuckets[k]["gost"],
+			AnyTLSFlow: srcBuckets[k]["anytls"],
+		})
 	}
 	return out
 }
@@ -498,7 +518,7 @@ func UserUpdatePassword(c *gin.Context) {
 // @Tags user
 // @Accept json
 // @Produce json
-// @Param data body SwaggerResetFlowReq true "type=1 用户流量，否则隧道路由"
+// @Param data body SwaggerResetFlowReq true "type=1 用户流量, type=2 隧道权限, type=3 节点权限"
 // @Success 200 {object} BaseSwaggerResp
 // @Router /api/v1/user/reset [post]
 func UserReset(c *gin.Context) {
@@ -510,8 +530,10 @@ func UserReset(c *gin.Context) {
 	if req.Type == 1 {
 		// reset user flow
 		dbpkg.DB.Model(&model.User{}).Where("id = ?", req.ID).Updates(map[string]any{"in_flow": 0, "out_flow": 0})
-	} else {
+	} else if req.Type == 2 {
 		dbpkg.DB.Model(&model.UserTunnel{}).Where("id = ?", req.ID).Updates(map[string]any{"in_flow": 0, "out_flow": 0})
+	} else if req.Type == 3 {
+		dbpkg.DB.Model(&model.UserNode{}).Where("id = ?", req.ID).Updates(map[string]any{"in_flow": 0, "out_flow": 0})
 	}
 	c.JSON(http.StatusOK, response.OkNoData())
 }

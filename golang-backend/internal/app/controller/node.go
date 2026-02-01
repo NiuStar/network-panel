@@ -1,8 +1,10 @@
 package controller
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -78,11 +80,90 @@ func NodeCreate(c *gin.Context) {
 // POST /api/v1/node/list
 func NodeList(c *gin.Context) {
 	var nodes []model.Node
+	var userNodeMap map[int64]model.UserNode
+	forwardNodes := map[int64]bool{}
+	var uid int64
 	if roleInf, ok := c.Get("role_id"); ok && roleInf != 0 {
 		if uidInf, ok2 := c.Get("user_id"); ok2 {
-			dbpkg.DB.Where("owner_id=?", uidInf.(int64)).Find(&nodes)
-		} else {
-			nodes = []model.Node{}
+			uid = uidInf.(int64)
+			var owned []model.Node
+			dbpkg.DB.Where("owner_id = ?", uid).Find(&owned)
+			var shared []model.Node
+			dbpkg.DB.Table("node n").
+				Select("n.*").
+				Joins("join user_node un on un.node_id = n.id").
+				Where("un.user_id = ? AND un.status = 1", uid).
+				Scan(&shared)
+			seen := map[int64]bool{}
+			for _, n := range owned {
+				if !seen[n.ID] {
+					nodes = append(nodes, n)
+					seen[n.ID] = true
+				}
+			}
+			for _, n := range shared {
+				if !seen[n.ID] {
+					nodes = append(nodes, n)
+					seen[n.ID] = true
+				}
+			}
+			var uns []model.UserNode
+			dbpkg.DB.Where("user_id = ? AND status = 1", uid).Find(&uns)
+			userNodeMap = map[int64]model.UserNode{}
+			for _, un := range uns {
+				userNodeMap[un.NodeID] = un
+			}
+			// include nodes referenced by user's forwards (entry/path/exit) to keep visibility consistent
+			// even if user_node mapping is missing
+			var forwards []model.Forward
+			_ = dbpkg.DB.Where("user_id = ?", uid).Find(&forwards).Error
+			if len(forwards) > 0 {
+				tidSet := map[int64]struct{}{}
+				for _, f := range forwards {
+					if f.TunnelID > 0 {
+						tidSet[f.TunnelID] = struct{}{}
+					}
+				}
+				if len(tidSet) > 0 {
+					ids := make([]int64, 0, len(tidSet))
+					for id := range tidSet {
+						ids = append(ids, id)
+					}
+					var tunnels []model.Tunnel
+					_ = dbpkg.DB.Where("id in ?", ids).Find(&tunnels).Error
+					needIDs := map[int64]bool{}
+					for _, t := range tunnels {
+						needIDs[t.InNodeID] = true
+						if t.OutNodeID != nil {
+							needIDs[*t.OutNodeID] = true
+						}
+						for _, pid := range getTunnelPathNodes(t.ID) {
+							needIDs[pid] = true
+						}
+					}
+					for nid := range needIDs {
+						forwardNodes[nid] = true
+					}
+					if len(needIDs) > 0 {
+						ids = ids[:0]
+						for nid := range needIDs {
+							if !seen[nid] {
+								ids = append(ids, nid)
+							}
+						}
+						if len(ids) > 0 {
+							var extra []model.Node
+							_ = dbpkg.DB.Where("id in ?", ids).Find(&extra).Error
+							for _, n := range extra {
+								if !seen[n.ID] {
+									nodes = append(nodes, n)
+									seen[n.ID] = true
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	} else {
 		dbpkg.DB.Find(&nodes)
@@ -105,27 +186,41 @@ func NodeList(c *gin.Context) {
 
 	outs := make([]map[string]any, 0, len(nodes))
 	for _, n := range nodes {
+		isShared := false
+		assignedRanges := ""
+		if uid > 0 {
+			if n.OwnerID == nil || *n.OwnerID != uid {
+				if un, ok := userNodeMap[n.ID]; ok {
+					isShared = true
+					assignedRanges = un.PortRanges
+				} else if forwardNodes[n.ID] {
+					isShared = true
+				}
+			}
+		}
 		// read last known health flags (in-memory)
 		healthMu.RLock()
 		hf, ok := nodeHealth[n.ID]
 		healthMu.RUnlock()
 		m := map[string]any{
-			"id":          n.ID,
-			"name":        n.Name,
-			"ip":          n.IP,
-			"serverIp":    n.ServerIP,
-			"portSta":     n.PortSta,
-			"portEnd":     n.PortEnd,
-			"version":     n.Version,
-			"status":      n.Status,
-			"priceCents":  n.PriceCents,
-			"startDateMs": n.StartDateMs,
+			"id":                 n.ID,
+			"name":               n.Name,
+			"ip":                 n.IP,
+			"serverIp":           n.ServerIP,
+			"portSta":            n.PortSta,
+			"portEnd":            n.PortEnd,
+			"version":            n.Version,
+			"status":             n.Status,
+			"priceCents":         n.PriceCents,
+			"startDateMs":        n.StartDateMs,
+			"shared":             isShared,
+			"assignedPortRanges": assignedRanges,
 			// health flags
 			"gostApi":     ifThen(ok && hf.GostAPI, 1, 0),
 			"gostRunning": ifThen(ok && hf.GostRunning, 1, 0),
 		}
 		if rt, ok := runtimeMap[n.ID]; ok {
-			if rt.UsedPorts != nil && *rt.UsedPorts != "" {
+			if !isShared && rt.UsedPorts != nil && *rt.UsedPorts != "" {
 				var list []int
 				if json.Unmarshal([]byte(*rt.UsedPorts), &list) == nil {
 					m["usedPorts"] = list
@@ -235,9 +330,8 @@ func NodeSelfCheck(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
 		return
 	}
-	var n model.Node
-	if err := dbpkg.DB.First(&n, req.NodeID).Error; err != nil {
-		c.JSON(http.StatusOK, response.ErrMsg("节点不存在"))
+	if _, _, _, _, _, errMsg, ok := nodeAccess(c, req.NodeID, false); !ok {
+		c.JSON(http.StatusOK, response.ErrMsg(errMsg))
 		return
 	}
 	avg, loss, ok, msg, rid := diagnosePingFromNodeCtx(
@@ -313,6 +407,16 @@ func NodeDelete(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
 		return
 	}
+	if roleInf, ok := c.Get("role_id"); ok && roleInf != 0 {
+		if p.ID == 0 {
+			c.JSON(http.StatusOK, response.ErrMsg("无权限"))
+			return
+		}
+		if _, _, _, _, _, errMsg, ok := nodeAccess(c, p.ID, false); !ok {
+			c.JSON(http.StatusOK, response.ErrMsg(errMsg))
+			return
+		}
+	}
 	// usage checks
 	var cnt int64
 	dbpkg.DB.Model(&model.Tunnel{}).Where("in_node_id = ?", p.ID).Or("out_node_id = ?", p.ID).Count(&cnt)
@@ -358,9 +462,9 @@ func NodeInstallCmd(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
 		return
 	}
-	var n model.Node
-	if err := dbpkg.DB.First(&n, p.ID).Error; err != nil {
-		c.JSON(http.StatusOK, response.ErrMsg("节点不存在"))
+	n, _, _, _, _, errMsg, ok := nodeAccess(c, p.ID, false)
+	if !ok {
+		c.JSON(http.StatusOK, response.ErrMsg(errMsg))
 		return
 	}
 	// read config ip from vite_config
@@ -545,6 +649,16 @@ type nqStreamReq struct {
 	ExitCode  *int   `json:"exitCode"`
 }
 
+type diagStreamReq struct {
+	Secret    string `json:"secret"`
+	RequestID string `json:"requestId"`
+	Chunk     string `json:"chunk"`
+	Done      bool   `json:"done"`
+	TimeMs    *int64 `json:"timeMs"`
+	ExitCode  *int   `json:"exitCode"`
+	Type      string `json:"type"`
+}
+
 // NodeNQStreamPush NodeQuality 流式回传
 // @Summary NodeQuality 流式回传
 // @Tags node
@@ -621,6 +735,87 @@ func NodeNQStreamPush(c *gin.Context) {
 	c.JSON(http.StatusOK, response.OkNoData())
 }
 
+// NodeDiagStreamPush receives streaming logs from agent
+// @Summary 节点诊断流式回传
+// @Tags node
+// @Accept json
+// @Produce json
+// @Param data body SwaggerNodeNQStreamReq true "回传内容"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/diag/stream [post]
+func NodeDiagStreamPush(c *gin.Context) {
+	var p diagStreamReq
+	if err := c.ShouldBindJSON(&p); err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+		return
+	}
+	if strings.TrimSpace(p.Secret) == "" {
+		c.JSON(http.StatusOK, response.ErrMsg("secret 不能为空"))
+		return
+	}
+	var node model.Node
+	if err := dbpkg.DB.Where("secret = ?", p.Secret).First(&node).Error; err != nil {
+		c.JSON(http.StatusForbidden, response.ErrMsg("节点未授权"))
+		return
+	}
+	kind := strings.TrimSpace(p.Type)
+	if kind == "" {
+		kind = "diag"
+	}
+	now := time.Now().UnixMilli()
+	if p.TimeMs != nil && *p.TimeMs > 0 {
+		now = *p.TimeMs
+	}
+	msg := "chunk"
+	if p.Done {
+		msg = "done"
+	}
+	_ = dbpkg.DB.Create(&model.NodeOpLog{
+		TimeMs:    now,
+		NodeID:    node.ID,
+		Cmd:       "DiagStream:" + kind,
+		RequestID: p.RequestID,
+		Success:   1,
+		Message:   msg,
+		Stdout:    &p.Chunk,
+	}).Error
+
+	var res model.NodeDiagResult
+	if err := dbpkg.DB.Where("node_id = ? AND request_id = ?", node.ID, p.RequestID).First(&res).Error; err != nil || res.ID == 0 {
+		res = model.NodeDiagResult{
+			NodeID:      node.ID,
+			RequestID:   p.RequestID,
+			Type:        kind,
+			Content:     p.Chunk,
+			Done:        p.Done,
+			TimeMs:      now,
+			CreatedTime: now,
+			UpdatedTime: now,
+		}
+		_ = dbpkg.DB.Create(&res).Error
+	} else {
+		content := res.Content
+		if p.Chunk != "" {
+			if content != "" && !strings.HasSuffix(content, "\n") {
+				content += "\n"
+			}
+			content += p.Chunk
+		}
+		res.Content = content
+		res.Done = p.Done
+		res.TimeMs = now
+		res.UpdatedTime = now
+		_ = dbpkg.DB.Model(&model.NodeDiagResult{}).Where("id = ?", res.ID).Updates(map[string]any{
+			"content":      res.Content,
+			"done":         res.Done,
+			"time_ms":      res.TimeMs,
+			"updated_time": res.UpdatedTime,
+			"type":         kind,
+		})
+	}
+	c.JSON(http.StatusOK, response.OkNoData())
+}
+
 // NodeGostConfig 获取gost配置
 // @Summary 获取节点上的gost配置
 // @Tags node
@@ -639,9 +834,9 @@ func NodeGostConfig(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
 		return
 	}
-	var node model.Node
-	if err := dbpkg.DB.First(&node, p.NodeID).Error; err != nil {
-		c.JSON(http.StatusOK, response.ErrMsg("节点不存在"))
+	node, _, _, _, _, errMsg, ok := nodeAccess(c, p.NodeID, false)
+	if !ok {
+		c.JSON(http.StatusOK, response.ErrMsg(errMsg))
 		return
 	}
 	script := "#!/bin/sh\nset +e\nfor p in /etc/gost/gost.json /usr/local/gost/gost.json ./gost.json; do if [ -f \"$p\" ]; then echo \"PATH:$p\"; cat \"$p\"; exit 0; fi; done; echo 'PATH:NOT_FOUND'; exit 0\n"
@@ -683,6 +878,10 @@ func NodeNQTest(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&p); err != nil {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+		return
+	}
+	if _, _, _, _, _, errMsg, ok := nodeAccess(c, p.NodeID, false); !ok {
+		c.JSON(http.StatusOK, response.ErrMsg(errMsg))
 		return
 	}
 	var node model.Node
@@ -727,6 +926,10 @@ func NodeNQResult(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
 		return
 	}
+	if _, _, _, _, _, errMsg, ok := nodeAccess(c, p.NodeID, false); !ok {
+		c.JSON(http.StatusOK, response.ErrMsg(errMsg))
+		return
+	}
 	// latest result
 	var last model.NQResult
 	if err := dbpkg.DB.Where("node_id = ?", p.NodeID).Order("time_ms desc").First(&last).Error; err != nil || last.ID == 0 {
@@ -739,6 +942,250 @@ func NodeNQResult(c *gin.Context) {
 		"done":      last.Done,
 		"requestId": last.RequestID,
 	}))
+}
+
+// NodeDiagStart triggers diagnostic scripts on node
+// @Summary 触发节点诊断脚本
+// @Tags node
+// @Accept json
+// @Produce json
+// @Param data body object true "nodeId, kind"
+// @Success 200 {object} SwaggerResp
+// @Router /api/v1/node/diag/start [post]
+func NodeDiagStart(c *gin.Context) {
+	var p struct {
+		NodeID int64  `json:"nodeId" binding:"required"`
+		Kind   string `json:"kind" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&p); err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+		return
+	}
+	if _, _, _, _, _, errMsg, ok := nodeAccess(c, p.NodeID, false); !ok {
+		c.JSON(http.StatusOK, response.ErrMsg(errMsg))
+		return
+	}
+	kind := strings.TrimSpace(p.Kind)
+	if kind == "" {
+		c.JSON(http.StatusOK, response.ErrMsg("kind 不能为空"))
+		return
+	}
+	var node model.Node
+	if err := dbpkg.DB.First(&node, p.NodeID).Error; err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("节点不存在"))
+		return
+	}
+	scheme := "http"
+	if c.Request.TLS != nil {
+		scheme = "https"
+	}
+	script := ""
+	switch kind {
+	case "backtrace":
+		// backtrace handled by agent internally (no script download)
+		script = ""
+	case "iperf3-start":
+		script = "#!/bin/sh\nset +e\nif ! command -v iperf3 >/dev/null 2>&1; then\n  echo \"iperf3 not found\"; exit 1\nfi\npick_port() {\n  i=5201\n  while [ $i -le 5299 ]; do\n    if command -v ss >/dev/null 2>&1; then\n      ss -lntu 2>/dev/null | awk '{print $4}' | grep -E \":$i$\" >/dev/null 2>&1 && { i=$((i+1)); continue; }\n    elif command -v netstat >/dev/null 2>&1; then\n      netstat -lntu 2>/dev/null | awk '{print $4}' | grep -E \":$i$\" >/dev/null 2>&1 && { i=$((i+1)); continue; }\n    fi\n    echo $i; return 0\n  done\n  echo 0\n}\nPORT=$(pick_port)\nif [ \"$PORT\" = \"0\" ]; then\n  echo \"no free port\"; exit 1\nfi\nLOG=/tmp/np_iperf3.log\nnohup iperf3 -s -p \"$PORT\" >>\"$LOG\" 2>&1 &\nPID=$!\necho \"$PID\" > /tmp/np_iperf3.pid\necho \"$PORT\" > /tmp/np_iperf3.port\necho \"iperf3 started on port $PORT (pid $PID)\"\n"
+	case "iperf3-stop":
+		script = "#!/bin/sh\nset +e\nif [ -f /tmp/np_iperf3.pid ]; then\n  PID=$(cat /tmp/np_iperf3.pid)\n  if [ -n \"$PID\" ]; then\n    kill \"$PID\" 2>/dev/null || true\n  fi\n  rm -f /tmp/np_iperf3.pid\nfi\npkill -f \"iperf3 -s\" 2>/dev/null || true\nif [ -f /tmp/np_iperf3.port ]; then\n  PORT=$(cat /tmp/np_iperf3.port)\n  rm -f /tmp/np_iperf3.port\n  echo \"iperf3 stopped (port $PORT)\"\nelse\n  echo \"iperf3 stopped\"\nfi\n"
+	default:
+		c.JSON(http.StatusOK, response.ErrMsg("未知诊断类型"))
+		return
+	}
+	reqID := RandUUID()
+	endpoint := fmt.Sprintf("%s://%s/api/v1/diag/stream", scheme, c.Request.Host)
+	var payload map[string]any
+	var cmd string
+	if kind == "backtrace" {
+		cmd = "BacktraceTest"
+		payload = map[string]any{
+			"requestId": reqID,
+			"endpoint":  endpoint,
+			"secret":    node.Secret,
+			"type":      kind,
+		}
+	} else {
+		cmd = "RunStreamScript"
+		payload = map[string]any{
+			"requestId": reqID,
+			"content":   script,
+			"endpoint":  endpoint,
+			"secret":    node.Secret,
+			"type":      kind,
+		}
+	}
+	now := time.Now().UnixMilli()
+	_ = dbpkg.DB.Create(&model.NodeDiagResult{
+		NodeID:      node.ID,
+		RequestID:   reqID,
+		Type:        kind,
+		Content:     "",
+		Done:        false,
+		TimeMs:      now,
+		CreatedTime: now,
+		UpdatedTime: now,
+	}).Error
+	if err := sendWSCommand(node.ID, cmd, payload); err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("未响应，请稍后重试"))
+		return
+	}
+	c.JSON(http.StatusOK, response.Ok(map[string]any{"requestId": reqID}))
+}
+
+// NodeDiagResult fetches latest diagnostic output
+// @Summary 获取节点诊断结果
+// @Tags node
+// @Accept json
+// @Produce json
+// @Param data body object true "nodeId, kind, requestId"
+// @Success 200 {object} SwaggerResp
+// @Router /api/v1/node/diag/result [post]
+func NodeDiagResult(c *gin.Context) {
+	var p struct {
+		NodeID    int64  `json:"nodeId" binding:"required"`
+		Kind      string `json:"kind"`
+		RequestID string `json:"requestId"`
+	}
+	if err := c.ShouldBindJSON(&p); err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+		return
+	}
+	if _, _, _, _, _, errMsg, ok := nodeAccess(c, p.NodeID, false); !ok {
+		c.JSON(http.StatusOK, response.ErrMsg(errMsg))
+		return
+	}
+	kind := strings.TrimSpace(p.Kind)
+	if kind == "" {
+		kind = "diag"
+	}
+	var last model.NodeDiagResult
+	q := dbpkg.DB.Where("node_id = ?", p.NodeID)
+	if p.RequestID != "" {
+		q = q.Where("request_id = ?", p.RequestID)
+	} else {
+		q = q.Where("type = ?", kind)
+	}
+	if err := q.Order("time_ms desc").First(&last).Error; err != nil || last.ID == 0 {
+		c.JSON(http.StatusOK, response.Ok(map[string]any{"content": "", "timeMs": nil, "done": false, "requestId": ""}))
+		return
+	}
+	c.JSON(http.StatusOK, response.Ok(map[string]any{
+		"content":   last.Content,
+		"timeMs":    last.TimeMs,
+		"done":      last.Done,
+		"requestId": last.RequestID,
+	}))
+}
+
+// NodeIperf3Status returns iperf3 server status on node
+// @Summary 获取 iperf3 状态
+// @Tags node
+// @Accept json
+// @Produce json
+// @Param data body SwaggerNodeSimpleReq true "节点ID"
+// @Success 200 {object} SwaggerResp
+// @Router /api/v1/node/diag/iperf3-status [post]
+func NodeIperf3Status(c *gin.Context) {
+	var p struct {
+		NodeID int64 `json:"nodeId" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&p); err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+		return
+	}
+	node, _, _, _, _, errMsg, ok := nodeAccess(c, p.NodeID, false)
+	if !ok {
+		c.JSON(http.StatusOK, response.ErrMsg(errMsg))
+		return
+	}
+	script := "#!/bin/sh\nset +e\nPID_FILE=/tmp/np_iperf3.pid\nPORT_FILE=/tmp/np_iperf3.port\nstatus=stopped\npid=\"\"\nport=\"\"\nif [ -f \"$PID_FILE\" ]; then pid=$(cat \"$PID_FILE\" 2>/dev/null); fi\nif [ -f \"$PORT_FILE\" ]; then port=$(cat \"$PORT_FILE\" 2>/dev/null); fi\nif [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then status=running; fi\necho \"status=$status\"\n[ -n \"$pid\" ] && echo \"pid=$pid\"\n[ -n \"$port\" ] && echo \"port=$port\"\n"
+	req := map[string]any{"requestId": RandUUID(), "timeoutSec": 6, "content": script}
+	if res, ok := RequestOp(node.ID, "RunScript", req, 9*time.Second); ok {
+		var so string
+		if d, _ := res["data"].(map[string]any); d != nil {
+			if s, _ := d["stdout"].(string); s != "" {
+				so = s
+			}
+		}
+		status := "unknown"
+		pid := ""
+		port := ""
+		for _, line := range strings.Split(so, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if strings.HasPrefix(line, "status=") {
+				status = strings.TrimPrefix(line, "status=")
+			} else if strings.HasPrefix(line, "pid=") {
+				pid = strings.TrimPrefix(line, "pid=")
+			} else if strings.HasPrefix(line, "port=") {
+				port = strings.TrimPrefix(line, "port=")
+			}
+		}
+		c.JSON(http.StatusOK, response.Ok(map[string]any{
+			"status": status,
+			"pid":    pid,
+			"port":   port,
+		}))
+		return
+	}
+	c.JSON(http.StatusOK, response.ErrMsg("未响应，请稍后重试"))
+}
+
+// DiagBacktraceScript proxies backtrace script from upstream
+// @Summary 获取 backtrace 脚本
+// @Tags node
+// @Produce text/plain
+// @Router /api/v1/diag/backtrace.sh [get]
+func DiagBacktraceScript(c *gin.Context) {
+	urls := []string{
+		"https://raw.githubusercontent.com/zhanghanyun/backtrace/main/install.sh",
+	}
+	client := &http.Client{Timeout: 20 * time.Second}
+	var lastErr string
+	for _, u := range urls {
+		req, _ := http.NewRequest("GET", u, nil)
+		req.Header.Set("User-Agent", "network-panel-backtrace-proxy")
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err.Error()
+			continue
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			lastErr = fmt.Sprintf("status=%d url=%s", resp.StatusCode, u)
+			resp.Body.Close()
+			continue
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil || len(body) == 0 {
+			lastErr = "empty body"
+			continue
+		}
+		// normalize line endings and strip BOM if present
+		if len(body) >= 3 && body[0] == 0xEF && body[1] == 0xBB && body[2] == 0xBF {
+			body = body[3:]
+		}
+		body = bytes.ReplaceAll(body, []byte("\r\n"), []byte("\n"))
+		body = bytes.ReplaceAll(body, []byte("\r"), []byte("\n"))
+		if bytes.HasPrefix(bytes.TrimSpace(body), []byte("<!DOCTYPE")) || bytes.HasPrefix(bytes.TrimSpace(body), []byte("<html")) {
+			lastErr = "html response"
+			continue
+		}
+		if !bytes.HasPrefix(body, []byte("#!")) {
+			lastErr = "missing shebang"
+			continue
+		}
+		c.Header("Content-Type", "text/x-shellscript; charset=utf-8")
+		c.Header("Cache-Control", "no-store")
+		c.Data(http.StatusOK, "text/x-shellscript; charset=utf-8", body)
+		return
+	}
+	if lastErr == "" {
+		lastErr = "fetch failed"
+	}
+	c.Data(http.StatusBadGateway, "text/plain; charset=utf-8", []byte("backtrace fetch failed: "+lastErr))
 }
 
 // utils (local)

@@ -94,6 +94,16 @@ export default function AdminLayout({
       ),
     },
     {
+      path: "/subscription",
+      label: "订阅中心",
+      icon: (
+        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M3 4a1 1 0 011-1h6a1 1 0 010 2H5v10h10v-5a1 1 0 112 0v6a1 1 0 01-1 1H4a1 1 0 01-1-1V4z" />
+          <path d="M9 11l6-6 2 2-6 6H9v-2z" />
+        </svg>
+      ),
+    },
+    {
       path: "/tunnel",
       label: "隧道管理",
       icon: (
@@ -118,6 +128,16 @@ export default function AdminLayout({
           />
         </svg>
       ),
+    },
+    {
+      path: "/exit",
+      label: "出口节点",
+      icon: (
+        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M3 5h14v2H3V5zm0 4h10v2H3V9zm0 4h14v2H3v-2z" />
+        </svg>
+      ),
+      adminOnly: true,
     },
     {
       path: "/easytier",

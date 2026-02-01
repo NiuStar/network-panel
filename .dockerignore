@@ -2,4 +2,9 @@ golang-backend/public/
 publish_beta.sh
 .gocache
 .env
+./docs
+./.release
+./.release-static
+./vite-frontend/node_modules
+./vite-frontend-v2/node_modules
 ./scripts/upload_static_to_server.sh

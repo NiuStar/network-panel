@@ -77,10 +77,19 @@ func RegisterRoutes(r *gin.Engine) {
 		}
 	}
 
+	// flow endpoints (public, no auth)
+	api.Any("/flow/upload", controller.FlowUpload)
+	api.Any("/flow/anytls", controller.FlowAnyTLSUpload)
+	api.Any("/flow/exit", controller.FlowExitUpload)
+
 	// node
+	// all users: see permitted nodes for forwarding
+	api.POST("/node/user/node", middleware.AuthOptional(), controller.NodeUserNode)
+
 	node := api.Group("/node")
 	node.Use(middleware.Auth(), middleware.ForbidManagedLimited())
 	{
+
 		node.POST("/create", controller.NodeCreate)
 		node.POST("/list", controller.NodeList)
 		node.POST("/update", controller.NodeUpdate)
@@ -107,12 +116,43 @@ func RegisterRoutes(r *gin.Engine) {
 		node.POST("/restart-gost", controller.NodeRestartGost)
 		node.POST("/enable-gost-api", controller.NodeEnableGostAPI)
 		node.POST("/self-check", controller.NodeSelfCheck)
+		node.POST("/diag/start", controller.NodeDiagStart)
+		node.POST("/diag/result", controller.NodeDiagResult)
+		node.POST("/diag/iperf3-status", controller.NodeIperf3Status)
+
+		// admin-only: user-node permissions
+		nodeAdm := node.Group("")
+		nodeAdm.Use(middleware.RequireRole())
+		{
+			nodeAdm.POST("/user/assign", controller.NodeUserAssign)
+			nodeAdm.POST("/user/list", controller.NodeUserList)
+			nodeAdm.POST("/user/usage", controller.NodeUserUsageByNode)
+			nodeAdm.POST("/user/remove", controller.NodeUserRemove)
+			nodeAdm.POST("/user/update", controller.NodeUserUpdate)
+		}
 	}
 	// Terminal WS: 自带 token/admin 校验，不使用 Auth 中间件
 	api.GET("/node/:id/terminal", controller.NodeTerminalWS)
 
+	// exit nodes (internal + external)
+	exit := api.Group("/exit")
+	exit.Use(middleware.Auth())
+	{
+		exit.POST("/list", controller.ExitNodeList)
+		exit.POST("/cleanup", middleware.RequireRole(), controller.ExitCleanup)
+		exitAdmin := exit.Group("/external")
+		exitAdmin.Use(middleware.RequireRole())
+		{
+			exitAdmin.POST("/create", controller.ExitExternalCreate)
+			exitAdmin.POST("/update", controller.ExitExternalUpdate)
+			exitAdmin.POST("/delete", controller.ExitExternalDelete)
+		}
+	}
+
 	// streaming log push from agent (auth by secret)
 	api.POST("/nq/stream", controller.NodeNQStreamPush)
+	api.POST("/diag/stream", controller.NodeDiagStreamPush)
+	api.GET("/diag/backtrace.sh", controller.DiagBacktraceScript)
 
 	// tunnel
 	tunnel := api.Group("/tunnel")
@@ -125,6 +165,7 @@ func RegisterRoutes(r *gin.Engine) {
 		tunAuth.Use(middleware.Auth(), middleware.ForbidManagedLimited())
 		{
 			tunAuth.POST("/create", controller.TunnelCreate)
+			tunAuth.POST("/get", controller.TunnelGet)
 			tunAuth.POST("/list", controller.TunnelList)
 			tunAuth.POST("/update", controller.TunnelUpdate)
 			tunAuth.POST("/delete", controller.TunnelDelete)
@@ -158,31 +199,37 @@ func RegisterRoutes(r *gin.Engine) {
 		forward.POST("/list", middleware.Auth(), controller.ForwardList)
 		forward.POST("/update", middleware.Auth(), controller.ForwardUpdate)
 		forward.POST("/delete", middleware.Auth(), controller.ForwardDelete)
+		forward.POST("/batch-delete", middleware.Auth(), controller.ForwardBatchDelete)
 		forward.POST("/force-delete", middleware.Auth(), controller.ForwardForceDelete)
 		forward.POST("/pause", middleware.Auth(), controller.ForwardPause)
 		forward.POST("/resume", middleware.Auth(), controller.ForwardResume)
 		forward.POST("/diagnose", middleware.Auth(), controller.ForwardDiagnose)
 		forward.POST("/diagnose-step", middleware.Auth(), controller.ForwardDiagnoseStep)
+		forward.POST("/singbox-test", middleware.Auth(), controller.ForwardSingboxTest)
 		forward.POST("/update-order", middleware.Auth(), controller.ForwardUpdateOrder)
 		forward.POST("/status", middleware.Auth(), controller.ForwardStatusList)
 		forward.POST("/status-detail", middleware.Auth(), controller.ForwardStatusDetail)
+		forward.POST("/migrate", middleware.Auth(), controller.ForwardMigrateToRoute)
 	}
 
-	// speed-limit
-	sl := api.Group("/speed-limit")
-	sl.Use(middleware.RequireRole())
-	{
-		sl.POST("/create", controller.SpeedLimitCreate)
-		sl.POST("/list", controller.SpeedLimitList)
-		sl.POST("/update", controller.SpeedLimitUpdate)
-		sl.POST("/delete", controller.SpeedLimitDelete)
-		sl.POST("/tunnels", controller.SpeedLimitTunnels)
-	}
+	// speed-limit module removed (per-user node speed is handled in node permissions)
 
 	// open api
 	openAPI := api.Group("/open_api")
 	{
 		openAPI.GET("/sub_store", controller.OpenAPISubStore)
+	}
+
+	// subscription
+	sub := api.Group("/subscription")
+	{
+		sub.GET("/clash", controller.SubscriptionClash)
+		sub.GET("/clash-meta", controller.SubscriptionClashMeta)
+		sub.GET("/shadowrocket", controller.SubscriptionShadowrocket)
+		sub.GET("/surge", controller.SubscriptionSurge)
+		sub.GET("/singbox", controller.SubscriptionSingbox)
+		sub.GET("/v2ray", controller.SubscriptionV2ray)
+		sub.GET("/qx", controller.SubscriptionQX)
 	}
 
 	// heartbeat inventory (agents/controllers)
@@ -215,6 +262,8 @@ func RegisterRoutes(r *gin.Engine) {
 	r.POST("/flow/config", controller.FlowConfig)
 	r.Any("/flow/test", controller.FlowTest)
 	r.Any("/flow/upload", controller.FlowUpload)
+	r.Any("/flow/anytls", controller.FlowAnyTLSUpload)
+	r.Any("/flow/exit", controller.FlowExitUpload)
 	// limiter plugin endpoint for gost HTTP plugin data source
 	r.POST("/plugin/limiter", controller.LimiterPlugin)
 	// alerts

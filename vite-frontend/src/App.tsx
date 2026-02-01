@@ -17,6 +17,8 @@ const ShareNetworkPage = lazy(() => import("@/pages/share/network"));
 const MigratePage = lazy(() => import("@/pages/migrate"));
 const TunnelPage = lazy(() => import("@/pages/tunnel"));
 const NodePage = lazy(() => import("@/pages/node"));
+const ExitNodePage = lazy(() => import("@/pages/exit"));
+const SubscriptionPage = lazy(() => import("@/pages/subscription"));
 const UserPage = lazy(() => import("@/pages/user"));
 const ProfilePage = lazy(() => import("@/pages/profile"));
 const LimitPage = lazy(() => import("@/pages/limit"));
@@ -208,6 +210,14 @@ function App() {
         <Route
           element={
             <ProtectedRoute>
+              <SubscriptionPage />
+            </ProtectedRoute>
+          }
+          path="/subscription"
+        />
+        <Route
+          element={
+            <ProtectedRoute>
               <ProbePage />
             </ProtectedRoute>
           }
@@ -252,6 +262,14 @@ function App() {
             </ProtectedRoute>
           }
           path="/node"
+        />
+        <Route
+          element={
+            <ProtectedRoute>
+              <ExitNodePage />
+            </ProtectedRoute>
+          }
+          path="/exit"
         />
         <Route
           element={

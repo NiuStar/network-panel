@@ -1,16 +1,16 @@
 # Multi-stage build: frontend + backend into a single minimal image
 
 # --- Frontend (two options) ---
-# Option A: use prebuilt assets from local workspace (vite-frontend/dist)
+# Option A: use prebuilt assets from local workspace (vite-frontend-v2/dist)
 FROM scratch AS fe_local
-COPY vite-frontend/dist /fe/dist
+COPY vite-frontend-v2/dist /fe/dist
 
 # Option B: build inside Docker (default)
 FROM node:22-alpine AS fe_build
 WORKDIR /fe
-COPY vite-frontend/package*.json ./
+COPY vite-frontend-v2/package*.json ./
 RUN npm install --legacy-peer-deps --no-audit --no-fund
-COPY vite-frontend/ .
+COPY vite-frontend-v2/ .
 RUN npm run build
 
 # --- Backend build ---
@@ -26,17 +26,17 @@ COPY . ./
 
 # 不再执行 apk add（避免拉取索引失败）
 # 构建 server（纯 Go）
-RUN go build -trimpath -mod=vendor -ldflags "-w -s" -o /app/server ./golang-backend/cmd/server
+RUN CGO_ENABLED=0 go build -trimpath -mod=vendor -buildvcs=false -ldflags "-w -s -buildid=" -o /app/server ./golang-backend/cmd/server
 # 构建 launcher
-RUN go build -trimpath -mod=vendor -ldflags "-w -s" -o /app/launcher ./golang-backend/cmd/launcher
+RUN CGO_ENABLED=0 go build -trimpath -mod=vendor -buildvcs=false -ldflags "-w -s -buildid=" -o /app/launcher ./golang-backend/cmd/launcher
 
 # 多架构构建 flux-agent 与 flux-agent2（纯 Go 跨平台）
-RUN GOOS=linux GOARCH=amd64 go build -trimpath -mod=vendor -ldflags "-w -s" -o /app/flux-agent-linux-amd64   ./golang-backend/cmd/flux-agent && \
-    GOOS=linux GOARCH=arm64 go build -trimpath -mod=vendor -ldflags "-w -s" -o /app/flux-agent-linux-arm64   ./golang-backend/cmd/flux-agent && \
-    GOOS=linux GOARCH=arm   GOARM=7 go build -trimpath -mod=vendor -ldflags "-w -s" -o /app/flux-agent-linux-armv7   ./golang-backend/cmd/flux-agent && \
-    GOOS=linux GOARCH=amd64 go build -trimpath -mod=vendor -ldflags "-w -s" -o /app/flux-agent2-linux-amd64 ./golang-backend/cmd/flux-agent && \
-    GOOS=linux GOARCH=arm64 go build -trimpath -mod=vendor -ldflags "-w -s" -o /app/flux-agent2-linux-arm64 ./golang-backend/cmd/flux-agent && \
-    GOOS=linux GOARCH=arm   GOARM=7 go build -trimpath -mod=vendor -ldflags "-w -s" -o /app/flux-agent2-linux-armv7 ./golang-backend/cmd/flux-agent
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -mod=vendor -buildvcs=false -ldflags "-w -s -buildid=" -o /app/flux-agent-linux-amd64   ./golang-backend/cmd/flux-agent && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -mod=vendor -buildvcs=false -ldflags "-w -s -buildid=" -o /app/flux-agent-linux-arm64   ./golang-backend/cmd/flux-agent && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm   GOARM=7 go build -trimpath -mod=vendor -buildvcs=false -ldflags "-w -s -buildid=" -o /app/flux-agent-linux-armv7   ./golang-backend/cmd/flux-agent && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -mod=vendor -buildvcs=false -ldflags "-w -s -buildid=" -o /app/flux-agent2-linux-amd64 ./golang-backend/cmd/flux-agent && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -mod=vendor -buildvcs=false -ldflags "-w -s -buildid=" -o /app/flux-agent2-linux-arm64 ./golang-backend/cmd/flux-agent && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm   GOARM=7 go build -trimpath -mod=vendor -buildvcs=false -ldflags "-w -s -buildid=" -o /app/flux-agent2-linux-armv7 ./golang-backend/cmd/flux-agent
 
 # --- Final runtime ---
 FROM debian:12-slim AS final

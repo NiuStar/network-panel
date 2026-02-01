@@ -10,7 +10,7 @@ SERVER_BUILD="$ROOT_DIR/scripts/build_server_all.sh"
 ASSETS_DIR_AGENT="$ROOT_DIR/golang-backend/public/flux-agent"
 ASSETS_DIR_SERVER="$ROOT_DIR/golang-backend/public/server"
 # Frontend
-FRONTEND_DIR="$ROOT_DIR/vite-frontend"
+FRONTEND_DIR="$ROOT_DIR/vite-frontend-v2"
 ASSETS_DIR_FRONTEND="$ROOT_DIR/golang-backend/public/frontend"
 FRONTEND_ZIP="$ASSETS_DIR_FRONTEND/frontend-dist.zip"
 
@@ -70,7 +70,7 @@ if [[ "$FORCE" -eq 0 ]]; then
 fi
 
 if [[ "$DO_BUILD" -eq 1 ]]; then
-  echo "==> Building frontend (vite-frontend)"
+  echo "==> Building frontend (vite-frontend-v2)"
   (
     set -e
     cd "$FRONTEND_DIR"

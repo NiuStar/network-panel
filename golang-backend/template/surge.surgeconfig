@@ -1,0 +1,62 @@
+[General]
+skip-proxy = 192.168.0.0/24, 10.0.0.0/8, 172.16.0.0/12, 127.0.0.1, localhost, *.local
+exclude-simple-hostnames = true
+internet-test-url = http://www.baidu.com
+proxy-test-url = http://www.google.com/generate_204
+test-timeout = 5
+wifi-assist = true
+# encrypted-dns-server = https://223.5.5.5/ // 除非当地 ISP 有严重的 DNS 污染问题，否则没必要开启 DoH，传统 DNS 的性能最优，网络异常后恢复速度最快
+ipv6 = true
+ipv6-vif = auto
+loglevel = notify
+use-local-host-item-for-proxy = true
+show-error-page-for-reject = false
+proxy-restricted-to-lan = false
+geoip-maxmind-url = https://cdn.jsdelivr.net/gh/Hackl0us/GeoIP2-CN@release/Country.mmdb
+http-listen = 0.0.0.0
+socks5-listen = 0.0.0.0
+external-controller-access = network_panel@0.0.0.0:6170
+
+[Proxy]
+{{PROXIES}}
+
+[Proxy Group]
+Proxy = select, update-interval=36000, no-alert=0, hidden=0, include-all-proxies=0, persistent=1, include-other-group="香港节点, 台湾, 新加坡, 日本, 美国"
+香港节点 = smart, no-alert=0, hidden=0, include-all-proxies=0
+OpenAI = select, no-alert=0, hidden=0, include-all-proxies=0, include-other-group="台湾, 新加坡, 日本, 美国"
+台湾 = smart, include-all-proxies=0, no-alert=0, hidden=0
+新加坡 = smart, no-alert=0, hidden=0, include-all-proxies=0
+日本 = smart, no-alert=0, hidden=0, include-all-proxies=0
+宁波图书馆 = select, include-all-proxies=0
+美国 = select,  no-alert=0, hidden=0, include-all-proxies=0
+台湾 副本 = smart, include-all-proxies=0, no-alert=0, hidden=0
+{{EXTRA_GROUPS}}
+
+[Rule]
+DOMAIN,g.iepl.taphip.ru,DIRECT
+DOMAIN-SUFFIX,qq.com,DIRECT
+IP-CIDR,10.8.0.0/24,DIRECT,no-resolve
+DOMAIN-SUFFIX,qq.com,DIRECT,extended-matching // 腾讯系
+RULE-SET,https://raw.githubusercontent.com/limbopro/Adblock4limbo/main/Adblock4limbo_surge.list,REJECT
+DOMAIN,track.uc.cn,REJECT // Added for: https://track.uc.cn/collect?bucket_num2=15&ab_9703=B&ab_10637=C&ab_10736=I&ab_11637=E&uc_param_str=ktdnfrcpventnwosprpfutcumi&dn=54286965216-b082beb2&fr=iphone&ve=17.6.2.2603&nt=2&nw=WIFI&os=18.1&pr=UCBrowser&pf=44&ut=AARZUhhY8KkT31%2Bnb63UPeEzJuOVkIvhnHQxB%2BXM8GrbEQ%3D%3D&cu=arm64e&mi=iPhone14%2C5&pc=AASZtg30J6cEZGl0meB9hj0EzMx%2F3vV1aRhH5XL4N7cQQpFP3tKt3W8yLt7axo331pnfaSbKjmm3BAumA5VYSkX%2F&appid=4e4c83b70dad&lt=event&ev_ct=client_custom&device_brand=apple&device_model=iPhone14,5&bd_ver=5.91.0.2&last_bd_ver=5.91.0.2&bd_ft=0&web_ver=5.91.0-rc2&subver=app&tm2=2025-05-22T23:39:22.791&ev_ac=main&module=reqInfo&ch=undefined&cc=undefined&cg=undefined&bc=undefined&plt=iPhone&client_ver=17.6.2.2603&prd=UCBrowser&req_id=b3b3d64c83aac15b&match_sc=false&start_ts=0&web_con_type=WebPage&url=https%3A%2F%2Fimage.uc.cn%2Fs%2Fuae%2Fg%2F4u%2Fforbid_page%2Fuc_forbit_host.html%3Forig_url%3Dhttps%253A%252F%252Fwww.banzhu222222.com%252F&host=image.uc.cn&refer=&http_code=-1&render_killed=0&page_from=url&page_open_source=url&crash_recover=false&bd_name=n&last_rec_step=2&fg_pl_id=PageLoader_329_1747928265835&hit_cache=0&config_req_id=null&match_mode=reader&customode=reader&sub_mode=common&comm_conf_ver=cfg_202505221400&site_conf_ver=localhardcode20220615150000&custom_dc=-5&web_con_id=WebConnector_6579_1747928265164&send_type=1
+DOMAIN,aliyun.com,DIRECT
+RULE-SET,https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/OpenAI/OpenAI.list,OpenAI,extended-matching,no-resolve
+RULE-SET,https://github.com/Blankwonder/surge-list/raw/master/blocked.list,Proxy
+RULE-SET,https://github.com/Blankwonder/surge-list/raw/master/cn.list,DIRECT
+DOMAIN,apps.apple.com,Proxy
+DOMAIN-SUFFIX,ls.apple.com,DIRECT // Apple Maps
+DOMAIN-SUFFIX,store.apple.com,DIRECT // Apple Store Online
+RULE-SET,SYSTEM,Proxy
+RULE-SET,https://github.com/Blankwonder/surge-list/raw/master/apple.list,Proxy
+# 以下规则将触发本地 DNS 解析
+RULE-SET,LAN,DIRECT
+GEOIP,CN,DIRECT,no-resolve
+FINAL,Proxy,dns-failed
+
+[Host]
+lb.kubesphere.local = 192.168.32.235
+
+[MITM]
+skip-server-cert-verify = true
+h2 = true
+ca-passphrase = 3B111768

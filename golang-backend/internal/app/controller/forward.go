@@ -126,36 +126,74 @@ func ForwardCreate(c *gin.Context) {
 	}
 	// allocate inPort if nil: find first port in range not used
 	inPort := 0
-	if req.InPort != nil {
+	directPort := directExitPortForTunnel(tun)
+	directRequested := directPort > 0 && (req.InPort == nil || *req.InPort == directPort)
+	if directRequested {
+		inPort = directPort
+	} else if req.InPort != nil {
 		inPort = *req.InPort
 	} else {
 		inPort = firstFreePort(tun.InNodeID, tun, 0)
 	}
-	// agent-level verification and range enforcement on entry node
-	var inNode model.Node
-	_ = dbpkg.DB.First(&inNode, tun.InNodeID).Error
-	minP := 10000
-	maxP := 65535
-	if inNode.PortSta > 0 {
-		minP = inNode.PortSta
+	if !directRequested {
+		// agent-level verification and range enforcement on entry node
+		var inNode model.Node
+		_ = dbpkg.DB.First(&inNode, tun.InNodeID).Error
+		minP := 10000
+		maxP := 65535
+		if inNode.PortSta > 0 {
+			minP = inNode.PortSta
+		}
+		if inNode.PortEnd > 0 {
+			maxP = inNode.PortEnd
+		}
+		// if provided port not in range, ignore it and pick a free one in range
+		if inPort < minP || inPort > maxP {
+			inPort = 0
+		}
+		inPort = findFreePortOnNode(tun.InNodeID, inPort, minP, maxP)
+		if inPort == 0 {
+			c.JSON(http.StatusOK, response.ErrMsg("隧道入口端口已满，无法分配新端口"))
+			return
+		}
 	}
-	if inNode.PortEnd > 0 {
-		maxP = inNode.PortEnd
-	}
-	// if provided port not in range, ignore it and pick a free one in range
-	if inPort < minP || inPort > maxP {
-		inPort = 0
-	}
-	inPort = findFreePortOnNode(tun.InNodeID, inPort, minP, maxP)
-	if inPort == 0 {
-		c.JSON(http.StatusOK, response.ErrMsg("隧道入口端口已满，无法分配新端口"))
-		return
+	if roleInf != 0 {
+		if err := enforceUserNodePort(uid, tun.InNodeID, inPort); err != nil {
+			c.JSON(http.StatusOK, response.ErrMsg(err.Error()))
+			return
+		}
 	}
 	now := time.Now().UnixMilli()
-	f := model.Forward{BaseEntity: model.BaseEntity{CreatedTime: now, UpdatedTime: now}, UserID: uid, Name: req.Name, TunnelID: req.TunnelID, InPort: inPort, RemoteAddr: req.RemoteAddr, InterfaceName: req.InterfaceName, Strategy: req.Strategy}
+	f := model.Forward{
+		BaseEntity:    model.BaseEntity{CreatedTime: now, UpdatedTime: now},
+		UserID:        uid,
+		Name:          req.Name,
+		Group:         strings.TrimSpace(req.Group),
+		TunnelID:      req.TunnelID,
+		InPort:        inPort,
+		RemoteAddr:    normalizeRemoteAddrList(req.RemoteAddr),
+		InterfaceName: req.InterfaceName,
+		Strategy:      req.Strategy,
+	}
 	// allocate outPort for tunnel-forward
 	if tun.Type == 2 {
-		if op := firstFreePortOut(tun, 0); op != 0 {
+		if !isExternalExit(tun) && tun.OutNodeID == nil {
+			c.JSON(http.StatusOK, response.ErrMsg("隧道出口节点无效"))
+			return
+		}
+		if isExternalExit(tun) {
+			ext, ok := loadExternalExit(tun)
+			if !ok || ext.Host == "" || ext.Port <= 0 || ext.Port > 65535 {
+				c.JSON(http.StatusOK, response.ErrMsg("外部出口节点无效"))
+				return
+			}
+			port := ext.Port
+			f.OutPort = &port
+			if tun.OutIP == nil || *tun.OutIP == "" {
+				tmp := ext.Host
+				tun.OutIP = &tmp
+			}
+		} else if op := firstFreePortOut(tun, 0); op != 0 {
 			// verify against agent services on exit node
 			exitID := outNodeIDOr0(tun)
 			var outNode model.Node
@@ -186,25 +224,33 @@ func ForwardCreate(c *gin.Context) {
 	// push to node(s)
 	opId := RandUUID()
 	name := buildServiceName(f.ID, f.UserID, f.TunnelID)
+	if isDirectExitForward(tun, f.InPort) {
+		c.JSON(http.StatusOK, response.Ok(map[string]any{"requestId": opId}))
+		return
+	}
 	if tun.Type == 2 && f.OutPort != nil {
 		// gRPC HTTP 隧道（出口=relay+grpc，入口=http+chain(dialer=grpc, connector=relay)）
-		user := fmt.Sprintf("u-%d", f.ID)
-		pass := util.MD5(fmt.Sprintf("%d:%d", f.ID, f.CreatedTime))[:16]
-		outSvc := map[string]any{
-			"name":     name,
-			"addr":     fmt.Sprintf(":%d", *f.OutPort),
-			"listener": map[string]any{"type": "grpc"},
-			// 出口不再配置 chain，仅作为 relay 服务端
-			"handler":  map[string]any{"type": "relay", "auth": map[string]any{"username": user, "password": pass}},
-			"metadata": map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false},
+		externalExit := isExternalExit(tun)
+		auth := relayAuthForForward(tun, f)
+		if !externalExit {
+			outSvc := map[string]any{
+				"name":     name,
+				"addr":     fmt.Sprintf(":%d", *f.OutPort),
+				"listener": map[string]any{"type": "grpc"},
+				// 出口不再配置 chain，仅作为 relay 服务端
+				"handler":  relayHandler(auth),
+				"metadata": map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false},
+			}
+			_ = sendWSCommand(outNodeIDOr0(tun), "AddService", expandRUDP([]map[string]any{outSvc}))
 		}
-		_ = sendWSCommand(outNodeIDOr0(tun), "AddService", expandRUDP([]map[string]any{outSvc}))
 
 		// 计算出口地址：优先使用出口节点的监听IP(在隧道编辑里配置的 inIp/bind)，否则使用隧道/节点出口IP
 		outIP := getOutNodeIP(tun)
-		bindMap := getTunnelBindMap(tun.ID)
-		if v, ok := bindMap[outNodeIDOr0(tun)]; ok && v != "" {
-			outIP = v
+		if !externalExit {
+			bindMap := getTunnelBindMap(tun.ID)
+			if v, ok := bindMap[outNodeIDOr0(tun)]; ok && v != "" {
+				outIP = v
+			}
 		}
 		exitAddr := safeHostPort(outIP, *f.OutPort)
 
@@ -290,8 +336,12 @@ func ForwardCreate(c *gin.Context) {
 					}
 					target = safeHostPort(host, midPorts[i+1])
 				} else {
-					// last mid forwards to exit relay (gRPC) address directly
-					target = exitAddr
+					// last mid forwards to external exit target or exit relay
+					if isExternalExit(tun) {
+						target = firstTargetHost(f.RemoteAddr)
+					} else {
+						target = exitAddr
+					}
 				}
 				midName := fmt.Sprintf("%s_mid_%d", name, i)
 				var iface *string
@@ -335,7 +385,7 @@ func ForwardCreate(c *gin.Context) {
 					inSvc["observer"] = obsName
 					inSvc["_observers"] = []any{spec}
 				}
-				attachLimiter(inSvc, tun.InNodeID)
+				attachLimiter(inSvc, tun.InNodeID, f.UserID)
 				// attach interface for entry if configured
 				if ip, ok := ifaceMap[tun.InNodeID]; ok && ip != "" {
 					if meta, ok2 := inSvc["metadata"].(map[string]any); ok2 {
@@ -353,7 +403,7 @@ func ForwardCreate(c *gin.Context) {
 						}
 						return preferIPv4(first)
 					}(), midPorts[0]),
-					"connector": map[string]any{"type": "relay", "auth": map[string]any{"username": user, "password": pass}},
+					"connector": relayConnector(auth),
 					"dialer":    map[string]any{"type": "grpc"},
 				}
 				inSvc["_chains"] = []any{map[string]any{"name": chainName, "metadata": map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false}, "hops": []any{map[string]any{"name": hopName, "nodes": []any{node}}}}}
@@ -385,14 +435,14 @@ func ForwardCreate(c *gin.Context) {
 				inSvc["observer"] = obsName
 				inSvc["_observers"] = []any{spec}
 			}
-			attachLimiter(inSvc, tun.InNodeID)
+			attachLimiter(inSvc, tun.InNodeID, f.UserID)
 			chainName := "chain_" + name
 			hopName := "hop_" + name
 			node := map[string]any{
 				"name": "node-" + name,
 				// 出口优先使用监听IP（组网场景用 10.126.126.X），否则回退到节点/隧道出口IP
 				"addr":      exitAddr,
-				"connector": map[string]any{"type": "relay", "auth": map[string]any{"username": user, "password": pass}},
+				"connector": relayConnector(auth),
 				"dialer":    map[string]any{"type": "grpc"},
 			}
 			inSvc["_chains"] = []any{map[string]any{"name": chainName, "metadata": map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false}, "hops": []any{map[string]any{"name": hopName, "nodes": []any{node}}}}}
@@ -419,6 +469,12 @@ func ForwardCreate(c *gin.Context) {
 		path := getTunnelPathNodes(tun.ID)
 		ifaceMap := getTunnelIfaceMap(tun.ID)
 		bindMap := getTunnelBindMap(tun.ID)
+		linkModes := normalizeLinkModes(getTunnelLinkModes(tun.ID), len(path)+1, "direct")
+		if isExternalExit(tun) && len(linkModes) > 0 && linkModes[len(linkModes)-1] == "tunnel" {
+			c.JSON(http.StatusOK, response.ErrMsg("外部出口不支持隧道链路"))
+			return
+		}
+		auth := relayAuthForForward(tun, f)
 		if len(path) == 0 {
 			// single hop: in-node listens on inPort and forwards to remoteAddr
 			var iface *string
@@ -434,14 +490,49 @@ func ForwardCreate(c *gin.Context) {
 				svc["observer"] = obsName
 				svc["_observers"] = []any{spec}
 			}
-			attachLimiter(svc, tun.InNodeID)
+			attachLimiter(svc, tun.InNodeID, f.UserID)
+			mode := "direct"
+			if len(linkModes) > 0 {
+				mode = linkModes[0]
+			}
+			if mode != "tunnel" && tun.OutNodeID != nil {
+				relayName := fmt.Sprintf("%s_relay_%d", name, outNodeIDOr0(tun))
+				_ = sendWSCommand(outNodeIDOr0(tun), "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{relayName})})
+			}
+			if mode == "tunnel" && tun.OutNodeID != nil {
+				outID := outNodeIDOr0(tun)
+				var out model.Node
+				_ = dbpkg.DB.First(&out, outID).Error
+				minP, maxP := 10000, 65535
+				if out.PortSta > 0 {
+					minP = out.PortSta
+				}
+				if out.PortEnd > 0 {
+					maxP = out.PortEnd
+				}
+				relayPort := findFreePortOnNode(outID, minP, minP, maxP)
+				if relayPort == 0 {
+					relayPort = minP
+				}
+				relaySvc := buildRelayService(fmt.Sprintf("%s_relay_%d", name, outID), relayPort, auth)
+				_ = sendWSCommand(outID, "AddService", expandRUDP([]map[string]any{relaySvc}))
+				relayHost := ""
+				if ip, ok := bindMap[outID]; ok && ip != "" {
+					relayHost = ip
+				} else {
+					relayHost = getOutNodeIP(tun)
+					if relayHost == "" {
+						relayHost = preferIPv4(out)
+					}
+				}
+				attachRelayChainToService(svc, fmt.Sprintf("chain_%s_0", name), safeHostPort(relayHost, relayPort), auth)
+			}
 			_ = sendWSCommand(tun.InNodeID, "AddService", expandRUDP([]map[string]any{svc}))
 			// 不重启，配置已生效
 		} else {
-			// chain: [inNode -> mid1 -> mid2 -> ... -> last]
+			// chain: [inNode -> mid1 -> ... -> last]
 			hops := append([]int64{tun.InNodeID}, path...)
 			hopPorts := make([]int, len(hops))
-			// entry uses requested inPort
 			hopPorts[0] = f.InPort
 			for i := 1; i < len(hops); i++ {
 				prevID := hops[i-1]
@@ -452,7 +543,6 @@ func ForwardCreate(c *gin.Context) {
 				var n model.Node
 				_ = dbpkg.DB.First(&n, curID).Error
 				if overlay {
-					// 固定范围 10000-65535，自小向上找空闲
 					p := findFreePortOnNodeAny(curID, 10000, 10000)
 					if p == 0 {
 						p = 10000
@@ -474,7 +564,72 @@ func ForwardCreate(c *gin.Context) {
 				}
 				_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: curID, Cmd: "ForwardPortPick", RequestID: opId, Success: 1, Message: fmt.Sprintf("hop port=%d (%s)", hopPorts[i], ifThen(overlay, "overlay", "range"))}).Error
 			}
-			// deploy services per hop
+
+			reserved := map[int64]map[int]bool{}
+			for i, nid := range hops {
+				if reserved[nid] == nil {
+					reserved[nid] = map[int]bool{}
+				}
+				reserved[nid][hopPorts[i]] = true
+			}
+
+			if hasTunnelMode(linkModes) {
+				candidates := map[int64]struct{}{}
+				for _, nid := range hops {
+					if nid > 0 {
+						candidates[nid] = struct{}{}
+					}
+				}
+				if tun.OutNodeID != nil && *tun.OutNodeID > 0 {
+					candidates[*tun.OutNodeID] = struct{}{}
+				}
+				for nid := range candidates {
+					relayName := fmt.Sprintf("%s_relay_%d", name, nid)
+					_ = sendWSCommand(nid, "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{relayName})})
+				}
+			}
+
+			relayPorts := map[int64]int{}
+			for i := 0; i < len(hops); i++ {
+				if i >= len(linkModes) || linkModes[i] != "tunnel" {
+					continue
+				}
+				var relayNodeID int64
+				if i < len(hops)-1 {
+					relayNodeID = hops[i+1]
+				} else {
+					if tun.OutNodeID == nil {
+						continue
+					}
+					relayNodeID = *tun.OutNodeID
+				}
+				if relayNodeID <= 0 {
+					continue
+				}
+				if _, ok := relayPorts[relayNodeID]; ok {
+					continue
+				}
+				var n model.Node
+				_ = dbpkg.DB.First(&n, relayNodeID).Error
+				minP, maxP := 10000, 65535
+				if n.PortSta > 0 {
+					minP = n.PortSta
+				}
+				if n.PortEnd > 0 {
+					maxP = n.PortEnd
+				}
+				relayPort := findFreePortOnNode(relayNodeID, minP, minP, maxP)
+				for relayPort > 0 && reserved[relayNodeID][relayPort] {
+					relayPort = findFreePortOnNode(relayNodeID, relayPort+1, minP, maxP)
+				}
+				if relayPort == 0 {
+					relayPort = minP
+				}
+				relayPorts[relayNodeID] = relayPort
+				relaySvc := buildRelayService(fmt.Sprintf("%s_relay_%d", name, relayNodeID), relayPort, auth)
+				_ = sendWSCommand(relayNodeID, "AddService", expandRUDP([]map[string]any{relaySvc}))
+			}
+
 			for i := 0; i < len(hops); i++ {
 				nodeID := hops[i]
 				listenPort := hopPorts[i]
@@ -501,22 +656,43 @@ func ForwardCreate(c *gin.Context) {
 				}
 				svc := buildServiceConfig(name, listenPort, target, iface)
 				if i == 0 {
-					attachLimiter(svc, nodeID)
+					if obsName, spec := buildObserverPluginSpec(nodeID, name); obsName != "" && spec != nil {
+						svc["observer"] = obsName
+						svc["_observers"] = []any{spec}
+					}
+					attachLimiter(svc, nodeID, f.UserID)
+				}
+				if i < len(linkModes) && linkModes[i] == "tunnel" {
+					var relayNodeID int64
+					if i < len(hops)-1 {
+						relayNodeID = hops[i+1]
+					} else if tun.OutNodeID != nil {
+						relayNodeID = *tun.OutNodeID
+					}
+					if relayNodeID > 0 {
+						relayPort := relayPorts[relayNodeID]
+						relayHost := ""
+						if v := bindMap[relayNodeID]; v != "" {
+							relayHost = v
+						} else if relayNodeID == outNodeIDOr0(tun) {
+							relayHost = getOutNodeIP(tun)
+						}
+						if relayHost == "" {
+							var rn model.Node
+							if err := dbpkg.DB.First(&rn, relayNodeID).Error; err == nil {
+								relayHost = preferIPv4(rn)
+								if relayHost == "" {
+									relayHost = firstIPAny(rn)
+								}
+							}
+						}
+						attachRelayChainToService(svc, fmt.Sprintf("chain_%s_%d", name, i), safeHostPort(relayHost, relayPort), auth)
+					}
 				}
 				_ = sendWSCommand(nodeID, "AddService", expandRUDP([]map[string]any{svc}))
 				if b, err := json.Marshal(svc); err == nil {
 					s := string(b)
 					_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nodeID, Cmd: "ForwardAddService", RequestID: opId, Success: 1, Message: fmt.Sprintf("create hop svc port=%d", listenPort), Stdout: &s}).Error
-				}
-			}
-			// restart gost on all hops
-			nodesToRestart := make(map[int64]struct{})
-			for _, nid := range hops {
-				nodesToRestart[nid] = struct{}{}
-			}
-			for nid := range nodesToRestart {
-				if nid > 0 {
-					// 不重启
 				}
 			}
 		}
@@ -537,12 +713,77 @@ func ForwardList(c *gin.Context) {
 		model.Forward
 		TunnelName string `json:"tunnelName"`
 		InIp       string `json:"inIp"`
+		InNodeID   int64  `json:"inNodeId"`
+		TType      int    `json:"tType"`
+		OutNodeID  *int64 `json:"outNodeId,omitempty"`
+		OutExitID  *int64 `json:"outExitId,omitempty"`
+		Protocol   *string `json:"protocol,omitempty"`
 	}
-	q := dbpkg.DB.Table("forward f").Select("f.*, t.name as tunnel_name, t.in_ip as in_ip").Joins("left join tunnel t on t.id = f.tunnel_id")
+	q := dbpkg.DB.Table("forward f").
+		Select("f.*, t.name as tunnel_name, t.in_ip as in_ip, t.in_node_id, t.out_node_id, t.out_exit_id, t.type as t_type, t.protocol").
+		Joins("left join tunnel t on t.id = f.tunnel_id")
 	if roleInf != 0 {
 		q = q.Where("f.user_id = ?", uidInf)
 	}
 	q.Scan(&res)
+	// For subscription-only (direct exit) forwards, replace flow with user-node flow (anytls/exit)
+	// This provides per-user node usage in the forward list when there is no forward service.
+	uidSet := map[int64]struct{}{}
+	nodeSet := map[int64]struct{}{}
+	type key struct {
+		uid int64
+		nid int64
+	}
+	pairs := make([]key, 0)
+	for _, r := range res {
+		tun := model.Tunnel{
+			BaseEntity: model.BaseEntity{ID: r.TunnelID},
+			InNodeID:   r.InNodeID,
+			OutNodeID:  r.OutNodeID,
+			OutExitID:  r.OutExitID,
+			Type:       r.TType,
+			Protocol:   r.Protocol,
+		}
+		if isDirectExitForward(tun, r.InPort) && r.UserID > 0 && r.InNodeID > 0 {
+			p := key{uid: r.UserID, nid: r.InNodeID}
+			pairs = append(pairs, p)
+			uidSet[r.UserID] = struct{}{}
+			nodeSet[r.InNodeID] = struct{}{}
+		}
+	}
+	if len(pairs) > 0 {
+		uids := make([]int64, 0, len(uidSet))
+		for id := range uidSet {
+			uids = append(uids, id)
+		}
+		nids := make([]int64, 0, len(nodeSet))
+		for id := range nodeSet {
+			nids = append(nids, id)
+		}
+		var rows []model.UserNode
+		dbpkg.DB.Where("user_id in ? AND node_id in ?", uids, nids).Find(&rows)
+		m := map[key]model.UserNode{}
+		for _, r := range rows {
+			m[key{uid: r.UserID, nid: r.NodeID}] = r
+		}
+		for i := range res {
+			r := &res[i]
+			tun := model.Tunnel{
+				BaseEntity: model.BaseEntity{ID: r.TunnelID},
+				InNodeID:   r.InNodeID,
+				OutNodeID:  r.OutNodeID,
+				OutExitID:  r.OutExitID,
+				Type:       r.TType,
+				Protocol:   r.Protocol,
+			}
+			if isDirectExitForward(tun, r.InPort) && r.UserID > 0 && r.InNodeID > 0 {
+				if un, ok := m[key{uid: r.UserID, nid: r.InNodeID}]; ok {
+					r.InFlow = un.InFlow
+					r.OutFlow = un.OutFlow
+				}
+			}
+		}
+	}
 	c.JSON(http.StatusOK, response.Ok(res))
 }
 
@@ -583,6 +824,7 @@ func ForwardUpdate(c *gin.Context) {
 	if req.Name != "" {
 		f.Name = req.Name
 	}
+	f.Group = strings.TrimSpace(req.Group)
 	if req.TunnelID != 0 {
 		f.TunnelID = req.TunnelID
 	}
@@ -599,17 +841,30 @@ func ForwardUpdate(c *gin.Context) {
 			maxP = node.PortEnd
 		}
 		v := *req.InPort
-		if v < minP || v > maxP {
-			v = findFreePortOnNode(tun.InNodeID, 0, minP, maxP)
-			if v == 0 {
-				c.JSON(http.StatusOK, response.ErrMsg("入口端口超出范围且无法分配可用端口"))
+		directPort := directExitPortForTunnel(tun)
+		if directPort > 0 && v == directPort {
+			f.InPort = v
+		} else {
+			if v < minP || v > maxP {
+				v = findFreePortOnNode(tun.InNodeID, 0, minP, maxP)
+				if v == 0 {
+					c.JSON(http.StatusOK, response.ErrMsg("入口端口超出范围且无法分配可用端口"))
+					return
+				}
+			}
+			f.InPort = v
+		}
+	}
+	if roleInf, ok := c.Get("role_id"); ok && roleInf != 0 {
+		if uidInf, ok2 := c.Get("user_id"); ok2 {
+			if err := enforceUserNodePort(uidInf.(int64), tun.InNodeID, f.InPort); err != nil {
+				c.JSON(http.StatusOK, response.ErrMsg(err.Error()))
 				return
 			}
 		}
-		f.InPort = v
 	}
 	if req.RemoteAddr != "" {
-		f.RemoteAddr = req.RemoteAddr
+		f.RemoteAddr = normalizeRemoteAddrList(req.RemoteAddr)
 	}
 	f.InterfaceName, f.Strategy = req.InterfaceName, req.Strategy
 	f.UpdatedTime = time.Now().UnixMilli()
@@ -620,105 +875,121 @@ func ForwardUpdate(c *gin.Context) {
 	// push update
 	opId := RandUUID()
 	name := buildServiceName(f.ID, f.UserID, f.TunnelID)
-	if tun.Type == 2 {
-		// ensure outPort exists and matches exit relay service; if occupied by other service, reassign
-		exitID := outNodeIDOr0(tun)
-		if exitID == 0 {
-			c.JSON(http.StatusOK, response.ErrMsg("隧道出口节点无效"))
-			return
-		}
-		var outNode model.Node
-		_ = dbpkg.DB.First(&outNode, exitID).Error
-		minO := 10000
-		maxO := 65535
-		if outNode.PortSta > 0 {
-			minO = outNode.PortSta
-		}
-		if outNode.PortEnd > 0 {
-			maxO = outNode.PortEnd
-		}
-		// inspect existing service by name on exit node
-		svcCache := map[int64][]map[string]any{}
-		usedCache := map[int64]map[int]bool{}
-		getSvcList := func(nid int64) []map[string]any {
-			if v, ok := svcCache[nid]; ok {
-				return v
-			}
-			v := queryNodeServicesRaw(nid)
-			svcCache[nid] = v
+	// cache node services/used ports for validation within this update
+	svcCache := map[int64][]map[string]any{}
+	usedCache := map[int64]map[int]bool{}
+	getSvcList := func(nid int64) []map[string]any {
+		if v, ok := svcCache[nid]; ok {
 			return v
 		}
-		getUsedPorts := func(nid int64) map[int]bool {
-			if v, ok := usedCache[nid]; ok {
-				return v
-			}
-			ports := buildUsedPortsFromServices(nid, getSvcList(nid))
-			usedCache[nid] = ports
-			return ports
+		v := queryNodeServicesRaw(nid)
+		svcCache[nid] = v
+		return v
+	}
+	getUsedPorts := func(nid int64) map[int]bool {
+		if v, ok := usedCache[nid]; ok {
+			return v
 		}
-		svcList := getSvcList(exitID)
-		svc := findServiceByName(svcList, name)
-		svcPort := getServicePort(svc)
-		svcOK := svc != nil && isExitRelayService(svc) && svcPort > 0
-
-		requestedOut := 0
-		if req.OutPort != nil {
-			requestedOut = *req.OutPort
-		}
-		if requestedOut > 0 {
-			if requestedOut < minO || requestedOut > maxO {
-				c.JSON(http.StatusOK, response.ErrMsg("出口端口超出范围"))
+		ports := buildUsedPortsFromServices(nid, getSvcList(nid))
+		usedCache[nid] = ports
+		return ports
+	}
+	if tun.Type == 2 {
+		externalExit := isExternalExit(tun)
+		auth := relayAuthForForward(tun, f)
+		bindMap := getTunnelBindMap(tun.ID)
+		// ensure outPort exists and matches exit relay service; if occupied by other service, reassign
+		if externalExit {
+			ext, ok := loadExternalExit(tun)
+			if !ok || ext.Host == "" || ext.Port <= 0 || ext.Port > 65535 {
+				c.JSON(http.StatusOK, response.ErrMsg("外部出口节点无效"))
 				return
 			}
-			if !(svcOK && svcPort == requestedOut) {
-				if !portAvailableForService(exitID, name, requestedOut, svcList, getUsedPorts(exitID)) {
-					suggest := findFreePortOnNode(exitID, requestedOut, minO, maxO)
-					if suggest > 0 && suggest != requestedOut {
-						c.JSON(http.StatusOK, response.ErrMsg(fmt.Sprintf("出口端口已占用，建议端口 %d", suggest)))
-					} else {
-						c.JSON(http.StatusOK, response.ErrMsg("出口端口已占用"))
-					}
-					return
-				}
-			}
-			if f.OutPort == nil || *f.OutPort != requestedOut {
-				f.OutPort = &requestedOut
-				dbpkg.DB.Model(&model.Forward{}).Where("id=?", f.ID).Update("out_port", requestedOut)
-			}
-		} else if svcOK {
-			if f.OutPort == nil || *f.OutPort != svcPort {
-				f.OutPort = &svcPort
-				dbpkg.DB.Model(&model.Forward{}).Where("id=?", f.ID).Update("out_port", svcPort)
+			if f.OutPort == nil || *f.OutPort != ext.Port {
+				p := ext.Port
+				f.OutPort = &p
+				dbpkg.DB.Model(&model.Forward{}).Where("id=?", f.ID).Update("out_port", p)
 			}
 		} else {
-			free := findFreePortOnNode(exitID, 0, minO, maxO)
-			if free == 0 {
-				c.JSON(http.StatusOK, response.ErrMsg("隧道出口端口已满，无法分配新端口"))
+			exitID := outNodeIDOr0(tun)
+			if exitID == 0 {
+				c.JSON(http.StatusOK, response.ErrMsg("隧道出口节点无效"))
 				return
 			}
-			if f.OutPort == nil || *f.OutPort != free {
-				f.OutPort = &free
-				dbpkg.DB.Model(&model.Forward{}).Where("id=?", f.ID).Update("out_port", free)
+			var outNode model.Node
+			_ = dbpkg.DB.First(&outNode, exitID).Error
+			minO := 10000
+			maxO := 65535
+			if outNode.PortSta > 0 {
+				minO = outNode.PortSta
 			}
-		}
-		// update out-node gRPC relay service
-		// apply bind IP (in IP) for exit if configured
-		bindMap := getTunnelBindMap(tun.ID)
-		addrStr := fmt.Sprintf(":%d", *f.OutPort)
-		if ip, ok := bindMap[outNodeIDOr0(tun)]; ok && ip != "" {
-			addrStr = safeHostPort(ip, *f.OutPort)
-		}
-		outSvc := map[string]any{
-			"name":     name,
-			"addr":     addrStr,
-			"listener": map[string]any{"type": "grpc"},
-			"handler":  map[string]any{"type": "relay", "auth": map[string]any{"username": fmt.Sprintf("u-%d", f.ID), "password": util.MD5(fmt.Sprintf("%d:%d", f.ID, f.CreatedTime))[:16]}},
-			"metadata": map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false},
-		}
-		_ = sendWSCommand(outNodeIDOr0(tun), "AddService", expandRUDP([]map[string]any{outSvc}))
-		if b, err := json.Marshal(outSvc); err == nil {
-			s := string(b)
-			_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: outNodeIDOr0(tun), Cmd: "ForwardAddService", RequestID: opId, Success: 1, Message: "update out svc", Stdout: &s}).Error
+			if outNode.PortEnd > 0 {
+				maxO = outNode.PortEnd
+			}
+			// inspect existing service by name on exit node
+			svcList := getSvcList(exitID)
+			svc := findServiceByName(svcList, name)
+			svcPort := getServicePort(svc)
+			svcOK := svc != nil && isExitRelayService(svc) && svcPort > 0
+
+			requestedOut := 0
+			if req.OutPort != nil {
+				requestedOut = *req.OutPort
+			}
+			if requestedOut > 0 {
+				if requestedOut < minO || requestedOut > maxO {
+					c.JSON(http.StatusOK, response.ErrMsg("出口端口超出范围"))
+					return
+				}
+				if !(svcOK && svcPort == requestedOut) {
+					if !portAvailableForService(exitID, name, requestedOut, svcList, getUsedPorts(exitID)) {
+						suggest := findFreePortOnNode(exitID, requestedOut, minO, maxO)
+						if suggest > 0 && suggest != requestedOut {
+							c.JSON(http.StatusOK, response.ErrMsg(fmt.Sprintf("出口端口已占用，建议端口 %d", suggest)))
+						} else {
+							c.JSON(http.StatusOK, response.ErrMsg("出口端口已占用"))
+						}
+						return
+					}
+				}
+				if f.OutPort == nil || *f.OutPort != requestedOut {
+					f.OutPort = &requestedOut
+					dbpkg.DB.Model(&model.Forward{}).Where("id=?", f.ID).Update("out_port", requestedOut)
+				}
+			} else if svcOK {
+				if f.OutPort == nil || *f.OutPort != svcPort {
+					f.OutPort = &svcPort
+					dbpkg.DB.Model(&model.Forward{}).Where("id=?", f.ID).Update("out_port", svcPort)
+				}
+			} else {
+				free := findFreePortOnNode(exitID, 0, minO, maxO)
+				if free == 0 {
+					c.JSON(http.StatusOK, response.ErrMsg("隧道出口端口已满，无法分配新端口"))
+					return
+				}
+				if f.OutPort == nil || *f.OutPort != free {
+					f.OutPort = &free
+					dbpkg.DB.Model(&model.Forward{}).Where("id=?", f.ID).Update("out_port", free)
+				}
+			}
+			// update out-node gRPC relay service
+			// apply bind IP (in IP) for exit if configured
+			addrStr := fmt.Sprintf(":%d", *f.OutPort)
+			if ip, ok := bindMap[outNodeIDOr0(tun)]; ok && ip != "" {
+				addrStr = safeHostPort(ip, *f.OutPort)
+			}
+			outSvc := map[string]any{
+				"name":     name,
+				"addr":     addrStr,
+				"listener": map[string]any{"type": "grpc"},
+				"handler":  relayHandler(auth),
+				"metadata": map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false},
+			}
+			_ = sendWSCommand(outNodeIDOr0(tun), "AddService", expandRUDP([]map[string]any{outSvc}))
+			if b, err := json.Marshal(outSvc); err == nil {
+				s := string(b)
+				_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: outNodeIDOr0(tun), Cmd: "ForwardAddService", RequestID: opId, Success: 1, Message: "update out svc", Stdout: &s}).Error
+			}
 		}
 
 		// multi-hop mids (update or create)
@@ -829,15 +1100,19 @@ func ForwardUpdate(c *gin.Context) {
 					}
 					target = safeHostPort(host, midPorts[i+1])
 				} else {
-					// last mid forwards directly to exit relay (gRPC) on out node
-					// Use exit bind IP if provided; otherwise fall back to tunnel/Node ServerIP
-					exHost := ""
-					if ip, ok := bindMap[outNodeIDOr0(tun)]; ok && ip != "" {
-						exHost = ip
+					// last mid forwards to external exit target or out-node relay
+					if isExternalExit(tun) {
+						target = firstTargetHost(f.RemoteAddr)
 					} else {
-						exHost = getOutNodeIP(tun)
+						// Use exit bind IP if provided; otherwise fall back to tunnel/Node ServerIP
+						exHost := ""
+						if ip, ok := bindMap[outNodeIDOr0(tun)]; ok && ip != "" {
+							exHost = ip
+						} else {
+							exHost = getOutNodeIP(tun)
+						}
+						target = safeHostPort(exHost, *f.OutPort)
 					}
-					target = safeHostPort(exHost, *f.OutPort)
 				}
 				midName := fmt.Sprintf("%s_mid_%d", buildServiceName(f.ID, f.UserID, f.TunnelID), i)
 				var iface *string
@@ -876,16 +1151,13 @@ func ForwardUpdate(c *gin.Context) {
 			}
 			entryTarget = safeHostPort(host0, midPorts[0])
 		}
-		if b, err := json.Marshal(outSvc); err == nil {
-			s := string(b)
-			_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: outNodeIDOr0(tun), Cmd: "ForwardAddService", RequestID: opId, Success: 1, Message: "update out svc", Stdout: &s}).Error
-		}
-
 		// update in-node entry service with chain(dialer=grpc, connector=relay) and forwarder target (remote)
 		// 出口地址优先使用出口节点的监听IP(隧道编辑中的 inIp/bind)，否则回退到隧道/节点出口IP
 		outIP := getOutNodeIP(tun)
-		if ipBind, ok := bindMap[outNodeIDOr0(tun)]; ok && ipBind != "" {
-			outIP = ipBind
+		if !externalExit {
+			if ipBind, ok := bindMap[outNodeIDOr0(tun)]; ok && ipBind != "" {
+				outIP = ipBind
+			}
 		}
 		exitAddr := safeHostPort(outIP, *f.OutPort)
 		// 入口 forwarder 统一指向远程地址（取第一项），附带入口节点 interface（若配置）
@@ -900,7 +1172,7 @@ func ForwardUpdate(c *gin.Context) {
 			inSvc["observer"] = obsName
 			inSvc["_observers"] = []any{spec}
 		}
-		attachLimiter(inSvc, tun.InNodeID)
+		attachLimiter(inSvc, tun.InNodeID, f.UserID)
 		chainName := "chain_" + name
 		hopName := "hop_" + name
 		// ensure handler is forward and attach chain
@@ -910,13 +1182,11 @@ func ForwardUpdate(c *gin.Context) {
 		} else {
 			inSvc["handler"] = map[string]any{"type": "forward", "chain": chainName}
 		}
-		user := fmt.Sprintf("u-%d", f.ID)
-		pass := util.MD5(fmt.Sprintf("%d:%d", f.ID, f.CreatedTime))[:16]
 		// entry chain target: if multi-hop, dial first mid; else dial exit relay
 		if len(path) == 0 {
 			entryTarget = exitAddr
 		}
-		node := map[string]any{"name": "node-" + name, "addr": entryTarget, "connector": map[string]any{"type": "relay", "auth": map[string]any{"username": user, "password": pass}}, "dialer": map[string]any{"type": "grpc"}}
+		node := map[string]any{"name": "node-" + name, "addr": entryTarget, "connector": relayConnector(auth), "dialer": map[string]any{"type": "grpc"}}
 		inSvc["_chains"] = []any{map[string]any{"name": chainName, "hops": []any{map[string]any{"name": hopName, "nodes": []any{node}}}}}
 		_ = sendWSCommand(tun.InNodeID, "AddService", expandRUDP([]map[string]any{inSvc}))
 		if b, err := json.Marshal(inSvc); err == nil {
@@ -928,8 +1198,19 @@ func ForwardUpdate(c *gin.Context) {
 	} else {
 		// port-forward (type=1): support multi-level path similar to create
 		path := getTunnelPathNodes(tun.ID)
+		if isDirectExitForward(tun, f.InPort) && len(path) == 0 {
+			_ = sendWSCommand(tun.InNodeID, "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{name})})
+			c.JSON(http.StatusOK, response.Ok(map[string]any{"msg": "端口转发更新成功", "requestId": opId}))
+			return
+		}
 		ifaceMap := getTunnelIfaceMap(tun.ID)
 		bindMap := getTunnelBindMap(tun.ID)
+		linkModes := normalizeLinkModes(getTunnelLinkModes(tun.ID), len(path)+1, "direct")
+		if isExternalExit(tun) && len(linkModes) > 0 && linkModes[len(linkModes)-1] == "tunnel" {
+			c.JSON(http.StatusOK, response.ErrMsg("外部出口不支持隧道链路"))
+			return
+		}
+		auth := relayAuthForForward(tun, f)
 		if len(path) == 0 {
 			// single hop: entry forwards directly to remoteAddr
 			var iface *string
@@ -944,7 +1225,39 @@ func ForwardUpdate(c *gin.Context) {
 				svc["observer"] = obsName
 				svc["_observers"] = []any{spec}
 			}
-			attachLimiter(svc, tun.InNodeID)
+			attachLimiter(svc, tun.InNodeID, f.UserID)
+			mode := "direct"
+			if len(linkModes) > 0 {
+				mode = linkModes[0]
+			}
+			if mode == "tunnel" && tun.OutNodeID != nil {
+				outID := outNodeIDOr0(tun)
+				var out model.Node
+				_ = dbpkg.DB.First(&out, outID).Error
+				minP, maxP := 10000, 65535
+				if out.PortSta > 0 {
+					minP = out.PortSta
+				}
+				if out.PortEnd > 0 {
+					maxP = out.PortEnd
+				}
+				relayPort := findFreePortOnNode(outID, minP, minP, maxP)
+				if relayPort == 0 {
+					relayPort = minP
+				}
+				relaySvc := buildRelayService(fmt.Sprintf("%s_relay_%d", name, outID), relayPort, auth)
+				_ = sendWSCommand(outID, "AddService", expandRUDP([]map[string]any{relaySvc}))
+				relayHost := ""
+				if v, ok := bindMap[outID]; ok && v != "" {
+					relayHost = v
+				} else {
+					relayHost = getOutNodeIP(tun)
+					if relayHost == "" {
+						relayHost = preferIPv4(out)
+					}
+				}
+				attachRelayChainToService(svc, fmt.Sprintf("chain_%s_0", name), safeHostPort(relayHost, relayPort), auth)
+			}
 			_ = sendWSCommand(tun.InNodeID, "AddService", expandRUDP([]map[string]any{svc}))
 			if b, err := json.Marshal(svc); err == nil {
 				s := string(b)
@@ -986,7 +1299,56 @@ func ForwardUpdate(c *gin.Context) {
 				}
 				_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: curID, Cmd: "ForwardPortPick", RequestID: opId, Success: 1, Message: fmt.Sprintf("hop port=%d", hopPorts[i])}).Error
 			}
-			// deploy services per hop (upsert)
+
+			reserved := map[int64]map[int]bool{}
+			for i, nid := range hops {
+				if reserved[nid] == nil {
+					reserved[nid] = map[int]bool{}
+				}
+				reserved[nid][hopPorts[i]] = true
+			}
+
+			relayPorts := map[int64]int{}
+			for i := 0; i < len(hops); i++ {
+				if i >= len(linkModes) || linkModes[i] != "tunnel" {
+					continue
+				}
+				var relayNodeID int64
+				if i < len(hops)-1 {
+					relayNodeID = hops[i+1]
+				} else {
+					if tun.OutNodeID == nil {
+						continue
+					}
+					relayNodeID = *tun.OutNodeID
+				}
+				if relayNodeID <= 0 {
+					continue
+				}
+				if _, ok := relayPorts[relayNodeID]; ok {
+					continue
+				}
+				var n model.Node
+				_ = dbpkg.DB.First(&n, relayNodeID).Error
+				minP, maxP := 10000, 65535
+				if n.PortSta > 0 {
+					minP = n.PortSta
+				}
+				if n.PortEnd > 0 {
+					maxP = n.PortEnd
+				}
+				relayPort := findFreePortOnNode(relayNodeID, minP, minP, maxP)
+				for relayPort > 0 && reserved[relayNodeID][relayPort] {
+					relayPort = findFreePortOnNode(relayNodeID, relayPort+1, minP, maxP)
+				}
+				if relayPort == 0 {
+					relayPort = minP
+				}
+				relayPorts[relayNodeID] = relayPort
+				relaySvc := buildRelayService(fmt.Sprintf("%s_relay_%d", name, relayNodeID), relayPort, auth)
+				_ = sendWSCommand(relayNodeID, "AddService", expandRUDP([]map[string]any{relaySvc}))
+			}
+
 			for i := 0; i < len(hops); i++ {
 				nodeID := hops[i]
 				listenPort := hopPorts[i]
@@ -1005,7 +1367,7 @@ func ForwardUpdate(c *gin.Context) {
 					}
 					target = safeHostPort(host, hopPorts[i+1])
 				} else {
-					target = firstTargetHost(f.RemoteAddr)
+					target = f.RemoteAddr
 				}
 				var iface *string
 				if ip, ok := ifaceMap[nodeID]; ok && ip != "" {
@@ -1016,22 +1378,39 @@ func ForwardUpdate(c *gin.Context) {
 				}
 				svc := buildServiceConfig(name, listenPort, target, iface)
 				if i == 0 {
-					attachLimiter(svc, nodeID)
+					attachLimiter(svc, nodeID, f.UserID)
+				}
+				if i < len(linkModes) && linkModes[i] == "tunnel" {
+					var relayNodeID int64
+					if i < len(hops)-1 {
+						relayNodeID = hops[i+1]
+					} else if tun.OutNodeID != nil {
+						relayNodeID = *tun.OutNodeID
+					}
+					if relayNodeID > 0 {
+						relayPort := relayPorts[relayNodeID]
+						relayHost := ""
+						if v := bindMap[relayNodeID]; v != "" {
+							relayHost = v
+						} else if relayNodeID == outNodeIDOr0(tun) {
+							relayHost = getOutNodeIP(tun)
+						}
+						if relayHost == "" {
+							var rn model.Node
+							if err := dbpkg.DB.First(&rn, relayNodeID).Error; err == nil {
+								relayHost = preferIPv4(rn)
+								if relayHost == "" {
+									relayHost = firstIPAny(rn)
+								}
+							}
+						}
+						attachRelayChainToService(svc, fmt.Sprintf("chain_%s_%d", name, i), safeHostPort(relayHost, relayPort), auth)
+					}
 				}
 				_ = sendWSCommand(nodeID, "AddService", expandRUDP([]map[string]any{svc}))
 				if b, err := json.Marshal(svc); err == nil {
 					s := string(b)
 					_ = dbpkg.DB.Create(&model.NodeOpLog{TimeMs: time.Now().UnixMilli(), NodeID: nodeID, Cmd: "ForwardAddService", RequestID: opId, Success: 1, Message: fmt.Sprintf("update hop svc port=%d", listenPort), Stdout: &s}).Error
-				}
-			}
-			// restart gost on all hops to apply changes
-			nodesToRestart := make(map[int64]struct{})
-			for _, nid := range hops {
-				nodesToRestart[nid] = struct{}{}
-			}
-			for nid := range nodesToRestart {
-				if nid > 0 {
-					// 不重启
 				}
 			}
 		}
@@ -1055,35 +1434,8 @@ func ForwardDelete(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
 		return
 	}
-	// fetch forward first
-	var f model.Forward
-	_ = dbpkg.DB.First(&f, p.ID).Error
-	var tun model.Tunnel
-	_ = dbpkg.DB.First(&tun, f.TunnelID).Error
-	name := buildServiceName(f.ID, f.UserID, f.TunnelID)
-	if tun.Type == 2 && f.OutPort != nil {
-		// 删除入口与出口上的主服务
-		_ = sendWSCommand(tun.InNodeID, "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{name})})
-		_ = sendWSCommand(outNodeIDOr0(tun), "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{name})})
-		// 删除多级路径的中间节点 mid 服务（name_mid_i）
-		path := getTunnelPathNodes(tun.ID)
-		for i := 0; i < len(path); i++ {
-			midName := fmt.Sprintf("%s_mid_%d", name, i)
-			_ = sendWSCommand(path[i], "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{midName})})
-		}
-	} else {
-		// 端口转发：删除入口上的服务
-		_ = sendWSCommand(tun.InNodeID, "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{name})})
-		// 若端口转发也采用了多级路径（各 hop 使用相同 name），尝试在中间节点删除同名服务
-		path := getTunnelPathNodes(tun.ID)
-		for _, nid := range path {
-			_ = sendWSCommand(nid, "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{name})})
-		}
-	}
-	// cleanup expected mid ports
-	_ = dbpkg.DB.Where("forward_id = ?", p.ID).Delete(&model.ForwardMidPort{}).Error
-	if err := dbpkg.DB.Delete(&model.Forward{}, p.ID).Error; err != nil {
-		c.JSON(http.StatusOK, response.ErrMsg("端口转发删除失败"))
+	if err := deleteForwardByID(p.ID); err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg(err.Error()))
 		return
 	}
 	c.JSON(http.StatusOK, response.OkMsg("端口转发删除成功"))
@@ -1098,6 +1450,122 @@ func ForwardDelete(c *gin.Context) {
 // @Success 200 {object} BaseSwaggerResp
 // @Router /api/v1/forward/force-delete [post]
 func ForwardForceDelete(c *gin.Context) { ForwardDelete(c) }
+
+// ForwardBatchDelete 批量删除转发
+// @Summary 批量删除转发
+// @Tags forward
+// @Accept json
+// @Produce json
+// @Param data body object{ids=[]int64} true "转发ID数组"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/forward/batch-delete [post]
+func ForwardBatchDelete(c *gin.Context) {
+	var p struct {
+		IDs []int64 `json:"ids"`
+	}
+	if err := c.ShouldBindJSON(&p); err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+		return
+	}
+	if len(p.IDs) == 0 {
+		c.JSON(http.StatusOK, response.ErrMsg("未选择任何转发"))
+		return
+	}
+	ids := make([]int64, 0, len(p.IDs))
+	seen := map[int64]struct{}{}
+	for _, id := range p.IDs {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		c.JSON(http.StatusOK, response.ErrMsg("未选择任何转发"))
+		return
+	}
+	success := make([]int64, 0, len(ids))
+	failed := make([]map[string]any, 0)
+	for _, id := range ids {
+		if err := deleteForwardByID(id); err != nil {
+			failed = append(failed, map[string]any{"id": id, "message": err.Error()})
+		} else {
+			success = append(success, id)
+		}
+	}
+	msg := fmt.Sprintf("批量删除完成：成功 %d，失败 %d", len(success), len(failed))
+	c.JSON(http.StatusOK, response.Ok(map[string]any{
+		"message":    msg,
+		"successIds": success,
+		"failed":     failed,
+	}))
+}
+
+func deleteForwardByID(id int64) error {
+	var f model.Forward
+	if err := dbpkg.DB.First(&f, id).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return fmt.Errorf("转发不存在")
+		}
+		return err
+	}
+	var tun model.Tunnel
+	_ = dbpkg.DB.First(&tun, f.TunnelID).Error
+	name := buildServiceName(f.ID, f.UserID, f.TunnelID)
+	if tun.Type == 2 && f.OutPort != nil {
+		// 删除入口与出口上的主服务
+		_ = sendWSCommand(tun.InNodeID, "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{name})})
+		if !isExternalExit(tun) {
+			_ = sendWSCommand(outNodeIDOr0(tun), "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{name})})
+		}
+		// 删除多级路径的中间节点 mid 服务（name_mid_i）
+		path := getTunnelPathNodes(tun.ID)
+		for i := 0; i < len(path); i++ {
+			midName := fmt.Sprintf("%s_mid_%d", name, i)
+			_ = sendWSCommand(path[i], "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{midName})})
+		}
+	} else {
+		// 端口转发：删除入口上的服务
+		_ = sendWSCommand(tun.InNodeID, "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{name})})
+		// 若端口转发也采用了多级路径（各 hop 使用相同 name），尝试在中间节点删除同名服务
+		path := getTunnelPathNodes(tun.ID)
+		for _, nid := range path {
+			_ = sendWSCommand(nid, "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{name})})
+		}
+		linkModes := normalizeLinkModes(getTunnelLinkModes(tun.ID), len(path)+1, "direct")
+		if hasTunnelMode(linkModes) {
+			hops := append([]int64{tun.InNodeID}, path...)
+			relayTargets := map[int64]struct{}{}
+			for i := 0; i < len(hops); i++ {
+				if i >= len(linkModes) || linkModes[i] != "tunnel" {
+					continue
+				}
+				var relayNodeID int64
+				if i < len(hops)-1 {
+					relayNodeID = hops[i+1]
+				} else if tun.OutNodeID != nil {
+					relayNodeID = *tun.OutNodeID
+				}
+				if relayNodeID > 0 {
+					relayTargets[relayNodeID] = struct{}{}
+				}
+			}
+			for nid := range relayTargets {
+				relayName := fmt.Sprintf("%s_relay_%d", name, nid)
+				_ = sendWSCommand(nid, "DeleteService", map[string]any{"services": expandNamesWithRUDP([]string{relayName})})
+			}
+		}
+	}
+	// cleanup expected mid ports
+	_ = dbpkg.DB.Where("forward_id = ?", id).Delete(&model.ForwardMidPort{}).Error
+	if err := dbpkg.DB.Delete(&model.Forward{}, id).Error; err != nil {
+		return fmt.Errorf("端口转发删除失败")
+	}
+	return nil
+}
 
 // ForwardPause 暂停转发
 // @Summary 暂停转发
@@ -1125,10 +1593,12 @@ func ForwardPause(c *gin.Context) {
 	// send pause to node(s)
 	var t model.Tunnel
 	if err := dbpkg.DB.First(&t, f.TunnelID).Error; err == nil {
-		name := buildServiceName(f.ID, f.UserID, f.TunnelID)
-		_ = sendWSCommand(t.InNodeID, "PauseService", map[string]interface{}{"services": expandNamesWithRUDP([]string{name})})
-		if t.Type == 2 {
-			_ = sendWSCommand(outNodeIDOr0(t), "PauseService", map[string]interface{}{"services": expandNamesWithRUDP([]string{name})})
+		if !isDirectExitForward(t, f.InPort) {
+			name := buildServiceName(f.ID, f.UserID, f.TunnelID)
+			_ = sendWSCommand(t.InNodeID, "PauseService", map[string]interface{}{"services": expandNamesWithRUDP([]string{name})})
+			if t.Type == 2 && !isExternalExit(t) {
+				_ = sendWSCommand(outNodeIDOr0(t), "PauseService", map[string]interface{}{"services": expandNamesWithRUDP([]string{name})})
+			}
 		}
 	}
 	c.JSON(http.StatusOK, response.OkNoData())
@@ -1160,10 +1630,12 @@ func ForwardResume(c *gin.Context) {
 	// send resume to node(s)
 	var t model.Tunnel
 	if err := dbpkg.DB.First(&t, f.TunnelID).Error; err == nil {
-		name := buildServiceName(f.ID, f.UserID, f.TunnelID)
-		_ = sendWSCommand(t.InNodeID, "ResumeService", map[string]interface{}{"services": expandNamesWithRUDP([]string{name})})
-		if t.Type == 2 {
-			_ = sendWSCommand(outNodeIDOr0(t), "ResumeService", map[string]interface{}{"services": expandNamesWithRUDP([]string{name})})
+		if !isDirectExitForward(t, f.InPort) {
+			name := buildServiceName(f.ID, f.UserID, f.TunnelID)
+			_ = sendWSCommand(t.InNodeID, "ResumeService", map[string]interface{}{"services": expandNamesWithRUDP([]string{name})})
+			if t.Type == 2 && !isExternalExit(t) {
+				_ = sendWSCommand(outNodeIDOr0(t), "ResumeService", map[string]interface{}{"services": expandNamesWithRUDP([]string{name})})
+			}
 		}
 	}
 	c.JSON(http.StatusOK, response.OkNoData())
@@ -1208,6 +1680,10 @@ func ForwardDiagnose(c *gin.Context) {
 	}
 	var t model.Tunnel
 	_ = dbpkg.DB.First(&t, f.TunnelID).Error
+	if isDirectExitForward(t, f.InPort) {
+		c.JSON(http.StatusOK, response.ErrMsg("仅订阅线路，无需诊断"))
+		return
+	}
 	var inNode model.Node
 	_ = dbpkg.DB.First(&inNode, t.InNodeID).Error
 	var outNode model.Node
@@ -1522,6 +1998,10 @@ func ForwardDiagnoseStep(c *gin.Context) {
 	}
 	var t model.Tunnel
 	_ = dbpkg.DB.First(&t, f.TunnelID).Error
+	if isDirectExitForward(t, f.InPort) {
+		c.JSON(http.StatusOK, response.ErrMsg("仅订阅线路，无需诊断"))
+		return
+	}
 	var inNode, outNode model.Node
 	_ = dbpkg.DB.First(&inNode, t.InNodeID).Error
 	if t.Type == 2 && t.OutNodeID != nil {
@@ -1726,7 +2206,7 @@ func firstTargetHost(addr string) string {
 	}
 	// strip brackets for IPv6 if present; keep host
 	// host:port format assumed
-	return addr
+	return normalizeTargetAddr(addr)
 }
 
 // parseRemoteAddrs splits a remoteAddr string into a list of host:port targets.
@@ -1740,10 +2220,154 @@ func parseRemoteAddrs(remote string) []string {
 	for _, p := range parts {
 		s := strings.TrimSpace(p)
 		if s != "" {
-			out = append(out, s)
+			out = append(out, normalizeTargetAddr(s))
 		}
 	}
 	return out
+}
+
+func normalizeRemoteAddrList(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	addrs := parseRemoteAddrs(raw)
+	if len(addrs) == 0 {
+		return raw
+	}
+	return strings.Join(addrs, ",")
+}
+
+func normalizeTargetAddr(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+	if strings.HasPrefix(s, "[") {
+		return s
+	}
+	if strings.Count(s, ":") >= 2 {
+		// likely IPv6 without brackets; try split last colon as port
+		idx := strings.LastIndex(s, ":")
+		if idx > 0 && idx < len(s)-1 {
+			host := s[:idx]
+			port := s[idx+1:]
+			if isDigits(port) {
+				return fmt.Sprintf("[%s]:%s", host, port)
+			}
+		}
+	}
+	return s
+}
+
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+type portRange struct {
+	start int
+	end   int
+}
+
+func parsePortRanges(raw string) []portRange {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	raw = strings.ReplaceAll(raw, "，", ",")
+	raw = strings.ReplaceAll(raw, "；", ",")
+	raw = strings.ReplaceAll(raw, ";", ",")
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+	})
+	out := make([]portRange, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		p = strings.ReplaceAll(p, "～", "-")
+		p = strings.ReplaceAll(p, "~", "-")
+		if strings.Contains(p, "-") {
+			segs := strings.SplitN(p, "-", 2)
+			if len(segs) != 2 {
+				continue
+			}
+			start, err1 := strconv.Atoi(strings.TrimSpace(segs[0]))
+			end, err2 := strconv.Atoi(strings.TrimSpace(segs[1]))
+			if err1 != nil || err2 != nil {
+				continue
+			}
+			if start > end {
+				start, end = end, start
+			}
+			if start < 1 {
+				start = 1
+			}
+			if end > 65535 {
+				end = 65535
+			}
+			if start <= end {
+				out = append(out, portRange{start: start, end: end})
+			}
+			continue
+		}
+		if v, err := strconv.Atoi(p); err == nil {
+			if v >= 1 && v <= 65535 {
+				out = append(out, portRange{start: v, end: v})
+			}
+		}
+	}
+	return out
+}
+
+func portAllowed(port int, ranges string) bool {
+	if port <= 0 {
+		return true
+	}
+	rgs := parsePortRanges(ranges)
+	if len(rgs) == 0 {
+		return true
+	}
+	for _, r := range rgs {
+		if port >= r.start && port <= r.end {
+			return true
+		}
+	}
+	return false
+}
+
+func enforceUserNodePort(uid int64, nodeID int64, port int) error {
+	if uid == 0 || nodeID == 0 {
+		return nil
+	}
+	var un model.UserNode
+	if err := dbpkg.DB.Where("user_id=? and node_id=?", uid, nodeID).First(&un).Error; err != nil {
+		return fmt.Errorf("没有该节点权限")
+	}
+	if un.Status != 1 {
+		return fmt.Errorf("节点权限已禁用")
+	}
+	if un.ExpTime != nil && *un.ExpTime > 0 {
+		if time.Now().UnixMilli() > *un.ExpTime {
+			return fmt.Errorf("节点权限已过期")
+		}
+	}
+	if strings.TrimSpace(un.PortRanges) == "" {
+		return nil
+	}
+	if !portAllowed(port, un.PortRanges) {
+		return fmt.Errorf("入口端口不在授权范围")
+	}
+	return nil
 }
 
 // getTunnelPathNodes reads optional multi-level path from ViteConfig (name: tunnel_path_<id>), JSON array of node IDs
@@ -1769,6 +2393,52 @@ func getTunnelPathNodes(tunnelID int64) []int64 {
 		}
 	}
 	return ids
+}
+
+func tunnelLinkModeKey(tid int64) string { return "tunnel_link_modes_" + strconv.FormatInt(tid, 10) }
+
+func getTunnelLinkModes(tunnelID int64) []string {
+	var cfg model.ViteConfig
+	key := tunnelLinkModeKey(tunnelID)
+	if err := dbpkg.DB.Where("name = ?", key).First(&cfg).Error; err != nil || cfg.Value == "" {
+		return nil
+	}
+	var modes []string
+	if e := json.Unmarshal([]byte(cfg.Value), &modes); e == nil {
+		return modes
+	}
+	return nil
+}
+
+func normalizeLinkModes(modes []string, expected int, fallback string) []string {
+	if expected <= 0 {
+		return nil
+	}
+	out := make([]string, expected)
+	fb := strings.ToLower(strings.TrimSpace(fallback))
+	if fb != "tunnel" {
+		fb = "direct"
+	}
+	for i := 0; i < expected; i++ {
+		v := fb
+		if i < len(modes) {
+			m := strings.ToLower(strings.TrimSpace(modes[i]))
+			if m == "tunnel" || m == "direct" {
+				v = m
+			}
+		}
+		out[i] = v
+	}
+	return out
+}
+
+func hasTunnelMode(modes []string) bool {
+	for _, m := range modes {
+		if strings.ToLower(m) == "tunnel" {
+			return true
+		}
+	}
+	return false
 }
 
 func splitHostPortSafe(hp string) (string, int) {
@@ -1880,6 +2550,36 @@ func buildServiceConfig(name string, listenPort int, target string, iface *strin
 	}
 	svc["metadata"] = meta
 	return svc
+}
+
+func buildRelayService(name string, listenPort int, auth map[string]any) map[string]any {
+	return map[string]any{
+		"name":     name,
+		"addr":     fmt.Sprintf(":%d", listenPort),
+		"listener": map[string]any{"type": "grpc"},
+		"handler":  relayHandler(auth),
+		"metadata": map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false},
+	}
+}
+
+func attachRelayChainToService(svc map[string]any, chainName string, relayAddr string, auth map[string]any) {
+	if svc == nil || relayAddr == "" {
+		return
+	}
+	hopName := "hop_" + chainName
+	node := map[string]any{
+		"name":      "node-" + chainName,
+		"addr":      relayAddr,
+		"connector": relayConnector(auth),
+		"dialer":    map[string]any{"type": "grpc"},
+	}
+	if h, ok := svc["handler"].(map[string]any); ok {
+		h["type"] = "forward"
+		h["chain"] = chainName
+	} else {
+		svc["handler"] = map[string]any{"type": "forward", "chain": chainName}
+	}
+	svc["_chains"] = []any{map[string]any{"name": chainName, "metadata": map[string]any{"managedBy": "network-panel", "enableStats": true, "observer.period": "5s", "observer.resetTraffic": false}, "hops": []any{map[string]any{"name": hopName, "nodes": []any{node}}}}}
 }
 
 // ---- Helpers for multi-level tunnel: query in-use ports and pick free port ----
@@ -2324,6 +3024,47 @@ func outNodeIDOr0(t model.Tunnel) int64 {
 	return 0
 }
 
+func isExternalExit(t model.Tunnel) bool {
+	return t.OutExitID != nil && t.OutNodeID == nil
+}
+
+func loadExternalExit(t model.Tunnel) (*model.ExitNodeExternal, bool) {
+	if t.OutExitID == nil {
+		return nil, false
+	}
+	var ext model.ExitNodeExternal
+	if err := dbpkg.DB.First(&ext, *t.OutExitID).Error; err != nil {
+		return nil, false
+	}
+	return &ext, true
+}
+
+func relayAuthForForward(t model.Tunnel, f model.Forward) map[string]any {
+	if isExternalExit(t) {
+		return nil
+	}
+	return map[string]any{
+		"username": fmt.Sprintf("u-%d", f.ID),
+		"password": util.MD5(fmt.Sprintf("%d:%d", f.ID, f.CreatedTime))[:16],
+	}
+}
+
+func relayConnector(auth map[string]any) map[string]any {
+	conn := map[string]any{"type": "relay"}
+	if auth != nil {
+		conn["auth"] = auth
+	}
+	return conn
+}
+
+func relayHandler(auth map[string]any) map[string]any {
+	h := map[string]any{"type": "relay"}
+	if auth != nil {
+		h["auth"] = auth
+	}
+	return h
+}
+
 // find free out port on out-node range
 func firstFreePortOut(t model.Tunnel, excludeForwardID int64) int {
 	if t.OutNodeID == nil {
@@ -2347,4 +3088,63 @@ func firstFreePortOut(t model.Tunnel, excludeForwardID int64) int {
 		}
 	}
 	return 0
+}
+
+func directExitPortForTunnel(t model.Tunnel) int {
+	if t.Type != 1 {
+		return 0
+	}
+	if t.OutExitID != nil && *t.OutExitID != 0 {
+		return 0
+	}
+	if t.OutNodeID == nil || *t.OutNodeID == 0 {
+		return 0
+	}
+	if *t.OutNodeID != t.InNodeID {
+		return 0
+	}
+	if len(getTunnelPathNodes(t.ID)) > 0 {
+		return 0
+	}
+	proto := ""
+	if t.Protocol != nil {
+		proto = strings.ToLower(strings.TrimSpace(*t.Protocol))
+	}
+	if proto == "anytls" {
+		var at model.AnyTLSSetting
+		if err := dbpkg.DB.Where("node_id = ?", t.InNodeID).First(&at).Error; err == nil {
+			if at.Port > 0 {
+				return at.Port
+			}
+		}
+		return 0
+	}
+	if proto == "ss" || proto == "shadowsocks" {
+		var es model.ExitSetting
+		if err := dbpkg.DB.Where("node_id = ?", t.InNodeID).First(&es).Error; err == nil {
+			if es.Port > 0 {
+				return es.Port
+			}
+		}
+		return 0
+	}
+	// fallback: infer from existing settings if protocol not provided
+	var at model.AnyTLSSetting
+	if err := dbpkg.DB.Where("node_id = ?", t.InNodeID).First(&at).Error; err == nil {
+		if at.Port > 0 {
+			return at.Port
+		}
+	}
+	var es model.ExitSetting
+	if err := dbpkg.DB.Where("node_id = ?", t.InNodeID).First(&es).Error; err == nil {
+		if es.Port > 0 {
+			return es.Port
+		}
+	}
+	return 0
+}
+
+func isDirectExitForward(t model.Tunnel, inPort int) bool {
+	directPort := directExitPortForTunnel(t)
+	return directPort > 0 && inPort == directPort
 }

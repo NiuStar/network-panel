@@ -1,6 +1,8 @@
 package controller
 
 import (
+    "fmt"
+    "net/url"
     "strings"
 
     dbpkg "network-panel/golang-backend/internal/db"
@@ -34,6 +36,7 @@ func makeObserverForNode(nodeID int64) string {
 func buildObserverPluginSpec(nodeID int64, serviceName string) (string, map[string]any) {
     secret := nodeSecret(nodeID)
     base := serverBaseURL()
+    scheme := serverScheme()
     if secret == "" || base == "" || strings.TrimSpace(serviceName) == "" {
         return "", nil
     }
@@ -46,7 +49,7 @@ func buildObserverPluginSpec(nodeID int64, serviceName string) (string, map[stri
     }
     obsName := "obs_" + fwdID
     // Build plugin addr using http scheme
-    addr := "http://" + base + "/flow/upload?secret=" + secret + "&id=" + fwdID
+    addr := scheme + "://" + base + "/api/v1/flow/upload?secret=" + secret + "&id=" + fwdID
     // allow override via template forward_observer_plugin_template, e.g. http://{SERVER}/path?secret={SECRET}&id={ID}
     if tpl := strings.TrimSpace(getCfg("forward_observer_plugin_template")); tpl != "" {
         v := strings.ReplaceAll(tpl, "{SERVER}", base)
@@ -67,6 +70,43 @@ func buildObserverPluginSpec(nodeID int64, serviceName string) (string, map[stri
         "plugin": plugin,
     }
     return obsName, spec
+}
+
+// buildExitObserverPluginSpec builds observer for exit services to report flow to /flow/exit
+func buildExitObserverPluginSpec(nodeID int64, baseUserID int64, port int) (string, map[string]any) {
+    secret := nodeSecret(nodeID)
+    base := serverBaseURL()
+    scheme := serverScheme()
+    if secret == "" || base == "" || baseUserID <= 0 || port <= 0 {
+        return "", nil
+    }
+    obsName := fmt.Sprintf("obs_exit_%d_%d", nodeID, port)
+    addr := fmt.Sprintf(
+        "%s://%s/api/v1/flow/exit?secret=%s&userId=%d&nodeId=%d&port=%d",
+        scheme,
+        base,
+        url.QueryEscape(secret),
+        baseUserID,
+        nodeID,
+        port,
+    )
+    plugin := map[string]any{
+        "type": "http",
+        "addr": addr,
+    }
+    spec := map[string]any{
+        "name":   obsName,
+        "plugin": plugin,
+    }
+    return obsName, spec
+}
+
+func serverScheme() string {
+    raw := strings.TrimSpace(getCfg("ip"))
+    if strings.HasPrefix(raw, "https://") {
+        return "https"
+    }
+    return "http"
 }
 
 func serverBaseURL() string {

@@ -20,6 +20,9 @@ init_source_mode() {
       [[ -z "$PROXY_PREFIX" ]] && PROXY_PREFIX="https://proxy.529851.xyz/"
       SOURCE_DESC="静态镜像 > GitHub(代理) > GitHub(直连) > 面板"
       ;;
+    panel)
+      SOURCE_DESC="面板 > GitHub(直连) > GitHub(代理) > 静态镜像"
+      ;;
     static)
       SOURCE_DESC="静态镜像 > GitHub(直/代理) > 面板"
       ;;
@@ -57,6 +60,7 @@ build_candidate_urls() {
   esac
   case "$SOURCE_MODE" in
     cn) urls+=("$static" "$ghp" "$gh" "$panel") ;;
+    panel) urls+=("$panel" "$gh" "$ghp" "$static") ;;
     static) urls+=("$static" "$gh" "$ghp" "$panel") ;;
     github) urls+=("$gh" "$ghp" "$static" "$panel") ;;
     global|*) 
@@ -82,10 +86,50 @@ download_from_urls() {
   return 1
 }
 
+# 安装二进制（兼容 busybox 无 install 命令）
+install_bin() {
+  local src="$1"
+  local dest="$2"
+  mkdir -p "$(dirname "$dest")"
+  if command -v install >/dev/null 2>&1; then
+    install -m 0755 "$src" "$dest"
+  else
+    cp -f "$src" "$dest"
+    chmod 0755 "$dest"
+  fi
+}
+
+# 兼容 OpenWrt/busybox 的 mktemp
+safe_mktemp_dir() {
+  local d
+  d=$(mktemp -d 2>/dev/null) || true
+  if [[ -z "$d" || ! -d "$d" ]]; then
+    d="/tmp/np.$$.$RANDOM"
+    mkdir -p "$d"
+  fi
+  echo "$d"
+}
+
+safe_mktemp_file() {
+  local name="$1"
+  local f
+  f=$(mktemp "/tmp/${name}.XXXXXX" 2>/dev/null) || true
+  if [[ -z "$f" ]]; then
+    f="/tmp/${name}.$$"
+    : > "$f"
+  fi
+  echo "$f"
+}
+
 # 写入 cron 任务：每天 03:00 删除 24h 之前的 syslog 轮转文件，避免 syslog.* 撑爆磁盘
 setup_syslog_cleanup_cron() {
   local cron_file="/etc/cron.d/cleanup-syslog"
   local line="0 3 * * * root find /var/log -maxdepth 1 -type f -name 'syslog.*' -mmin +1440 -delete"
+  if is_openwrt; then
+    cron_file="/etc/crontabs/root"
+    line="0 3 * * * find /var/log -maxdepth 1 -type f -name 'syslog.*' -mmin +1440 -delete"
+    mkdir -p /etc/crontabs >/dev/null 2>&1 || true
+  fi
   if [[ -f "$cron_file" ]] && grep -Fq "$line" "$cron_file"; then
     return 0
   fi
@@ -219,7 +263,7 @@ check_and_install_diag_tools() {
       ;;
   esac
   # 禁用系统 iperf3 服务（如存在）
-  if systemctl list-unit-files | grep -q '^iperf3\.service'; then
+  if is_systemd && systemctl list-unit-files | grep -q '^iperf3\.service'; then
     $SUDO_CMD systemctl disable iperf3 >/dev/null 2>&1 || true
     $SUDO_CMD systemctl stop iperf3 >/dev/null 2>&1 || true
   fi
@@ -228,11 +272,108 @@ check_and_install_diag_tools() {
 }
 
 # --- 安装方式检测与 Docker 辅助 ---
+
+# --- 服务管理（systemd / OpenRC） ---
+is_systemd() {
+  command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]
+}
+
+is_openrc() {
+  command -v rc-service >/dev/null 2>&1
+}
+
+is_openwrt() {
+  [ -f /etc/openwrt_release ] || { [ -f /etc/os-release ] && grep -qi '^ID=.*openwrt' /etc/os-release; }
+}
+
+has_jq() {
+  command -v jq >/dev/null 2>&1
+}
+
+start_flux_agent_service() {
+  if is_systemd; then
+    systemctl start flux-agent >/dev/null 2>&1 || true
+  elif is_openrc; then
+    rc-service flux-agent start >/dev/null 2>&1 || true
+  elif is_openwrt; then
+    /etc/init.d/flux-agent start >/dev/null 2>&1 || true
+  fi
+}
+
+restart_flux_agent_service() {
+  if is_systemd; then
+    systemctl restart flux-agent >/dev/null 2>&1 || systemctl start flux-agent >/dev/null 2>&1 || true
+  elif is_openrc; then
+    rc-service flux-agent restart >/dev/null 2>&1 || rc-service flux-agent start >/dev/null 2>&1 || true
+  elif is_openwrt; then
+    /etc/init.d/flux-agent restart >/dev/null 2>&1 || /etc/init.d/flux-agent start >/dev/null 2>&1 || true
+  fi
+}
+
+enable_flux_agent_service() {
+  if is_systemd; then
+    systemctl enable flux-agent >/dev/null 2>&1 || true
+  elif is_openrc; then
+    rc-update add flux-agent default >/dev/null 2>&1 || true
+  elif is_openwrt; then
+    /etc/init.d/flux-agent enable >/dev/null 2>&1 || true
+  fi
+}
+
+disable_flux_agent_service() {
+  if is_systemd; then
+    systemctl disable flux-agent >/dev/null 2>&1 || true
+  elif is_openrc; then
+    rc-update del flux-agent default >/dev/null 2>&1 || true
+  elif is_openwrt; then
+    /etc/init.d/flux-agent disable >/dev/null 2>&1 || true
+  fi
+}
+
+start_gost_service() {
+  if is_systemd; then
+    systemctl start gost >/dev/null 2>&1 || true
+  elif is_openrc; then
+    rc-service gost start >/dev/null 2>&1 || true
+  elif is_openwrt; then
+    /etc/init.d/gost start >/dev/null 2>&1 || true
+  fi
+}
+
+restart_gost_service() {
+  if is_systemd; then
+    systemctl restart gost >/dev/null 2>&1 || systemctl start gost >/dev/null 2>&1 || true
+  elif is_openrc; then
+    rc-service gost restart >/dev/null 2>&1 || rc-service gost start >/dev/null 2>&1 || true
+  elif is_openwrt; then
+    /etc/init.d/gost restart >/dev/null 2>&1 || /etc/init.d/gost start >/dev/null 2>&1 || true
+  fi
+}
+
+enable_gost_service() {
+  if is_systemd; then
+    systemctl enable gost >/dev/null 2>&1 || true
+  elif is_openrc; then
+    rc-update add gost default >/dev/null 2>&1 || true
+  elif is_openwrt; then
+    /etc/init.d/gost enable >/dev/null 2>&1 || true
+  fi
+}
+
+disable_gost_service() {
+  if is_systemd; then
+    systemctl disable gost >/dev/null 2>&1 || true
+  elif is_openrc; then
+    rc-update del gost default >/dev/null 2>&1 || true
+  elif is_openwrt; then
+    /etc/init.d/gost disable >/dev/null 2>&1 || true
+  fi
+}
 # 返回值：
 #   echo "binary" | "docker" | "none"
 detect_install_mode() {
   # binary 判定：systemd 存在或二进制存在
-  if systemctl list-units --full -all 2>/dev/null | grep -Fq "gost.service" || [ -x "$INSTALL_DIR/gost" ]; then
+  if (is_systemd && systemctl list-units --full -all 2>/dev/null | grep -Fq "gost.service") || [ -x "$INSTALL_DIR/gost" ]; then
     echo "binary"; return
   fi
   # docker 判定：存在包含 gost 的容器（名称或镜像）
@@ -370,11 +511,11 @@ install_flux_agent() {
   esac
   local tmpfile
   local AGENT_FILE="$INSTALL_DIR/flux-agent"
-  tmpfile=$(mktemp -p /tmp flux-agent.XXXX || echo "/tmp/flux-agent.tmp")
+  tmpfile=$(safe_mktemp_file "flux-agent")
   local urls=()
   while read -r u; do urls+=("$u"); done < <(build_candidate_urls "flux-agent" "$file")
   if download_from_urls "$tmpfile" "${urls[@]}"; then
-    install -m 0755 "$tmpfile" "$AGENT_FILE" && rm -f "$tmpfile"
+    install_bin "$tmpfile" "$AGENT_FILE" && rm -f "$tmpfile"
   else
     echo "❌ 无法下载 flux-agent 二进制"
     return 1
@@ -382,16 +523,100 @@ install_flux_agent() {
 
   # 写入环境配置，便于后续修改
   local AGENT_ENV="/etc/default/flux-agent"
-  if [[ ! -f "$AGENT_ENV" ]]; then
-    cat > "$AGENT_ENV" <<EOF
+  local AGENT_ENV_RC="/etc/conf.d/flux-agent"
+  mkdir -p "$(dirname "$AGENT_ENV")"
+  # 自动推断 SCHEME（可通过环境变量 SCHEME 覆盖）
+  if [[ -z "${SCHEME:-}" ]]; then
+    SCHEME="ws"
+    if [[ "$SERVER_ADDR" =~ :443$ ]]; then
+      SCHEME="wss"
+    fi
+  fi
+  # 始终写入（若提供了参数则写具体值，否则写空）
+  cat > "$AGENT_ENV" <<EOF
 # Flux Agent 环境配置
 # 面板地址（含端口），为空则默认读取 /etc/gost/config.json 的 addr
-ADDR=
+ADDR=${SERVER_ADDR:-}
 # 节点密钥，为空则默认读取 /etc/gost/config.json 的 secret
-SECRET=
+SECRET=${SECRET:-}
 # WebSocket 协议：ws 或 wss
-SCHEME=ws
+SCHEME=${SCHEME:-ws}
 EOF
+
+  if is_openwrt && ! is_systemd; then
+    local AGENT_INIT="/etc/init.d/flux-agent"
+    cat > "$AGENT_INIT" <<EOF
+#!/bin/sh /etc/rc.common
+
+USE_PROCD=1
+START=95
+STOP=10
+
+AGENT_BIN="$AGENT_FILE"
+AGENT_ENV="/etc/default/flux-agent"
+
+start_service() {
+  [ -f "\$AGENT_ENV" ] && . "\$AGENT_ENV"
+  if [ -z "\$ADDR" ] || [ -z "\$SECRET" ]; then
+    if [ -f /etc/gost/config.json ]; then
+      ADDR=\$(sed -n 's/.*"addr":[[:space:]]*"\\([^"]*\\)".*/\\1/p' /etc/gost/config.json | head -n1)
+      SECRET=\$(sed -n 's/.*"secret":[[:space:]]*"\\([^"]*\\)".*/\\1/p' /etc/gost/config.json | head -n1)
+    fi
+  fi
+  [ -z "\$SCHEME" ] && SCHEME="ws"
+  procd_open_instance
+  procd_set_param command "\$AGENT_BIN"
+  procd_set_param respawn 5 5 0
+  procd_set_param env ADDR="\$ADDR" SECRET="\$SECRET" SCHEME="\$SCHEME"
+  procd_set_param stdout 1
+  procd_set_param stderr 1
+  procd_close_instance
+}
+EOF
+    chmod +x "$AGENT_INIT"
+    enable_flux_agent_service
+    start_flux_agent_service
+    echo "✅ Go Agent 已安装并启用 (OpenWrt: flux-agent)"
+    return 0
+  fi
+
+  if is_openrc && ! is_systemd; then
+    if [[ ! -f "$AGENT_ENV_RC" ]]; then
+      mkdir -p "$(dirname "$AGENT_ENV_RC")"
+      cat > "$AGENT_ENV_RC" <<EOF
+# Flux Agent OpenRC 配置
+ADDR=""
+SECRET=""
+SCHEME="ws"
+EOF
+    fi
+    local AGENT_RC="/etc/init.d/flux-agent"
+    cat > "$AGENT_RC" <<EOF
+#!/sbin/openrc-run
+
+name="flux-agent"
+description="Flux Diagnose Go Agent"
+command="$AGENT_FILE"
+pidfile="/run/flux-agent.pid"
+directory="$INSTALL_DIR"
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=0
+retry="SIGTERM/5 SIGKILL/5"
+
+[ -f /etc/default/flux-agent ] && . /etc/default/flux-agent
+export ADDR SECRET SCHEME
+
+depend() {
+  need net
+  after gost
+}
+EOF
+    chmod +x "$AGENT_RC"
+    enable_flux_agent_service
+    start_flux_agent_service
+    echo "✅ Go Agent 已安装并启用 (OpenRC: flux-agent)"
+    return 0
   fi
 
   # 写入 systemd 服务
@@ -415,9 +640,9 @@ Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 WantedBy=multi-user.target
 EOF
 
-  systemctl daemon-reload
-  systemctl enable flux-agent >/dev/null 2>&1 || true
-  systemctl start flux-agent >/dev/null 2>&1 || true
+  if is_systemd; then systemctl daemon-reload; fi
+  enable_flux_agent_service
+  start_flux_agent_service
   echo "✅ Go Agent 已安装并启用 (flux-agent.service)"
 }
 # 解析命令行参数
@@ -440,6 +665,32 @@ elif [[ "$PROXY_MODE" == "6" ]]; then
 fi
 init_source_mode
 
+get_latest_gost_version() {
+  local api url tag
+  local api_list=()
+  if [[ "$SOURCE_MODE" == "cn" || "$SOURCE_MODE" == "static" ]]; then
+    [[ -n "$PROXY_PREFIX" ]] && api_list+=("${PROXY_PREFIX}${BASE_GOST_REPO_API}")
+    api_list+=("$BASE_GOST_REPO_API")
+  else
+    api_list+=("$BASE_GOST_REPO_API")
+    [[ -n "$PROXY_PREFIX" ]] && api_list+=("${PROXY_PREFIX}${BASE_GOST_REPO_API}")
+  fi
+  for api in "${api_list[@]}"; do
+    if has_jq; then
+      tag=$(curl -fsSL "$api" | jq -r '.tag_name' 2>/dev/null | head -n1 || true)
+    else
+      tag=$(curl -fsSL "$api" 2>/dev/null | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -n1 || true)
+    fi
+    tag=$(echo "$tag" | tr -d '\r\n ')
+    if [[ -n "$tag" ]]; then
+      echo "$tag"
+      return 0
+    fi
+  done
+  echo "v3.2.6"
+  return 0
+}
+
 # 解析 go-gost/gost 最新版本下载链接（匹配 Linux + 当前架构）
 resolve_latest_gost_url() {
   local arch="$(uname -m)" token=""
@@ -457,14 +708,21 @@ resolve_latest_gost_url() {
     *) token="amd64" ;;
   esac
   local prefer_static=1
-  if [[ "$SOURCE_MODE" == "github" || "$SOURCE_MODE" == "global" ]]; then
+  if [[ "$SOURCE_MODE" == "github" || "$SOURCE_MODE" == "global" || "$SOURCE_MODE" == "panel" ]]; then
     prefer_static=0
   fi
+  local ver ver_no_v
+  ver=$(get_latest_gost_version)
+  ver_no_v="${ver#v}"
   # 1) 静态镜像（按模式决定是否优先）
   local static_base="${STATIC_BASE}/gost"
   local name url
   if (( prefer_static )); then
     for name in \
+      "gost_${ver_no_v}_linux_${token}.tar.gz" \
+      "gost_${ver_no_v}_linux_${token}.tgz" \
+      "gost_${ver_no_v}_linux_${token}.gz" \
+      "gost_${ver_no_v}_linux_${token}.zip" \
       "gost-linux-${token}.tar.gz" \
       "gost-linux-${token}.tgz" \
       "gost-linux-${token}.gz" \
@@ -488,8 +746,27 @@ resolve_latest_gost_url() {
   local prefer_proxy_dl=0
   if [[ "$SOURCE_MODE" == "cn" || "$SOURCE_MODE" == "static" ]]; then prefer_proxy_dl=1; fi
 
+  # 无论是否有 jq，都优先尝试版本号固定文件名
+  for name in \
+    "gost_${ver_no_v}_linux_${token}.tar.gz" \
+    "gost_${ver_no_v}_linux_${token}.tgz" \
+    "gost_${ver_no_v}_linux_${token}.gz" \
+    "gost_${ver_no_v}_linux_${token}.zip"
+  do
+    url="https://github.com/go-gost/gost/releases/download/${ver}/${name}"
+    if (( prefer_proxy_dl )) && [[ -n "$PROXY_PREFIX" ]]; then
+      url="${PROXY_PREFIX}${url}"
+    fi
+    if curl -fsI "$url" >/dev/null 2>&1; then
+      echo "$url"; return 0
+    fi
+  done
+
   local api urls cand
   for api in "${api_list[@]}"; do
+    if ! has_jq; then
+      continue
+    fi
     urls=$(curl -fsSL "$api" | jq -r '.assets[].browser_download_url' 2>/dev/null || true)
     if [[ -z "$urls" ]]; then continue; fi
     for cand in $urls; do
@@ -506,6 +783,10 @@ resolve_latest_gost_url() {
   # 3) 如果 GitHub 失败且未尝试静态源，再尝试静态源
   if (( ! prefer_static )); then
     for name in \
+      "gost_${ver_no_v}_linux_${token}.tar.gz" \
+      "gost_${ver_no_v}_linux_${token}.tgz" \
+      "gost_${ver_no_v}_linux_${token}.gz" \
+      "gost_${ver_no_v}_linux_${token}.zip" \
       "gost-linux-${token}.tar.gz" \
       "gost-linux-${token}.tgz" \
       "gost-linux-${token}.gz" \
@@ -523,7 +804,7 @@ resolve_latest_gost_url() {
 # 下载并安装 GOST（支持 tar.gz/zip/gz/单文件）
 download_and_install_gost() {
   local url="$1"
-  local tmpdir; tmpdir=$(mktemp -d)
+  local tmpdir; tmpdir=$(safe_mktemp_dir)
   echo "⬇️ 下载: $url"
   if ! curl -fSL --retry 3 --retry-delay 1 "$url" -o "$tmpdir/pkg"; then
     echo "❌ 下载失败: $url"; rm -rf "$tmpdir"; return 1
@@ -535,7 +816,7 @@ download_and_install_gost() {
     bin=$(find "$tmpdir" -type f -name gost -perm -111 | head -n1 || true)
     if [[ -z "$bin" ]]; then bin=$(find "$tmpdir" -type f -name gost | head -n1 || true); fi
     if [[ -z "$bin" ]]; then echo "❌ 未在压缩包内找到 gost"; rm -rf "$tmpdir"; return 1; fi
-    install -m 0755 "$bin" "$INSTALL_DIR/gost"
+    install_bin "$bin" "$INSTALL_DIR/gost"
   elif [[ "$url" =~ \.zip$ ]]; then
     if command -v unzip >/dev/null 2>&1; then
       unzip -o "$tmpdir/pkg" -d "$tmpdir" >/dev/null
@@ -543,7 +824,7 @@ download_and_install_gost() {
       bin=$(find "$tmpdir" -type f -name gost -perm -111 | head -n1 || true)
       if [[ -z "$bin" ]]; then bin=$(find "$tmpdir" -type f -name gost | head -n1 || true); fi
       if [[ -z "$bin" ]]; then echo "❌ 未在压缩包内找到 gost"; rm -rf "$tmpdir"; return 1; fi
-      install -m 0755 "$bin" "$INSTALL_DIR/gost"
+      install_bin "$bin" "$INSTALL_DIR/gost"
     else
       echo "⚠️ 未安装 unzip，无法解压 .zip 包"; rm -rf "$tmpdir"; return 1
     fi
@@ -551,10 +832,24 @@ download_and_install_gost() {
     gunzip -c "$tmpdir/pkg" > "$INSTALL_DIR/gost"
     chmod +x "$INSTALL_DIR/gost"
   else
-    install -m 0755 "$tmpdir/pkg" "$INSTALL_DIR/gost"
+    install_bin "$tmpdir/pkg" "$INSTALL_DIR/gost"
   fi
   rm -rf "$tmpdir"
   echo "🔎 版本：$($INSTALL_DIR/gost -V || true)"
+}
+
+# 获取已安装 gost 版本（形如 v3.2.6），不存在则返回空
+get_installed_gost_version() {
+  local ver out
+  if [[ -x "$INSTALL_DIR/gost" ]]; then
+    out=$("$INSTALL_DIR/gost" -V 2>/dev/null || true)
+    for ver in $out; do
+      case "$ver" in
+        v[0-9]*) echo "$ver"; return 0 ;;
+      esac
+    done
+  fi
+  echo ""
 }
 
 # 安装功能
@@ -570,23 +865,60 @@ install_gost() {
 
   mkdir -p "$INSTALL_DIR"
 
-  # 停止并禁用已有服务
-  if systemctl list-units --full -all | grep -Fq "gost.service"; then
-    echo "🔍 检测到已存在的gost服务"
-    systemctl stop gost 2>/dev/null && echo "🛑 停止服务"
-    systemctl disable gost 2>/dev/null && echo "🚫 禁用自启"
+  # 如已安装且版本一致，跳过下载与安装
+  local latest_ver current_ver skip_download=0
+  current_ver=$(get_installed_gost_version)
+  latest_ver=$(get_latest_gost_version)
+  # 始终输出版本信息，便于定位是否进入此逻辑
+  if [[ -n "$current_ver" ]]; then
+    echo "🔎 当前 gost 版本：$current_ver"
+  else
+    local raw_ver
+    raw_ver=$("$INSTALL_DIR/gost" -V 2>/dev/null || true)
+    echo "🔎 当前 gost 版本：<unknown>${raw_ver:+ ($raw_ver)}"
+  fi
+  if [[ -n "$latest_ver" ]]; then
+    echo "🔎 最新 gost 版本：$latest_ver"
+  else
+    echo "🔎 最新 gost 版本：<unknown>"
+  fi
+  if [[ -n "$current_ver" && -n "$latest_ver" && "$current_ver" == "$latest_ver" ]]; then
+    echo "✅ gost 已是最新版 ($current_ver)，跳过下载与安装。"
+    skip_download=1
+  elif [[ -n "$current_ver" && -z "$latest_ver" ]]; then
+    echo "⚠️ 未能获取最新 gost 版本，继续执行安装流程。"
   fi
 
-  # 删除旧文件
-  [[ -f "$INSTALL_DIR/gost" ]] && echo "🧹 删除旧文件 gost" && rm -f "$INSTALL_DIR/gost"
-
-  # 下载并安装 GOST（自动解析最新版本与资产）
-  echo "⬇️ 解析最新 GOST 下载地址..."
-  local GOST_URL
-  if ! GOST_URL=$(resolve_latest_gost_url); then
-    echo "❌ 无法解析最新 GOST 下载地址"; exit 1
+  # 停止并禁用已有服务（仅在需要重新安装时）
+  if [[ "$skip_download" -eq 0 ]]; then
+    if is_systemd && systemctl list-units --full -all 2>/dev/null | grep -Fq "gost.service"; then
+      echo "🔍 检测到已存在的gost服务"
+      systemctl stop gost 2>/dev/null && echo "🛑 停止服务"
+      systemctl disable gost 2>/dev/null && echo "🚫 禁用自启"
+    fi
+    if is_openrc && [[ -f "/etc/init.d/gost" ]]; then
+      echo "🔍 检测到已存在的gost(OpenRC)服务"
+      rc-service gost stop 2>/dev/null && echo "🛑 停止服务"
+      disable_gost_service && echo "🚫 禁用自启"
+    fi
+    if is_openwrt && [[ -f "/etc/init.d/gost" ]]; then
+      echo "🔍 检测到已存在的gost(OpenWrt)服务"
+      /etc/init.d/gost stop 2>/dev/null && echo "🛑 停止服务"
+      disable_gost_service && echo "🚫 禁用自启"
+    fi
   fi
-  download_and_install_gost "$GOST_URL"
+
+  if [[ "$skip_download" -eq 0 ]]; then
+    # 删除旧文件
+    [[ -f "$INSTALL_DIR/gost" ]] && echo "🧹 删除旧文件 gost" && rm -f "$INSTALL_DIR/gost"
+    # 下载并安装 GOST（自动解析最新版本与资产）
+    echo "⬇️ 解析最新 GOST 下载地址..."
+    local GOST_URL
+    if ! GOST_URL=$(resolve_latest_gost_url); then
+      echo "❌ 无法解析最新 GOST 下载地址"; exit 1
+    fi
+    download_and_install_gost "$GOST_URL"
+  fi
 
   # 打印版本
   echo "🔎 gost 版本：$($INSTALL_DIR/gost -V)"
@@ -615,9 +947,73 @@ EOF
   # 加强权限
   chmod 600 "$INSTALL_DIR"/*.json
 
-  # 创建 systemd 服务
-  SERVICE_FILE="/etc/systemd/system/gost.service"
-  cat > "$SERVICE_FILE" <<EOF
+  if is_openwrt && ! is_systemd; then
+    local GOST_INIT="/etc/init.d/gost"
+    cat > "$GOST_INIT" <<EOF
+#!/bin/sh /etc/rc.common
+
+USE_PROCD=1
+START=90
+STOP=10
+
+GOST_BIN="$INSTALL_DIR/gost"
+GOST_CFG="/etc/gost/gost.json"
+LOG_OUT="/var/log/gost.log"
+LOG_ERR="/var/log/gost.err"
+
+start_service() {
+  mkdir -p /var/log
+  touch "\$LOG_OUT" "\$LOG_ERR"
+  procd_open_instance
+  procd_set_param command /bin/sh
+  procd_set_param args -c "exec \"\$GOST_BIN\" -C \"\$GOST_CFG\" >>\"\$LOG_OUT\" 2>>\"\$LOG_ERR\""
+  procd_set_param respawn 5 5 0
+  procd_close_instance
+}
+EOF
+    chmod +x "$GOST_INIT"
+    enable_gost_service
+    start_gost_service
+    echo "✅ 安装完成，gost(OpenWrt) 已启动并设置为开机启动。"
+    echo "📁 配置目录: $INSTALL_DIR"
+  elif is_openrc && ! is_systemd; then
+    local GOST_RC="/etc/init.d/gost"
+    cat > "$GOST_RC" <<EOF
+#!/sbin/openrc-run
+
+name="gost"
+description="Gost Proxy Service"
+command="$INSTALL_DIR/gost"
+command_args="-C /etc/gost/gost.json"
+supervisor="supervise-daemon"
+pidfile="/run/gost.pid"
+respawn_delay=5
+respawn_max=0
+retry="SIGTERM/5 SIGKILL/5"
+directory="$INSTALL_DIR"
+output_log="/var/log/gost.log"
+error_log="/var/log/gost.err"
+command_user="root:root"
+
+start_pre() {
+  mkdir -p /var/log
+  touch "\$output_log" "\$error_log"
+  chown "\$command_user" "\$output_log" "\$error_log" 2>/dev/null || true
+}
+
+depend() {
+  need net
+}
+EOF
+    chmod +x "$GOST_RC"
+    enable_gost_service
+    start_gost_service
+    echo "✅ 安装完成，gost(OpenRC) 已启动并设置为开机启动。"
+    echo "📁 配置目录: $INSTALL_DIR"
+  else
+    # 创建 systemd 服务
+    SERVICE_FILE="/etc/systemd/system/gost.service"
+    cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=Gost Proxy Service
 After=network.target
@@ -631,26 +1027,27 @@ Restart=on-failure
 WantedBy=multi-user.target
 EOF
 
-  # 启动服务
-  systemctl daemon-reload
-  systemctl enable gost
-  systemctl start gost
+    # 启动服务
+    systemctl daemon-reload
+    enable_gost_service
+    start_gost_service
 
-  # 检查状态
-  echo "🔄 检查服务状态..."
-  if systemctl is-active --quiet gost; then
-    echo "✅ 安装完成，gost服务已启动并设置为开机启动。"
-    echo "📁 配置目录: $INSTALL_DIR"
-    echo "🔧 服务状态: $(systemctl is-active gost)"
-  else
-    echo "❌ gost服务启动失败，请执行以下命令查看日志："
-    echo "journalctl -u gost -f"
+    # 检查状态
+    echo "🔄 检查服务状态..."
+    if systemctl is-active --quiet gost; then
+      echo "✅ 安装完成，gost服务已启动并设置为开机启动。"
+      echo "📁 配置目录: $INSTALL_DIR"
+      echo "🔧 服务状态: $(systemctl is-active gost)"
+    else
+      echo "❌ gost服务启动失败，请执行以下命令查看日志："
+      echo "journalctl -u gost -f"
+    fi
   fi
 
   # 安装并启用 Go 诊断 Agent，并确保服务已重启生效
   install_flux_agent
-  systemctl daemon-reload
-  systemctl restart flux-agent >/dev/null 2>&1 || systemctl start flux-agent >/dev/null 2>&1 || true
+  if is_systemd; then systemctl daemon-reload; fi
+  restart_flux_agent_service
   setup_syslog_cleanup_cron
 }
 
@@ -688,8 +1085,12 @@ update_gost() {
     check_and_install_tcpkill
     check_and_install_diag_tools
     # 停止服务
-    if systemctl list-units --full -all | grep -Fq "gost.service"; then
+    if is_systemd && systemctl list-units --full -all 2>/dev/null | grep -Fq "gost.service"; then
       echo "🛑 停止 gost 服务..."; systemctl stop gost || true
+    elif is_openrc; then
+      echo "🛑 停止 gost(OpenRC) 服务..."; rc-service gost stop >/dev/null 2>&1 || true
+    elif is_openwrt; then
+      echo "🛑 停止 gost(OpenWrt) 服务..."; /etc/init.d/gost stop >/dev/null 2>&1 || true
     fi
     # 下载并安装最新版
     echo "⬇️ 解析最新 GOST 下载地址..."
@@ -697,9 +1098,9 @@ update_gost() {
     if ! GOST_URL=$(resolve_latest_gost_url); then echo "❌ 无法解析最新 GOST 下载地址"; return 1; fi
     download_and_install_gost "$GOST_URL" || return 1
     echo "🔎 新版本：$($INSTALL_DIR/gost -V || true)"
-    echo "🔄 重启服务..."; systemctl start gost || true
-    systemctl daemon-reload
-    systemctl restart flux-agent >/dev/null 2>&1 || systemctl start flux-agent >/dev/null 2>&1 || true
+    echo "🔄 重启服务..."; start_gost_service
+    if is_systemd; then systemctl daemon-reload; fi
+    restart_flux_agent_service
     echo "✅ 更新完成，gost 与 flux-agent 均已重新启动。"
     return 0
   else
@@ -728,16 +1129,28 @@ uninstall_gost() {
     return 0
   fi
   # binary 卸载
-  if systemctl list-units --full -all | grep -Fq "gost.service"; then
+  if is_systemd && systemctl list-units --full -all 2>/dev/null | grep -Fq "gost.service"; then
     echo "🛑 停止并禁用服务..."; systemctl stop gost 2>/dev/null; systemctl disable gost 2>/dev/null
   fi
   if [[ -f "/etc/systemd/system/gost.service" ]]; then rm -f "/etc/systemd/system/gost.service"; echo "🧹 删除服务文件"; fi
-  if systemctl list-units --full -all | grep -Fq "flux-agent.service"; then
+  if is_openrc && [[ -f "/etc/init.d/gost" ]]; then
+    echo "🛑 停止并禁用 gost(OpenRC)..."; rc-service gost stop 2>/dev/null || true; disable_gost_service; rm -f "/etc/init.d/gost"
+  fi
+  if is_openwrt && [[ -f "/etc/init.d/gost" ]]; then
+    echo "🛑 停止并禁用 gost(OpenWrt)..."; /etc/init.d/gost stop 2>/dev/null || true; disable_gost_service; rm -f "/etc/init.d/gost"
+  fi
+  if is_systemd && systemctl list-units --full -all | grep -Fq "flux-agent.service"; then
     echo "🛑 停止并禁用 flux-agent 服务..."; systemctl stop flux-agent 2>/dev/null; systemctl disable flux-agent 2>/dev/null; rm -f "/etc/systemd/system/flux-agent.service"
+  fi
+  if is_openrc && [[ -f "/etc/init.d/flux-agent" ]]; then
+    echo "🛑 停止并禁用 flux-agent(OpenRC)..."; rc-service flux-agent stop 2>/dev/null || true; disable_flux_agent_service; rm -f "/etc/init.d/flux-agent" "/etc/conf.d/flux-agent"
+  fi
+  if is_openwrt && [[ -f "/etc/init.d/flux-agent" ]]; then
+    echo "🛑 停止并禁用 flux-agent(OpenWrt)..."; /etc/init.d/flux-agent stop 2>/dev/null || true; disable_flux_agent_service; rm -f "/etc/init.d/flux-agent"
   fi
   if [[ -f "$INSTALL_DIR/flux-agent" ]]; then rm -f "$INSTALL_DIR/flux-agent"; echo "🧹 删除 flux-agent 二进制"; fi
   if [[ -d "$INSTALL_DIR" ]]; then rm -rf "$INSTALL_DIR"; echo "🧹 删除安装目录: $INSTALL_DIR"; fi
-  systemctl daemon-reload
+  if is_systemd; then systemctl daemon-reload; fi
   echo "✅ 卸载完成"
 }
 

@@ -95,7 +95,7 @@ curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/ma
 - systemd 服务名：`network-panel`
 - 可执行文件：`/usr/local/bin/network-panel-server`
 - 工作目录：`/opt/network-panel`
-- 前端静态资源：安装脚本会自动从 GitHub Release 下载 `frontend-dist.zip` 并解压至 `/opt/network-panel/public/`；离线环境可在本地 `vite-frontend` 目录执行 `npm install && npm run build`，将 `dist/*` 手动复制到该目录
+- 前端静态资源：安装脚本会自动从 GitHub Release 下载 `frontend-dist.zip` 并解压至 `/opt/network-panel/public/`；离线环境可在本地 `vite-frontend-v2` 目录执行 `npm install && npm run build`，将 `dist/*` 手动复制到该目录
 - 环境文件：二进制安装会创建 `/etc/default/network-panel` 与 `/opt/network-panel/.env`（systemd 同时读取），并默认写入：`DB_DIALECT=sqlite`、`DB_SQLITE_PATH=/opt/network-panel/panel.db`、`JWT_SECRET=flux-panel-secret`
 - 环境配置：`/etc/default/network-panel`
 

@@ -83,6 +83,8 @@ var (
 	diagWaiters  = map[string]chan map[string]interface{}{}
 	opMu         sync.Mutex
 	opWaiters    = map[string]chan map[string]interface{}{}
+	logMu        sync.Mutex
+	logWaiters   = map[string]chan map[string]interface{}{}
 	// latest health flags reported by agents
 	healthMu   sync.RWMutex
 	nodeHealth = map[int64]struct {
@@ -331,7 +333,7 @@ func SystemInfoWS(c *gin.Context) {
 						broadcastTerm(node.ID, generic)
 					}
 					continue
-				} else if t, ok := generic["type"].(string); ok && (t == "DiagnoseResult" || t == "QueryServicesResult" || t == "GetServiceResult" || t == "SuggestPortsResult" || t == "ProbePortResult") {
+				} else if t, ok := generic["type"].(string); ok && (t == "DiagnoseResult" || t == "QueryServicesResult" || t == "GetServiceResult" || t == "SuggestPortsResult" || t == "ProbePortResult" || t == "SingboxTestResult") {
 					if reqID, ok := generic["requestId"].(string); ok {
 						diagMu.Lock()
 						ch := diagWaiters[reqID]
@@ -346,6 +348,21 @@ func SystemInfoWS(c *gin.Context) {
 							close(ch)
 							continue
 						}
+					}
+				} else if t, ok := generic["type"].(string); ok && t == "LogCaptureResult" {
+					if reqID, ok := generic["requestId"].(string); ok {
+						logMu.Lock()
+						ch := logWaiters[reqID]
+						delete(logWaiters, reqID)
+						logMu.Unlock()
+						if ch != nil {
+							select {
+							case ch <- generic:
+							default:
+							}
+							close(ch)
+						}
+						continue
 					}
 				} else if ok && (t == "RunScriptResult" || t == "WriteFileResult" || t == "RestartServiceResult" || t == "StopServiceResult" || t == "AddServiceResult" || t == "SetAnyTLSResult") {
 					if reqID, ok := generic["requestId"].(string); ok {
@@ -497,6 +514,13 @@ func sendWSCommand(nodeID int64, cmdType string, data interface{}) error {
 		return writeErr
 	}
 	return nil
+}
+
+// IsNodeWSOnline reports whether the controller currently has any WS connection for the node.
+func IsNodeWSOnline(nodeID int64) bool {
+	nodeConnMu.RLock()
+	defer nodeConnMu.RUnlock()
+	return len(nodeConns[nodeID]) > 0
 }
 
 // ----- terminal (interactive shell) support -----
@@ -914,6 +938,59 @@ func RequestDiagnose(nodeID int64, payload map[string]interface{}, timeout time.
 	}
 }
 
+// RequestSingboxTest sends a SingboxTest command to a node and waits for a reply with the same requestId.
+func RequestSingboxTest(nodeID int64, payload map[string]interface{}, timeout time.Duration) (map[string]interface{}, bool) {
+	reqID, _ := payload["requestId"].(string)
+	if reqID == "" {
+		reqID = RandUUID()
+		payload["requestId"] = reqID
+	}
+	ch := make(chan map[string]interface{}, 1)
+	diagMu.Lock()
+	diagWaiters[reqID] = ch
+	diagMu.Unlock()
+	// wait
+	select {
+	case res := <-ch:
+		b, _ := json.Marshal(res)
+		jlog(map[string]interface{}{"event": "singbox_test_recv", "nodeId": nodeID, "payload": string(b)})
+		return res, true
+	case <-time.After(timeout):
+		diagMu.Lock()
+		delete(diagWaiters, reqID)
+		diagMu.Unlock()
+		jlog(map[string]interface{}{"event": "singbox_test_timeout", "nodeId": nodeID, "reqId": reqID, "timeoutMs": timeout.Milliseconds()})
+		return nil, false
+	}
+}
+
+// RequestLogCaptureStop sends LogCaptureStop and waits for LogCaptureResult.
+func RequestLogCaptureStop(nodeID int64, payload map[string]interface{}, timeout time.Duration) (map[string]interface{}, bool) {
+	reqID, _ := payload["requestId"].(string)
+	if reqID == "" {
+		return nil, false
+	}
+	ch := make(chan map[string]interface{}, 1)
+	logMu.Lock()
+	logWaiters[reqID] = ch
+	logMu.Unlock()
+	if err := sendWSCommand(nodeID, "LogCaptureStop", payload); err != nil {
+		logMu.Lock()
+		delete(logWaiters, reqID)
+		logMu.Unlock()
+		return nil, false
+	}
+	select {
+	case res := <-ch:
+		return res, true
+	case <-time.After(timeout):
+		logMu.Lock()
+		delete(logWaiters, reqID)
+		logMu.Unlock()
+		return nil, false
+	}
+}
+
 // RequestOp waits for a generic operation result from node (RunScript/WriteFile/RestartService/StopService)
 func RequestOp(nodeID int64, cmd string, data map[string]interface{}, timeout time.Duration) (map[string]interface{}, bool) {
 	reqID, _ := data["requestId"].(string)
@@ -1092,6 +1169,21 @@ func convertSysInfoJSON(b []byte) map[string]interface{} {
 		out["gost_api_configured"] = v
 	} else if v, ok := in["gost_api_configured"]; ok {
 		out["gost_api_configured"] = v
+	}
+	if v, ok := in["Iperf3Status"]; ok {
+		out["iperf3_status"] = v
+	} else if v, ok := in["iperf3_status"]; ok {
+		out["iperf3_status"] = v
+	}
+	if v, ok := in["Iperf3Port"]; ok {
+		out["iperf3_port"] = v
+	} else if v, ok := in["iperf3_port"]; ok {
+		out["iperf3_port"] = v
+	}
+	if v, ok := in["Iperf3Pid"]; ok {
+		out["iperf3_pid"] = v
+	} else if v, ok := in["iperf3_pid"]; ok {
+		out["iperf3_pid"] = v
 	}
 	return out
 }

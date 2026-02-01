@@ -53,10 +53,24 @@ func TunnelCreate(c *gin.Context) {
         Name: req.Name, OwnerID: owner, InNodeID: req.InNodeID, InIP: in.IP, Type: req.Type, Flow: req.Flow,
         Protocol: req.Protocol, TrafficRatio: req.TrafficRatio, TCPListenAddr: req.TCPListenAddr, UDPListenAddr: req.UDPListenAddr, InterfaceName: req.InterfaceName,
     }
-	if req.OutNodeID != nil {
+	if req.OutNodeID != nil && req.OutExitID != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("出口节点与外部出口不可同时选择"))
+		return
+	}
+	if req.OutExitID != nil {
+		var ext model.ExitNodeExternal
+		if err := db.DB.First(&ext, *req.OutExitID).Error; err != nil {
+			c.JSON(http.StatusOK, response.ErrMsg("外部出口节点不存在"))
+			return
+		}
+		t.OutExitID = req.OutExitID
+		t.OutNodeID = nil
+		t.OutIP = &ext.Host
+	} else if req.OutNodeID != nil {
 		var out model.Node
 		if db.DB.First(&out, *req.OutNodeID).Error == nil {
 			t.OutNodeID = req.OutNodeID
+			t.OutExitID = nil
 			t.OutIP = &out.ServerIP
 		}
 	}
@@ -94,6 +108,46 @@ func TunnelList(c *gin.Context) {
     c.JSON(http.StatusOK, response.Ok(list))
 }
 
+// TunnelGet 获取隧道
+// @Summary 获取隧道
+// @Tags tunnel
+// @Accept json
+// @Produce json
+// @Param data body SwaggerIDReq true "隧道ID"
+// @Success 200 {object} BaseSwaggerResp
+// @Router /api/v1/tunnel/get [post]
+func TunnelGet(c *gin.Context) {
+	var p struct {
+		ID int64 `json:"id"`
+	}
+	if err := c.ShouldBindJSON(&p); err != nil || p.ID <= 0 {
+		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
+		return
+	}
+	var t model.Tunnel
+	if err := db.DB.First(&t, p.ID).Error; err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg("隧道不存在"))
+		return
+	}
+	if roleInf, ok := c.Get("role_id"); ok && roleInf != 0 {
+		uidInf, ok2 := c.Get("user_id")
+		if !ok2 {
+			c.JSON(http.StatusForbidden, response.ErrMsg("无权限"))
+			return
+		}
+		uid := uidInf.(int64)
+		owned := t.OwnerID != nil && *t.OwnerID == uid
+		if !owned {
+			var ut model.UserTunnel
+			if err := db.DB.Where("user_id=? AND tunnel_id=?", uid, t.ID).First(&ut).Error; err != nil {
+				c.JSON(http.StatusForbidden, response.ErrMsg("无权限"))
+				return
+			}
+		}
+	}
+	c.JSON(http.StatusOK, response.Ok(t))
+}
+
 // TunnelUpdate 更新隧道
 // @Summary 更新隧道
 // @Tags tunnel
@@ -129,6 +183,38 @@ func TunnelUpdate(c *gin.Context) {
 	t.Flow = int(req.Flow)
 	t.TCPListenAddr, t.UDPListenAddr, t.Protocol, t.InterfaceName, t.TrafficRatio = req.TCPListenAddr, req.UDPListenAddr, req.Protocol, req.InterfaceName, req.TrafficRatio
 	t.UpdatedTime = time.Now().UnixMilli()
+	if req.OutNodeID != nil || req.OutExitID != nil {
+		if req.OutNodeID != nil && req.OutExitID != nil {
+			c.JSON(http.StatusOK, response.ErrMsg("出口节点与外部出口不可同时选择"))
+			return
+		}
+		if req.OutExitID != nil {
+			if *req.OutExitID <= 0 {
+				t.OutExitID = nil
+			} else {
+				var ext model.ExitNodeExternal
+				if err := db.DB.First(&ext, *req.OutExitID).Error; err != nil {
+					c.JSON(http.StatusOK, response.ErrMsg("外部出口节点不存在"))
+					return
+				}
+				t.OutExitID = req.OutExitID
+				t.OutNodeID = nil
+				t.OutIP = &ext.Host
+			}
+		}
+		if req.OutNodeID != nil {
+			if *req.OutNodeID <= 0 {
+				t.OutNodeID = nil
+			} else {
+				var out model.Node
+				if err := db.DB.First(&out, *req.OutNodeID).Error; err == nil {
+					t.OutNodeID = req.OutNodeID
+					t.OutExitID = nil
+					t.OutIP = &out.ServerIP
+				}
+			}
+		}
+	}
 	if err := db.DB.Save(&t).Error; err != nil {
 		c.JSON(http.StatusOK, response.ErrMsg("隧道更新失败"))
 		return

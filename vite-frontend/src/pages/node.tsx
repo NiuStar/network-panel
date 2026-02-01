@@ -1671,7 +1671,22 @@ export default function NodePage() {
           return base;
         });
 
-        setNodeList(mappedNodes);
+        setNodeList((prev) => {
+          const prevMap = new Map(prev.map((n) => [n.id, n]));
+          return mappedNodes.map((node: any) => {
+            const old = prevMap.get(node.id);
+            if (old?.systemInfo) {
+              const curUptime = node.systemInfo?.uptime || 0;
+              if (!node.systemInfo || curUptime === 0) {
+                node.systemInfo = old.systemInfo;
+              }
+            }
+            if (old?.copyLoading) {
+              node.copyLoading = old.copyLoading;
+            }
+            return node;
+          });
+        });
         if (withExtras) {
           // 预拉取各节点的 NQ 结果存在性
           mappedNodes.forEach(async (node: any) => {
@@ -1866,7 +1881,7 @@ export default function NodePage() {
             return {
               ...node,
               connectionStatus: messageData === 1 ? "online" : "offline",
-              systemInfo: messageData === 0 ? null : node.systemInfo,
+              systemInfo: node.systemInfo,
             };
           }
 
@@ -1885,10 +1900,17 @@ export default function NodePage() {
               } else {
                 systemInfo = messageData;
               }
+              if (!systemInfo || Object.keys(systemInfo).length === 0) {
+                return node;
+              }
 
               const currentUpload = parseInt(systemInfo.bytes_transmitted) || 0;
               const currentDownload = parseInt(systemInfo.bytes_received) || 0;
               const currentUptime = parseInt(systemInfo.uptime) || 0;
+
+              if (!currentUptime && node.systemInfo) {
+                return node;
+              }
 
               let uploadSpeed = 0;
               let downloadSpeed = 0;
@@ -2836,11 +2858,13 @@ export default function NodePage() {
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-default-600">开机时间</span>
-                      <span className="text-xs">
-                        {node.connectionStatus === "online" && node.systemInfo
-                          ? formatUptime(node.systemInfo.uptime)
-                          : "-"}
-                      </span>
+                        <span
+                          className={`text-xs ${node.connectionStatus === "online" ? "" : "text-default-400"}`}
+                        >
+                          {node.systemInfo
+                            ? formatUptime(node.systemInfo.uptime)
+                            : "-"}
+                        </span>
                     </div>
                   </div>
 
@@ -2850,9 +2874,10 @@ export default function NodePage() {
                       <div>
                         <div className="flex justify-between text-xs mb-1">
                           <span>CPU</span>
-                          <span className="font-mono">
-                            {node.connectionStatus === "online" &&
-                            node.systemInfo
+                          <span
+                            className={`font-mono ${node.connectionStatus === "online" ? "" : "text-default-400"}`}
+                          >
+                            {node.systemInfo
                               ? `${node.systemInfo.cpuUsage.toFixed(1)}%`
                               : "-"}
                           </span>
@@ -2867,20 +2892,16 @@ export default function NodePage() {
                             node.connectionStatus !== "online",
                           )}
                           size="sm"
-                          value={
-                            node.connectionStatus === "online" &&
-                            node.systemInfo
-                              ? node.systemInfo.cpuUsage
-                              : 0
-                          }
+                          value={node.systemInfo ? node.systemInfo.cpuUsage : 0}
                         />
                       </div>
                       <div>
                         <div className="flex justify-between text-xs mb-1">
                           <span>内存</span>
-                          <span className="font-mono">
-                            {node.connectionStatus === "online" &&
-                            node.systemInfo
+                          <span
+                            className={`font-mono ${node.connectionStatus === "online" ? "" : "text-default-400"}`}
+                          >
+                            {node.systemInfo
                               ? `${node.systemInfo.memoryUsage.toFixed(1)}%`
                               : "-"}
                           </span>
@@ -2896,10 +2917,7 @@ export default function NodePage() {
                           )}
                           size="sm"
                           value={
-                            node.connectionStatus === "online" &&
-                            node.systemInfo
-                              ? node.systemInfo.memoryUsage
-                              : 0
+                            node.systemInfo ? node.systemInfo.memoryUsage : 0
                           }
                         />
                       </div>
@@ -2908,16 +2926,20 @@ export default function NodePage() {
                     <div className="grid grid-cols-2 gap-2 text-xs">
                       <div className="text-center p-2 bg-default-50 dark:bg-default-100 rounded">
                         <div className="text-default-600 mb-0.5">上传</div>
-                        <div className="font-mono">
-                          {node.connectionStatus === "online" && node.systemInfo
+                        <div
+                          className={`font-mono ${node.connectionStatus === "online" ? "" : "text-default-400"}`}
+                        >
+                          {node.systemInfo
                             ? formatSpeed(node.systemInfo.uploadSpeed)
                             : "-"}
                         </div>
                       </div>
                       <div className="text-center p-2 bg-default-50 dark:bg-default-100 rounded">
                         <div className="text-default-600 mb-0.5">下载</div>
-                        <div className="font-mono">
-                          {node.connectionStatus === "online" && node.systemInfo
+                        <div
+                          className={`font-mono ${node.connectionStatus === "online" ? "" : "text-default-400"}`}
+                        >
+                          {node.systemInfo
                             ? formatSpeed(node.systemInfo.downloadSpeed)
                             : "-"}
                         </div>
@@ -2930,8 +2952,10 @@ export default function NodePage() {
                         <div className="text-primary-600 dark:text-primary-400 mb-0.5">
                           ↑ 上行流量
                         </div>
-                        <div className="font-mono text-primary-700 dark:text-primary-300">
-                          {node.connectionStatus === "online" && node.systemInfo
+                        <div
+                          className={`font-mono ${node.connectionStatus === "online" ? "text-primary-700 dark:text-primary-300" : "text-default-400"}`}
+                        >
+                          {node.systemInfo
                             ? formatTraffic(node.systemInfo.uploadTraffic)
                             : "-"}
                         </div>
@@ -2940,8 +2964,10 @@ export default function NodePage() {
                         <div className="text-success-600 dark:text-success-400 mb-0.5">
                           ↓ 下行流量
                         </div>
-                        <div className="font-mono text-success-700 dark:text-success-300">
-                          {node.connectionStatus === "online" && node.systemInfo
+                        <div
+                          className={`font-mono ${node.connectionStatus === "online" ? "text-success-700 dark:text-success-300" : "text-default-400"}`}
+                        >
+                          {node.systemInfo
                             ? formatTraffic(node.systemInfo.downloadTraffic)
                             : "-"}
                         </div>

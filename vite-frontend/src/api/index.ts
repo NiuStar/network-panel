@@ -176,6 +176,24 @@ export const restartGost = (nodeId: number) =>
 export const enableGostApi = (nodeId: number) =>
   Network.post("/node/enable-gost-api", { nodeId });
 
+// 出口节点（含外部）
+export const getExitNodes = () => Network.post("/exit/list");
+export const createExitExternal = (data: {
+  name: string;
+  host: string;
+  port: number;
+  protocol?: string;
+}) => Network.post("/exit/external/create", data);
+export const updateExitExternal = (data: {
+  id: number;
+  name: string;
+  host: string;
+  port: number;
+  protocol?: string;
+}) => Network.post("/exit/external/update", data);
+export const deleteExitExternal = (id: number) =>
+  Network.post("/exit/external/delete", { id });
+
 // 转发排序操作
 export const updateForwardOrder = (data: {
   forwards: Array<{ id: number; inx: number }>;

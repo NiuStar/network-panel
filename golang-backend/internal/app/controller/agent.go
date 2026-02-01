@@ -105,7 +105,7 @@ func desiredServices(nodeID int64) []map[string]any {
 					svc["observer"] = obsName
 					svc["_observers"] = []any{spec}
 				}
-				attachLimiter(svc, nodeID)
+				attachLimiter(svc, nodeID, r.UserID)
 				services = append(services, svc)
 			}
 		}
@@ -146,9 +146,9 @@ func AgentReconcileNode(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
 		return
 	}
-	var node model.Node
-	if err := dbpkg.DB.First(&node, p.NodeID).Error; err != nil {
-		c.JSON(http.StatusOK, response.ErrMsg("节点不存在"))
+	node, _, _, _, _, errMsg, ok := nodeAccess(c, p.NodeID, false)
+	if !ok {
+		c.JSON(http.StatusOK, response.ErrMsg(errMsg))
 		return
 	}
 	services := desiredServices(node.ID)

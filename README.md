@@ -3,6 +3,21 @@
 ## 感谢赞助商
 -  [![vps.town](https://vps.town/static/images/sponsor.png)](https://vps.town)感谢[vps.town](https://vps.town)提供的服务器赞助与支持！
 - [公共体验专区：https://vps.199028.xyz/app/](https://vps.199028.xyz/app/)
+
+## V2.0 升级亮点
+- 全面调整转发逻辑，配置与体验更统一
+- Agent 自带 AnyTLS 协议出口能力
+- 集成 sing-box，实现各协议连通性/测速测试
+- 支持多平台订阅（Clash Meta / Surge / Singbox / V2Ray / Quantumult X 等），无需再为协议转换烦恼
+- 集成 backtrace，可在节点自检中测试三网回程
+
+## 致谢（开源项目）
+- [go-gost/gost](https://github.com/go-gost/gost)
+- [SagerNet/sing-box](https://github.com/SagerNet/sing-box)
+- [zhanghanyun/backtrace](https://github.com/zhanghanyun/backtrace)
+- [anytls/anytls-go](https://github.com/anytls/anytls-go)
+- [EasyTier/EasyTier](https://github.com/EasyTier/EasyTier)
+
 ## 更新记录
 - 2025-11-24   ```增加终端功能，再也不用担心要登录节点跑命令了```
 

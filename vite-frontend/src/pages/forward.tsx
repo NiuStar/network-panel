@@ -63,6 +63,7 @@ import { usePageVisibility } from "@/hooks/usePageVisibility";
 interface Forward {
   id: number;
   name: string;
+  group?: string;
   tunnelId: number;
   tunnelName: string;
   inIp: string;
@@ -197,6 +198,7 @@ interface ForwardForm {
   id?: number;
   userId?: number;
   name: string;
+  group: string;
   tunnelId: number | null;
   inPort: number | null;
   remoteAddr: string;
@@ -221,6 +223,7 @@ type ForwardEditModalProps = {
 
 const DEFAULT_FORWARD_FORM: ForwardForm = {
   name: "",
+  group: "",
   tunnelId: null,
   inPort: null,
   remoteAddr: "",
@@ -648,6 +651,7 @@ const ForwardEditModal = memo(
           id: editForward.id,
           userId: editForward.userId,
           name: editForward.name,
+          group: editForward.group || "",
           tunnelId: editForward.tunnelId,
           inPort: editForward.inPort,
           remoteAddr: editForward.remoteAddr.split(",").join("\n"),
@@ -872,6 +876,7 @@ const ForwardEditModal = memo(
             id: form.id,
             userId: form.userId,
             name: form.name,
+            group: form.group,
             tunnelId: form.tunnelId,
             inPort: form.inPort,
             remoteAddr: processedRemoteAddr,
@@ -897,6 +902,7 @@ const ForwardEditModal = memo(
         } else {
           const createData = {
             name: form.name,
+            group: form.group,
             tunnelId: form.tunnelId || 0,
             entryNodeId: form.tunnelId ? undefined : entryNodeId,
             inPort: form.inPort,
@@ -1021,6 +1027,15 @@ const ForwardEditModal = memo(
                     variant="bordered"
                     onChange={(e) =>
                       setForm((prev) => ({ ...prev, name: e.target.value }))
+                    }
+                  />
+                  <Input
+                    label="分组（可选）"
+                    placeholder="如：OpenAI / HK / TW"
+                    value={form.group}
+                    variant="bordered"
+                    onChange={(e) =>
+                      setForm((prev) => ({ ...prev, group: e.target.value }))
                     }
                   />
 
@@ -2738,6 +2753,13 @@ const [isMobile, setIsMobile] = useState(false);
               <p className="text-xs text-default-500 truncate">
                 {forward.tunnelName}
               </p>
+              {forward.group ? (
+                <div className="mt-1">
+                  <Chip size="sm" variant="flat" className="text-xs">
+                    {forward.group}
+                  </Chip>
+                </div>
+              ) : null}
             </div>
             <div className="flex items-center gap-1.5 ml-2">
               {viewMode === "direct" && !useWindowing && (

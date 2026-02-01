@@ -16,6 +16,10 @@ import (
 // NodeConnections returns current WS connections per nodeId with versions
 // GET /api/v1/node/connections
 func NodeConnections(c *gin.Context) {
+	if roleInf, ok := c.Get("role_id"); ok && roleInf != 0 {
+		c.JSON(http.StatusOK, response.ErrMsg("无权限"))
+		return
+	}
 	nodeConnMu.RLock()
 	defer nodeConnMu.RUnlock()
 	type connInfo struct {

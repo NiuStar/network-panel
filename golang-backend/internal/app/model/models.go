@@ -49,6 +49,7 @@ type Tunnel struct {
 	InNodeID      int64    `gorm:"column:in_node_id" json:"inNodeId"`
 	InIP          string   `gorm:"column:in_ip" json:"inIp"`
 	OutNodeID     *int64   `gorm:"column:out_node_id" json:"outNodeId,omitempty"`
+	OutExitID     *int64   `gorm:"column:out_exit_id" json:"outExitId,omitempty"`
 	OutIP         *string  `gorm:"column:out_ip" json:"outIp,omitempty"`
 	Type          int      `gorm:"column:type" json:"type"`
 	Flow          int      `gorm:"column:flow" json:"flow"`
@@ -66,6 +67,7 @@ type Forward struct {
 	UserID        int64   `gorm:"column:user_id" json:"userId"`
 	UserName      string  `gorm:"column:user_name" json:"userName"`
 	Name          string  `gorm:"column:name" json:"name"`
+	Group         string  `gorm:"column:group_name" json:"group,omitempty"`
 	TunnelID      int64   `gorm:"column:tunnel_id" json:"tunnelId"`
 	InPort        int     `gorm:"column:in_port" json:"inPort"`
 	OutPort       *int    `gorm:"column:out_port" json:"outPort,omitempty"`
@@ -94,6 +96,24 @@ type UserTunnel struct {
 }
 
 func (UserTunnel) TableName() string { return "user_tunnel" }
+
+type UserNode struct {
+	ID            int64  `gorm:"primaryKey;column:id" json:"id"`
+	UserID        int64  `gorm:"column:user_id" json:"userId"`
+	NodeID        int64  `gorm:"column:node_id" json:"nodeId"`
+	Flow          int64  `gorm:"column:flow" json:"flow"`
+	InFlow        int64  `gorm:"column:in_flow" json:"inFlow"`
+	OutFlow       int64  `gorm:"column:out_flow" json:"outFlow"`
+	FlowResetTime *int64 `gorm:"column:flow_reset_time" json:"flowResetTime,omitempty"`
+	ExpTime       *int64 `gorm:"column:exp_time" json:"expTime,omitempty"`
+	SpeedID       *int64 `gorm:"column:speed_id" json:"speedId,omitempty"`
+	SpeedMbps     int    `gorm:"column:speed_mbps" json:"speedMbps"`
+	Num           int    `gorm:"column:num" json:"num"`
+	PortRanges    string `gorm:"column:port_ranges" json:"portRanges"`
+	Status        int    `gorm:"column:status" json:"status"`
+}
+
+func (UserNode) TableName() string { return "user_node" }
 
 type SpeedLimit struct {
 	ID          int64  `gorm:"primaryKey;column:id" json:"id"`
@@ -135,6 +155,7 @@ type FlowTimeseries struct {
 	InBytes     int64 `gorm:"column:in_bytes" json:"inBytes"`
 	OutBytes    int64 `gorm:"column:out_bytes" json:"outBytes"`
 	BilledBytes int64 `gorm:"column:billed_bytes" json:"billedBytes"` // single/dual directional accounted bytes
+	Source      string `gorm:"column:source;type:varchar(16)" json:"source"`
 	TimeMs      int64 `gorm:"column:time_ms" json:"timeMs"`
 	CreatedTime int64 `gorm:"column:created_time" json:"createdTime"`
 }
@@ -170,6 +191,21 @@ type EasyTierResult struct {
 
 func (EasyTierResult) TableName() string { return "easytier_result" }
 
+// NodeDiagResult stores streaming diagnostic output per request/node
+type NodeDiagResult struct {
+	ID          int64  `gorm:"primaryKey;column:id" json:"id"`
+	NodeID      int64  `gorm:"column:node_id;index:diag_node_idx" json:"nodeId"`
+	RequestID   string `gorm:"column:request_id;type:varchar(128);index:diag_node_idx" json:"requestId"`
+	Type        string `gorm:"column:type;type:varchar(64);index:diag_node_idx" json:"type"`
+	Content     string `gorm:"column:content;type:longtext" json:"content"`
+	Done        bool   `gorm:"column:done" json:"done"`
+	TimeMs      int64  `gorm:"column:time_ms" json:"timeMs"`
+	CreatedTime int64  `gorm:"column:created_time" json:"createdTime"`
+	UpdatedTime int64  `gorm:"column:updated_time" json:"updatedTime"`
+}
+
+func (NodeDiagResult) TableName() string { return "node_diag_result" }
+
 // Ensure models compile with gorm
 var _ *gorm.DB
 
@@ -198,6 +234,7 @@ type ExitSetting struct {
 	Observer *string `gorm:"column:observer" json:"observer,omitempty"`
 	Limiter  *string `gorm:"column:limiter" json:"limiter,omitempty"`
 	RLimiter *string `gorm:"column:rlimiter" json:"rlimiter,omitempty"`
+	BaseUserID *int64 `gorm:"column:base_user_id" json:"baseUserId,omitempty"`
 	// Metadata is a JSON string storing arbitrary key-values for handler.metadata
 	Metadata *string `gorm:"column:metadata" json:"metadata,omitempty"`
 }
@@ -207,12 +244,25 @@ func (ExitSetting) TableName() string { return "exit_setting" }
 // AnyTLSSetting persists AnyTLS exit settings per node
 type AnyTLSSetting struct {
 	BaseEntity
-	NodeID   int64  `gorm:"column:node_id;uniqueIndex" json:"nodeId"`
-	Port     int    `gorm:"column:port" json:"port"`
-	Password string `gorm:"column:password" json:"password"`
+	NodeID     int64 `gorm:"column:node_id;uniqueIndex" json:"nodeId"`
+	Port       int   `gorm:"column:port" json:"port"`
+	Password   string `gorm:"column:password" json:"password"`
+	BaseUserID *int64 `gorm:"column:base_user_id" json:"baseUserId,omitempty"`
 }
 
 func (AnyTLSSetting) TableName() string { return "anytls_setting" }
+
+// ExitNodeExternal stores manually added exit nodes (non-agent)
+type ExitNodeExternal struct {
+	BaseEntity
+	Name     string  `gorm:"column:name" json:"name"`
+	Host     string  `gorm:"column:host" json:"host"`
+	Port     int     `gorm:"column:port" json:"port"`
+	Protocol *string `gorm:"column:protocol" json:"protocol,omitempty"`
+	Config   *string `gorm:"column:config" json:"config,omitempty"`
+}
+
+func (ExitNodeExternal) TableName() string { return "exit_node_external" }
 
 // ProbeTarget: global list of IPs to ping
 type ProbeTarget struct {
@@ -265,16 +315,16 @@ func (NodeSysInfo) TableName() string { return "node_sysinfo" }
 
 // NodeRuntime stores latest runtime metadata like interfaces list
 type NodeRuntime struct {
-	NodeID      int64   `gorm:"primaryKey;column:node_id" json:"nodeId"`
-	Interfaces  *string `gorm:"column:interfaces" json:"interfaces,omitempty"` // JSON array string
-	UsedPorts   *string `gorm:"column:used_ports" json:"usedPorts,omitempty"`  // JSON array string
+	NodeID              int64   `gorm:"primaryKey;column:node_id" json:"nodeId"`
+	Interfaces          *string `gorm:"column:interfaces" json:"interfaces,omitempty"` // JSON array string
+	UsedPorts           *string `gorm:"column:used_ports" json:"usedPorts,omitempty"`  // JSON array string
 	EasyTierStatus      *string `gorm:"column:easytier_status" json:"easytierStatus,omitempty"`
 	EasyTierOp          *string `gorm:"column:easytier_op" json:"easytierOp,omitempty"`
 	EasyTierError       *string `gorm:"column:easytier_error" json:"easytierError,omitempty"`
 	EasyTierUpdatedTime *int64  `gorm:"column:easytier_updated_time" json:"easytierUpdatedTime,omitempty"`
 	EasyTierVersion     *string `gorm:"column:easytier_version" json:"easytierVersion,omitempty"`
 	EasyTierRequestID   *string `gorm:"column:easytier_request_id" json:"easytierRequestId,omitempty"`
-	UpdatedTime int64   `gorm:"column:updated_time" json:"updatedTime"`
+	UpdatedTime         int64   `gorm:"column:updated_time" json:"updatedTime"`
 }
 
 func (NodeRuntime) TableName() string { return "node_runtime" }

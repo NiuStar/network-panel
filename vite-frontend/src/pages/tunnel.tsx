@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, memo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, memo } from "react";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Button } from "@heroui/button";
 import { Input } from "@heroui/input";
@@ -15,6 +15,21 @@ import { Spinner } from "@heroui/spinner";
 import { Divider } from "@heroui/divider";
 import { Alert } from "@heroui/alert";
 import toast from "react-hot-toast";
+import {
+  DndContext,
+  DragEndEvent,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 import OpsLogModal from "@/components/OpsLogModal";
 import VirtualGrid from "@/components/VirtualGrid";
@@ -27,6 +42,7 @@ import {
   deleteTunnel,
   getNodeList,
   diagnoseTunnelStep,
+  getExitNodes,
   enableGostApi,
 } from "@/api";
 
@@ -36,6 +52,7 @@ interface Tunnel {
   type: number; // 1: 端口转发, 2: 隧道转发
   inNodeId: number;
   outNodeId?: number;
+  outExitId?: number;
   inIp: string;
   outIp?: string;
   protocol?: string;
@@ -60,6 +77,7 @@ interface TunnelForm {
   type: number;
   inNodeId: number | null;
   outNodeId?: number | null;
+  outExitId?: number | null;
   protocol: string;
   tcpListenAddr: string;
   udpListenAddr: string;
@@ -88,10 +106,33 @@ interface DiagnosisResult {
   }>;
 }
 
+interface ExitNodeItem {
+  source: "node" | "external";
+  nodeId?: number;
+  exitId?: number;
+  name: string;
+  host: string;
+  online: boolean;
+  ssPort?: number;
+  anytlsPort?: number;
+  protocol?: string;
+  port?: number;
+}
+
+interface RouteItem {
+  key: string;
+  type: "node" | "external";
+  id: number;
+  name: string;
+  host?: string;
+  isExit: boolean;
+}
+
 type TunnelEditModalProps = {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   nodes: Node[];
+  exitNodes: ExitNodeItem[];
   editTunnel: Tunnel | null;
   onSaved: () => void;
 };
@@ -101,6 +142,7 @@ const DEFAULT_FORM: TunnelForm = {
   type: 1,
   inNodeId: null,
   outNodeId: null,
+  outExitId: null,
   protocol: "tls",
   tcpListenAddr: "[::]",
   udpListenAddr: "[::]",
@@ -110,14 +152,79 @@ const DEFAULT_FORM: TunnelForm = {
   status: 1,
 };
 
+type SortableRouteItemProps = {
+  item: RouteItem;
+  onRemove: (key: string) => void;
+};
+
+const SortableRouteItem = memo(({ item, onRemove }: SortableRouteItemProps) => {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: item.key });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.6 : 1,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      className="flex items-center gap-3 rounded-lg border border-default-200 bg-default-50 p-2"
+      style={style}
+    >
+      <button
+        className="cursor-grab text-default-500"
+        type="button"
+        {...attributes}
+        {...listeners}
+      >
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path
+            d="M8 6h.01M8 12h.01M8 18h.01M16 6h.01M16 12h.01M16 18h.01"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+          />
+        </svg>
+      </button>
+      <div className="flex-1">
+        <div className="font-medium">{item.name || "-"}</div>
+        {item.type === "external" && item.host ? (
+          <div className="text-xs text-default-500">{item.host}</div>
+        ) : null}
+      </div>
+      {item.type === "external" ? (
+        <Chip size="sm" variant="flat" color="warning">
+          外部
+        </Chip>
+      ) : null}
+      {item.isExit ? (
+        <Chip size="sm" variant="flat" color="primary">
+          出口
+        </Chip>
+      ) : null}
+      <Button size="sm" variant="flat" onPress={() => onRemove(item.key)}>
+        移除
+      </Button>
+    </div>
+  );
+});
+
 const TunnelEditModal = memo(
-  ({ isOpen, onOpenChange, nodes, editTunnel, onSaved }: TunnelEditModalProps) => {
+  ({
+    isOpen,
+    onOpenChange,
+    nodes,
+    exitNodes,
+    editTunnel,
+    onSaved,
+  }: TunnelEditModalProps) => {
     const isEdit = !!editTunnel;
     const [form, setForm] = useState<TunnelForm>(DEFAULT_FORM);
     const [errors, setErrors] = useState<{ [key: string]: string }>({});
     const [submitLoading, setSubmitLoading] = useState(false);
     const [midPath, setMidPath] = useState<number[]>([]);
-    const [addMidNodeId, setAddMidNodeId] = useState<number | "">("");
+    const [midPathReady, setMidPathReady] = useState(false);
     const [entryIface, setEntryIface] = useState<string>("");
     const [midIfaces, setMidIfaces] = useState<Record<number, string>>({});
     const [midBindIps, setMidBindIps] = useState<Record<number, string>>({});
@@ -140,65 +247,159 @@ const TunnelEditModal = memo(
       Array<{ id: number; key: string; value: string }>
     >([]);
     const [entryApiOn, setEntryApiOn] = useState<boolean | null>(null);
+    const [routeItems, setRouteItems] = useState<RouteItem[]>([]);
+    const initRouteRef = useRef(false);
 
-    const entryNodeOptions = useMemo(
-      () =>
-        nodes.map((node) => (
-          <SelectItem
-            key={node.id}
-            textValue={`${node.name} (${node.status === 1 ? "在线" : "离线"})`}
-          >
-            <div className="flex items-center justify-between">
-              <span>{node.name}</span>
-              <Chip
-                color={node.status === 1 ? "success" : "danger"}
-                size="sm"
-                variant="flat"
-              >
-                {node.status === 1 ? "在线" : "离线"}
-              </Chip>
-            </div>
-          </SelectItem>
-        )),
-      [nodes],
+    const exitNodeIdSet = useMemo(() => {
+      const set = new Set<number>();
+
+      exitNodes.forEach((n) => {
+        if (n.source === "node" && n.nodeId) set.add(n.nodeId);
+      });
+
+      return set;
+    }, [exitNodes]);
+
+    const externalExitNodes = useMemo(
+      () => exitNodes.filter((n) => n.source === "external"),
+      [exitNodes],
     );
 
-    const exitNodeOptions = useMemo(
-      () =>
-        nodes.map((node) => (
-          <SelectItem
-            key={node.id}
-            textValue={`${node.name} (${node.status === 1 ? "在线" : "离线"})`}
-          >
-            <div className="flex items-center justify-between">
-              <span>{node.name}</span>
-              <div className="flex items-center gap-2">
-                <Chip
-                  color={node.status === 1 ? "success" : "danger"}
-                  size="sm"
-                  variant="flat"
-                >
-                  {node.status === 1 ? "在线" : "离线"}
-                </Chip>
-                {form.inNodeId === node.id && (
-                  <Chip color="warning" size="sm" variant="flat">
-                    已选为入口
-                  </Chip>
-                )}
-              </div>
-            </div>
-          </SelectItem>
-        )),
-      [nodes, form.inNodeId],
+    const selectedExitInfo = useMemo(() => {
+      if (form.outExitId) {
+        const ext = externalExitNodes.find(
+          (n) => n.exitId === form.outExitId,
+        );
+
+        if (ext) {
+          return { name: ext.name, host: ext.host, type: "external" as const };
+        }
+      }
+      if (form.outNodeId) {
+        const outNode = nodes.find((n) => n.id === form.outNodeId);
+        const exitNode = exitNodes.find(
+          (n) => n.source === "node" && n.nodeId === form.outNodeId,
+        );
+
+        if (outNode) {
+          return {
+            name: outNode.name,
+            host: exitNode?.host || "",
+            type: "node" as const,
+          };
+        }
+      }
+      return null;
+    }, [exitNodes, externalExitNodes, form.outExitId, form.outNodeId, nodes]);
+
+    const sensors = useSensors(
+      useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    );
+
+    const buildRouteFromIds = useCallback(
+      (
+        entryId: number | null,
+        mids: number[],
+        outNodeId?: number | null,
+        outExitId?: number | null,
+      ) => {
+        const items: RouteItem[] = [];
+
+        if (entryId) {
+          const entryNode = nodes.find((n) => n.id === entryId);
+          if (entryNode) {
+            items.push({
+              key: `node-${entryNode.id}`,
+              type: "node",
+              id: entryNode.id,
+              name: entryNode.name,
+              isExit: exitNodeIdSet.has(entryNode.id),
+            });
+          }
+        }
+        mids.forEach((nid) => {
+          const midNode = nodes.find((n) => n.id === nid);
+          if (midNode) {
+            items.push({
+              key: `node-${midNode.id}`,
+              type: "node",
+              id: midNode.id,
+              name: midNode.name,
+              isExit: exitNodeIdSet.has(midNode.id),
+            });
+          }
+        });
+        if (outExitId) {
+          const ext = externalExitNodes.find((n) => n.exitId === outExitId);
+          if (ext) {
+            items.push({
+              key: `exit-${ext.exitId}`,
+              type: "external",
+              id: ext.exitId || 0,
+              name: ext.name,
+              host: ext.host,
+              isExit: true,
+            });
+          }
+        } else if (outNodeId) {
+          const outNode = nodes.find((n) => n.id === outNodeId);
+          if (outNode) {
+            items.push({
+              key: `node-${outNode.id}`,
+              type: "node",
+              id: outNode.id,
+              name: outNode.name,
+              isExit: exitNodeIdSet.has(outNode.id),
+            });
+          }
+        }
+
+        return items;
+      },
+      [externalExitNodes, exitNodeIdSet, nodes],
+    );
+
+    const syncRouteToForm = useCallback(
+      (items: RouteItem[]) => {
+        if (items.length === 0) {
+          setForm((prev) => ({
+            ...prev,
+            inNodeId: null,
+            outNodeId: null,
+            outExitId: null,
+          }));
+          setMidPath([]);
+          return;
+        }
+        const entry = items[0];
+        const last = items[items.length - 1];
+        const midNodes = items
+          .slice(1, items.length - 1)
+          .filter((it) => it.type === "node")
+          .map((it) => it.id);
+
+        setForm((prev) => ({
+          ...prev,
+          inNodeId: entry.type === "node" ? entry.id : null,
+          outNodeId:
+            prev.type === 2 && last?.type === "node" ? last.id : null,
+          outExitId:
+            prev.type === 2 && last?.type === "external" ? last.id : null,
+        }));
+        setMidPath(midNodes);
+      },
+      [setForm, setMidPath],
     );
 
     useEffect(() => {
       if (!isOpen) return;
+      initRouteRef.current = false;
       if (!editTunnel) {
         setForm(DEFAULT_FORM);
         setErrors({});
         setMidPath([]);
-        setAddMidNodeId("");
+        setMidPathReady(true);
+        setRouteItems([]);
         setEntryIface("");
         setMidIfaces({});
         setMidBindIps({});
@@ -221,6 +422,7 @@ const TunnelEditModal = memo(
         type: editTunnel.type,
         inNodeId: editTunnel.inNodeId,
         outNodeId: editTunnel.outNodeId || null,
+        outExitId: editTunnel.outExitId || null,
         protocol: editTunnel.protocol || "tls",
         tcpListenAddr: editTunnel.tcpListenAddr || "[::]",
         udpListenAddr: editTunnel.udpListenAddr || "[::]",
@@ -231,7 +433,8 @@ const TunnelEditModal = memo(
       });
       setErrors({});
       setMidPath([]);
-      setAddMidNodeId("");
+      setRouteItems([]);
+      setMidPathReady(false);
       setExitPort(null);
       setExitPassword("");
       setExitMethod(EXIT_METHODS[0]);
@@ -260,6 +463,7 @@ const TunnelEditModal = memo(
           if (r.code === 0 && Array.isArray(r.data?.path))
             setMidPath(r.data.path);
         } catch {}
+        setMidPathReady(true);
         try {
           const { getTunnelIface } = await import("@/api");
           const r: any = await getTunnelIface(editTunnel.id);
@@ -292,6 +496,47 @@ const TunnelEditModal = memo(
     }, [editTunnel, isOpen, nodes]);
 
     useEffect(() => {
+      if (!isOpen) return;
+      if (!midPathReady) return;
+      if (initRouteRef.current) return;
+      const items = buildRouteFromIds(
+        form.inNodeId,
+        midPath,
+        form.outNodeId,
+        form.outExitId,
+      );
+
+      if (items.length > 0) {
+        setRouteItems(items);
+        initRouteRef.current = true;
+      }
+    }, [
+      buildRouteFromIds,
+      form.inNodeId,
+      form.outExitId,
+      form.outNodeId,
+      isOpen,
+      midPath,
+      midPathReady,
+    ]);
+
+    useEffect(() => {
+      if (!isOpen) return;
+      setRouteItems((prev) =>
+        prev.map((item) =>
+          item.type === "node"
+            ? { ...item, isExit: exitNodeIdSet.has(item.id) }
+            : item,
+        ),
+      );
+    }, [exitNodeIdSet, isOpen]);
+
+    useEffect(() => {
+      if (!isOpen) return;
+      syncRouteToForm(routeItems);
+    }, [isOpen, routeItems, syncRouteToForm]);
+
+    useEffect(() => {
       if (form.inNodeId) {
         try {
           const n: any = nodes.find(
@@ -310,6 +555,117 @@ const TunnelEditModal = memo(
       }
     }, [form.inNodeId, nodes]);
 
+    useEffect(() => {
+      if (!isOpen || form.type !== 2) return;
+      if (!form.outNodeId) {
+        setExitDeployed("");
+        return;
+      }
+      const nid = form.outNodeId;
+
+      setExitDeployed("");
+      import("@/api")
+        .then(({ queryNodeServices }) =>
+          queryNodeServices({ nodeId: nid, filter: "ss" }),
+        )
+        .then((res: any) => {
+          if (res.code === 0 && Array.isArray(res.data)) {
+            const items = res.data as any[];
+            const ss = items.find((x) => x && x.handler === "ss");
+
+            if (ss) {
+              const desc = `已部署: 端口 ${ss.port || ss.addr || "-"}，监听 ${ss.listening ? "是" : "否"}`;
+
+              setExitDeployed(desc);
+              if (!exitPort && ss.port) setExitPort(Number(ss.port));
+            } else {
+              setExitDeployed("未部署");
+            }
+          }
+        })
+        .catch(() => {});
+      import("@/api").then(({ getNodeInterfaces }) => {
+        getNodeInterfaces(nid).catch(() => {});
+      });
+    }, [exitPort, form.outNodeId, form.type, isOpen]);
+
+    const toggleNodeRoute = (node: Node) => {
+      setRouteItems((prev) => {
+        const idx = prev.findIndex(
+          (item) => item.type === "node" && item.id === node.id,
+        );
+        if (idx >= 0) {
+          return prev.filter((_, i) => i !== idx);
+        }
+        const newItem: RouteItem = {
+          key: `node-${node.id}`,
+          type: "node",
+          id: node.id,
+          name: node.name,
+          isExit: exitNodeIdSet.has(node.id),
+        };
+        const extIndex = prev.findIndex((item) => item.type === "external");
+        if (extIndex >= 0) {
+          const next = prev.slice();
+          next.splice(extIndex, 0, newItem);
+          return next;
+        }
+        return [...prev, newItem];
+      });
+    };
+
+    const toggleExternalExit = (ext: ExitNodeItem) => {
+      const exitId = ext.exitId;
+      if (!exitId) return;
+      setRouteItems((prev) => {
+        const hasExt = prev.some(
+          (item) => item.type === "external" && item.id === exitId,
+        );
+        const next = prev.filter((item) => item.type !== "external");
+        if (hasExt) return next;
+        next.push({
+          key: `exit-${exitId}`,
+          type: "external",
+          id: exitId,
+          name: ext.name,
+          host: ext.host,
+          isExit: true,
+        });
+        return next;
+      });
+    };
+
+    const handleRouteDragEnd = (event: DragEndEvent) => {
+      const { active, over } = event;
+
+      if (!over || active.id === over.id) return;
+      setRouteItems((prev) => {
+        const activeKey = String(active.id);
+        const overKey = String(over.id);
+        const oldIndex = prev.findIndex((item) => item.key === activeKey);
+        const newIndex = prev.findIndex((item) => item.key === overKey);
+
+        if (oldIndex < 0 || newIndex < 0) return prev;
+        const next = arrayMove(prev, oldIndex, newIndex);
+        if (form.type === 2) {
+          const last = next[next.length - 1];
+          const externalMid = next.some(
+            (item, idx) => item.type === "external" && idx !== next.length - 1,
+          );
+
+          if (!last || !last.isExit) {
+            toast.error("末端必须是出口节点");
+            return prev;
+          }
+          if (externalMid) {
+            toast.error("外部出口只能放在末端");
+            return prev;
+          }
+        }
+        return next;
+      });
+    };
+
     const validateForm = (): boolean => {
       const newErrors: { [key: string]: string } = {};
 
@@ -319,8 +675,13 @@ const TunnelEditModal = memo(
         newErrors.name = "隧道名称长度应在2-50个字符之间";
       }
 
-      if (!form.inNodeId) {
-        newErrors.inNodeId = "请选择入口节点";
+      if (routeItems.length === 0) {
+        newErrors.route = "请选择线路节点";
+      } else {
+        const entry = routeItems[0];
+        if (!entry || entry.type !== "node") {
+          newErrors.route = "入口必须是面板节点";
+        }
       }
 
       if (!form.tcpListenAddr.trim()) {
@@ -334,11 +695,28 @@ const TunnelEditModal = memo(
       }
 
       if (form.type === 2) {
-        if (!form.outNodeId) {
-          newErrors.outNodeId = "请选择出口节点";
-        } else if (form.inNodeId === form.outNodeId) {
-          newErrors.outNodeId =
-            "隧道转发模式下，入口和出口不能是同一个节点";
+        if (routeItems.length < 2) {
+          newErrors.route = "隧道转发需要至少入口与出口";
+        } else {
+          const entry = routeItems[0];
+          const last = routeItems[routeItems.length - 1];
+          const externalMid = routeItems.some(
+            (item, idx) => item.type === "external" && idx !== routeItems.length - 1,
+          );
+
+          if (!last || !last.isExit) {
+            newErrors.route = "最后一个节点必须是出口节点";
+          } else if (
+            entry &&
+            last &&
+            entry.type === "node" &&
+            last.type === "node" &&
+            entry.id === last.id
+          ) {
+            newErrors.route = "隧道转发模式下，入口和出口不能是同一个节点";
+          } else if (externalMid) {
+            newErrors.route = "外部出口只能放在末端";
+          }
         }
 
         if (!form.protocol) {
@@ -374,8 +752,12 @@ const TunnelEditModal = memo(
         ...prev,
         type,
         outNodeId: type === 1 ? null : prev.outNodeId,
+        outExitId: type === 1 ? null : prev.outExitId,
         protocol: type === 1 ? "tls" : prev.protocol,
       }));
+      if (type === 1) {
+        setRouteItems((prev) => prev.slice(0, 1));
+      }
       setExitDeployed("");
     };
 
@@ -415,8 +797,7 @@ const TunnelEditModal = memo(
               }
             }
             if (tid) {
-              if (midPath.length > 0)
-                await setTunnelPath(tid as number, midPath);
+              await setTunnelPath(tid as number, midPath);
               const ifaces: Array<{ nodeId: number; ip: string }> = [];
 
               if (form.inNodeId)
@@ -552,31 +933,121 @@ const TunnelEditModal = memo(
                   </div>
 
                   <Divider />
-                  <h3 className="text-lg font-semibold">入口配置</h3>
+                  <h3 className="text-lg font-semibold">线路编排</h3>
+                  <div className="text-sm text-default-500">
+                    点击节点卡片加入线路，拖动下方顺序。末端必须为出口节点。
+                  </div>
+                  {errors.route ? (
+                    <div className="text-xs text-danger-500">{errors.route}</div>
+                  ) : null}
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                    {nodes.map((node) => {
+                      const selected = routeItems.some(
+                        (item) => item.type === "node" && item.id === node.id,
+                      );
+                      const isExit = exitNodeIdSet.has(node.id);
 
-                  <Select
-                    errorMessage={errors.inNodeId}
-                    isDisabled={isEdit}
-                    isInvalid={!!errors.inNodeId}
-                    label="入口节点"
-                    placeholder="请选择入口节点"
-                    selectedKeys={
-                      form.inNodeId ? [form.inNodeId.toString()] : []
-                    }
-                    variant="bordered"
-                    onSelectionChange={(keys) => {
-                      const selectedKey = Array.from(keys)[0] as string;
+                      return (
+                        <button
+                          key={node.id}
+                          className={`w-full text-left rounded-lg border p-3 transition ${
+                            selected
+                              ? "border-primary-500 bg-primary-50"
+                              : "border-default-200"
+                          }`}
+                          type="button"
+                          onClick={() => toggleNodeRoute(node)}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="font-medium">{node.name}</div>
+                            <Chip
+                              size="sm"
+                              variant="flat"
+                              color={node.status === 1 ? "success" : "danger"}
+                            >
+                              {node.status === 1 ? "在线" : "离线"}
+                            </Chip>
+                          </div>
+                          <div className="text-xs text-default-500 mt-1">
+                            节点 ID：{node.id}
+                          </div>
+                          <div className="flex items-center gap-2 mt-2">
+                            {isExit ? (
+                              <Chip size="sm" variant="flat" color="primary">
+                                出口
+                              </Chip>
+                            ) : null}
+                            {selected ? (
+                              <Chip size="sm" variant="flat" color="success">
+                                已选
+                              </Chip>
+                            ) : null}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
 
-                      if (selectedKey) {
-                        setForm((prev) => ({
-                          ...prev,
-                          inNodeId: parseInt(selectedKey),
-                        }));
-                      }
-                    }}
-                  >
-                    {entryNodeOptions}
-                  </Select>
+                  {externalExitNodes.length > 0 ? (
+                    <div className="space-y-2">
+                      <div className="text-sm font-medium">外部出口节点</div>
+                      <div className="flex flex-wrap gap-2">
+                        {externalExitNodes.map((ext) => {
+                          const active = routeItems.some(
+                            (item) =>
+                              item.type === "external" &&
+                              item.id === ext.exitId,
+                          );
+
+                          return (
+                            <Button
+                              key={ext.exitId}
+                              size="sm"
+                              variant={active ? "solid" : "flat"}
+                              color="warning"
+                              onPress={() => toggleExternalExit(ext)}
+                            >
+                              {ext.name}
+                            </Button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium">已选线路</div>
+                    {routeItems.length === 0 ? (
+                      <div className="text-xs text-default-500">
+                        尚未选择节点
+                      </div>
+                    ) : (
+                      <DndContext
+                        collisionDetection={closestCenter}
+                        sensors={sensors}
+                        onDragEnd={handleRouteDragEnd}
+                      >
+                        <SortableContext
+                          items={routeItems.map((item) => item.key)}
+                          strategy={verticalListSortingStrategy}
+                        >
+                          <div className="space-y-2">
+                            {routeItems.map((item) => (
+                              <SortableRouteItem
+                                key={item.key}
+                                item={item}
+                                onRemove={(key) =>
+                                  setRouteItems((prev) =>
+                                    prev.filter((it) => it.key !== key),
+                                  )
+                                }
+                              />
+                            ))}
+                          </div>
+                        </SortableContext>
+                      </DndContext>
+                    )}
+                  </div>
 
                   {form.inNodeId ? (
                     <div className="p-3 border border-default-200 rounded-lg flex items-center justify-between">
@@ -618,6 +1089,7 @@ const TunnelEditModal = memo(
                         label="出口端口(SS)"
                         placeholder="例如 10086"
                         type="number"
+                        isDisabled={!!form.outExitId}
                         value={exitPort ? String(exitPort) : ""}
                         onChange={(e) =>
                           setExitPort(Number((e.target as any).value))
@@ -626,6 +1098,7 @@ const TunnelEditModal = memo(
                       <Input
                         label="出口密码(SS)"
                         placeholder="不少于6位"
+                        isDisabled={!!form.outExitId}
                         value={exitPassword}
                         onChange={(e) =>
                           setExitPassword((e.target as any).value)
@@ -634,6 +1107,7 @@ const TunnelEditModal = memo(
                       <Select
                         label="加密方法"
                         description="选择 Shadowsocks 加密方法"
+                        isDisabled={!!form.outExitId}
                         selectedKeys={[exitMethod]}
                         onSelectionChange={(keys) => {
                           const val = Array.from(keys as Set<string>)[0] as string;
@@ -716,52 +1190,6 @@ const TunnelEditModal = memo(
                         </Select>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2 mb-2">
-                      <Select
-                        className="max-w-[260px]"
-                        label="添加中间节点"
-                        selectedKeys={
-                          addMidNodeId ? [String(addMidNodeId)] : []
-                        }
-                        size="sm"
-                        onSelectionChange={(keys) => {
-                          const k = Array.from(keys)[0] as string;
-
-                          if (!k) return;
-                          const v = parseInt(k);
-
-                          setAddMidNodeId(isNaN(v) ? "" : v);
-                        }}
-                      >
-                        {nodes
-                          .filter(
-                            (n) =>
-                              n.id !== form.inNodeId &&
-                              n.id !== (form.outNodeId || 0) &&
-                              !midPath.includes(n.id),
-                          )
-                          .map((n) => (
-                            <SelectItem key={String(n.id)}>
-                              {n.name}
-                            </SelectItem>
-                          ))}
-                      </Select>
-                      <Button
-                        size="sm"
-                        variant="flat"
-                        onPress={() => {
-                          if (addMidNodeId) {
-                            const nid = Number(addMidNodeId);
-
-                            if (!midPath.includes(nid))
-                              setMidPath((prev) => [...prev, nid]);
-                            setAddMidNodeId("");
-                          }
-                        }}
-                      >
-                        添加
-                      </Button>
-                    </div>
                     {midPath.length === 0 ? (
                       <div className="text-xs text-default-500">
                         未配置中间节点
@@ -782,53 +1210,18 @@ const TunnelEditModal = memo(
                                 </div>
                                 <div className="flex items-center gap-1">
                                   <Button
-                                    size="sm"
-                                    variant="flat"
-                                    onPress={() => {
-                                      setMidPath((prev) => {
-                                        const i = prev.indexOf(nid);
-
-                                        if (i <= 0) return prev.slice();
-                                        const arr = prev.slice();
-                                        const t = arr[i - 1];
-
-                                        arr[i - 1] = arr[i];
-                                        arr[i] = t;
-
-                                        return arr;
-                                      });
-                                    }}
-                                  >
-                                    上移
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="flat"
-                                    onPress={() => {
-                                      setMidPath((prev) => {
-                                        const i = prev.indexOf(nid);
-
-                                        if (i < 0 || i >= prev.length - 1)
-                                          return prev.slice();
-                                        const arr = prev.slice();
-                                        const t = arr[i + 1];
-
-                                        arr[i + 1] = arr[i];
-                                        arr[i] = t;
-
-                                        return arr;
-                                      });
-                                    }}
-                                  >
-                                    下移
-                                  </Button>
-                                  <Button
                                     color="danger"
                                     size="sm"
                                     variant="flat"
                                     onPress={() =>
-                                      setMidPath((prev) =>
-                                        prev.filter((id) => id !== nid),
+                                      setRouteItems((prev) =>
+                                        prev.filter(
+                                          (item) =>
+                                            !(
+                                              item.type === "node" &&
+                                              item.id === nid
+                                            ),
+                                        ),
                                       )
                                     }
                                   >
@@ -896,7 +1289,7 @@ const TunnelEditModal = memo(
                     </div>
                   </div>
 
-                  {form.type === 2 && (
+                  {form.type === 2 && form.outNodeId ? (
                     <div className="space-y-2">
                       <Select
                         className="min-w-[320px] max-w-[380px]"
@@ -905,8 +1298,7 @@ const TunnelEditModal = memo(
                         selectedKeys={exitBindIp ? [exitBindIp] : []}
                         variant="bordered"
                         onOpenChange={async () => {
-                          if (form.outNodeId)
-                            await fetchNodeIfaces(form.outNodeId);
+                          if (form.outNodeId) await fetchNodeIfaces(form.outNodeId);
                         }}
                         onSelectionChange={(keys) => {
                           const k = Array.from(keys)[0] as string;
@@ -919,7 +1311,7 @@ const TunnelEditModal = memo(
                         ))}
                       </Select>
                     </div>
-                  )}
+                  ) : null}
 
                   {form.type === 2 && (
                     <>
@@ -949,69 +1341,32 @@ const TunnelEditModal = memo(
                         <SelectItem key="tcp">TCP</SelectItem>
                         <SelectItem key="mtls">MTLS</SelectItem>
                         <SelectItem key="mwss">MWSS</SelectItem>
-                        <SelectItem key="mtcp">MTCP</SelectItem>
+                      <SelectItem key="mtcp">MTCP</SelectItem>
                       </Select>
 
-                      <Select
-                        errorMessage={errors.outNodeId}
-                        isDisabled={isEdit}
-                        isInvalid={!!errors.outNodeId}
-                        label="出口节点"
-                        placeholder="请选择出口节点"
-                        selectedKeys={
-                          form.outNodeId ? [form.outNodeId.toString()] : []
-                        }
-                        variant="bordered"
-                        onSelectionChange={(keys) => {
-                          const selectedKey = Array.from(keys)[0] as string;
-
-                          if (selectedKey) {
-                            setForm((prev) => ({
-                              ...prev,
-                              outNodeId: parseInt(selectedKey),
-                            }));
-                            setExitDeployed("");
-                            const nid = parseInt(selectedKey);
-
-                            import("@/api").then(({ queryNodeServices }) => {
-                              queryNodeServices({ nodeId: nid, filter: "ss" })
-                                .then((res: any) => {
-                                  if (
-                                    res.code === 0 &&
-                                    Array.isArray(res.data)
-                                  ) {
-                                    const items = res.data as any[];
-                                    const ss = items.find(
-                                      (x) => x && x.handler === "ss",
-                                    );
-
-                                    if (ss) {
-                                      const desc = `已部署: 端口 ${ss.port || ss.addr || "-"}，监听 ${ss.listening ? "是" : "否"}`;
-
-                                      setExitDeployed(desc);
-                                      if (!exitPort && ss.port)
-                                        setExitPort(Number(ss.port));
-                                    } else {
-                                      setExitDeployed("未部署");
-                                    }
-                                  }
-                                })
-                                .catch(() => {});
-                            });
-                            import("@/api").then(({ getNodeInterfaces }) => {
-                              getNodeInterfaces(nid).catch(() => {});
-                            });
-                          }
-                        }}
-                      >
-                        {exitNodeOptions}
-                      </Select>
+                      <div className="p-3 border border-default-200 rounded-lg">
+                        <div className="text-sm text-default-600">出口节点</div>
+                        <div className="font-medium mt-1">
+                          {selectedExitInfo?.name || "未选择"}
+                        </div>
+                        {selectedExitInfo?.host ? (
+                          <div className="text-xs text-default-500 mt-1">
+                            {selectedExitInfo.host}
+                          </div>
+                        ) : null}
+                        {form.outExitId ? (
+                          <div className="text-xs text-warning-600 mt-1">
+                            外部出口仅用于连接，不支持下发配置
+                          </div>
+                        ) : null}
+                      </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <Input
                           description="默认 console，可留空"
                           label="观察器(observer)"
                           value={exitObserver}
+                          isDisabled={!!form.outExitId}
                           onChange={(e) =>
                             setExitObserver((e.target as any).value)
                           }
@@ -1020,6 +1375,7 @@ const TunnelEditModal = memo(
                           description="可选，需在节点注册对应限速器"
                           label="限速(limiter)"
                           value={exitLimiter}
+                          isDisabled={!!form.outExitId}
                           onChange={(e) =>
                             setExitLimiter((e.target as any).value)
                           }
@@ -1028,6 +1384,7 @@ const TunnelEditModal = memo(
                           description="可选，需在节点注册对应限速器"
                           label="连接限速(rlimiter)"
                           value={exitRLimiter}
+                          isDisabled={!!form.outExitId}
                           onChange={(e) =>
                             setExitRLimiter((e.target as any).value)
                           }
@@ -1162,6 +1519,7 @@ const TunnelEditModal = memo(
 type TunnelCardGridProps = {
   tunnels: Tunnel[];
   nodes: Node[];
+  exitNodes: ExitNodeItem[];
   onEdit: (tunnel: Tunnel) => void;
   onDiagnose: (tunnel: Tunnel) => void;
   onDelete: (tunnel: Tunnel) => void;
@@ -1175,6 +1533,7 @@ const TunnelCardGrid = memo(({
   onDiagnose,
   onDelete,
   onCheckPath,
+  exitNodes,
 }: TunnelCardGridProps) => {
   const nodeMap = useMemo(() => {
     const map = new Map<number, string>();
@@ -1183,6 +1542,18 @@ const TunnelCardGrid = memo(({
 
     return map;
   }, [nodes]);
+
+  const exitMap = useMemo(() => {
+    const map = new Map<number, { name: string }>();
+
+    exitNodes.forEach((n) => {
+      if (n.source === "external" && n.exitId) {
+        map.set(n.exitId, { name: n.name || `外部出口${n.exitId}` });
+      }
+    });
+
+    return map;
+  }, [exitNodes]);
 
   const getDisplayIp = (ipString?: string): string => {
     if (!ipString) return "-";
@@ -1202,6 +1573,14 @@ const TunnelCardGrid = memo(({
     if (!nodeId) return "-";
 
     return nodeMap.get(nodeId) || `节点${nodeId}`;
+  };
+
+  const getExitName = (tunnel: Tunnel): string => {
+    if (tunnel.type === 1) return getNodeName(tunnel.inNodeId);
+    if (tunnel.outExitId) {
+      return exitMap.get(tunnel.outExitId)?.name || `外部出口${tunnel.outExitId}`;
+    }
+    return getNodeName(tunnel.outNodeId);
   };
 
   const getStatusDisplay = (status: number) => {
@@ -1320,9 +1699,7 @@ const TunnelCardGrid = memo(({
                       </span>
                     </div>
                     <code className="text-xs font-mono text-foreground block truncate">
-                      {tunnel.type === 1
-                        ? getNodeName(tunnel.inNodeId)
-                        : getNodeName(tunnel.outNodeId)}
+                      {getExitName(tunnel)}
                     </code>
                     <code className="text-xs font-mono text-default-500 block truncate">
                       {tunnel.type === 1
@@ -1438,6 +1815,7 @@ export default function TunnelPage() {
   const [loading, setLoading] = useState(true);
   const [tunnels, setTunnels] = useState<Tunnel[]>([]);
   const [nodes, setNodes] = useState<Node[]>([]);
+  const [exitNodes, setExitNodes] = useState<ExitNodeItem[]>([]);
   // 操作日志弹窗（必须放在顶部，避免 Hooks 顺序变化）
   const [opsOpen, setOpsOpen] = useState(false);
   // 操作日志弹窗
@@ -1464,9 +1842,10 @@ export default function TunnelPage() {
   const loadData = async () => {
     setLoading(true);
     try {
-      const [tunnelsRes, nodesRes] = await Promise.all([
+      const [tunnelsRes, nodesRes, exitRes] = await Promise.all([
         getTunnelList(),
         getNodeList(),
+        getExitNodes(),
       ]);
 
       if (tunnelsRes.code === 0) {
@@ -1479,6 +1858,10 @@ export default function TunnelPage() {
         setNodes(nodesRes.data || []);
       } else {
         console.warn("获取节点列表失败:", nodesRes.msg);
+      }
+
+      if (exitRes.code === 0) {
+        setExitNodes(exitRes.data || []);
       }
     } catch (error) {
       console.error("加载数据失败:", error);
@@ -1752,6 +2135,7 @@ export default function TunnelPage() {
       {/* 隧道卡片网格 */}
       {!suppressBackground && tunnels.length > 0 ? (
         <TunnelCardGrid
+          exitNodes={exitNodes}
           nodes={nodes}
           onCheckPath={handleCheckPath}
           onDelete={handleDelete}
@@ -1797,6 +2181,7 @@ export default function TunnelPage() {
         editTunnel={editTunnel}
         isOpen={modalOpen}
         nodes={nodes}
+        exitNodes={exitNodes}
         onOpenChange={setModalOpen}
         onSaved={loadData}
       />

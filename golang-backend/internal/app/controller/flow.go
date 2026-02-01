@@ -119,6 +119,20 @@ func FlowUpload(c *gin.Context) {
 			dbpkg.DB.Model(&model.UserTunnel{}).Where("id = ?", ut.ID).
 				Updates(map[string]any{"in_flow": gorm.Expr("in_flow + ?", inInc), "out_flow": gorm.Expr("out_flow + ?", outInc)})
 		}
+		// user_node (entry node) flow
+		var un model.UserNode
+		if err := dbpkg.DB.Where("user_id=? AND node_id=?", fwd.UserID, tun.InNodeID).First(&un).Error; err == nil && un.ID > 0 {
+			dbpkg.DB.Model(&model.UserNode{}).Where("id = ?", un.ID).
+				Updates(map[string]any{"in_flow": gorm.Expr("in_flow + ?", inInc), "out_flow": gorm.Expr("out_flow + ?", outInc)})
+			un.InFlow += inInc
+			un.OutFlow += outInc
+			if overUserNodeLimit(un) || expired(un.ExpTime) || un.Status != 1 {
+				un.Status = 0
+				_ = dbpkg.DB.Save(&un).Error
+				pauseUserNodeForwards(un.UserID, un.NodeID)
+				go pushAnyTLSConfigToNode(un.NodeID)
+			}
+		}
 		// 24h statistics (per user, bucket by hour). For single-flow tunnel, count max(in,out); else sum.
 		func() {
 			calc := inInc + outInc
@@ -146,6 +160,7 @@ func FlowUpload(c *gin.Context) {
 				InBytes:     inInc,
 				OutBytes:    outInc,
 				BilledBytes: calc,
+				Source:      "gost",
 				TimeMs:      now.UnixMilli(),
 				CreatedTime: now.UnixMilli(),
 			}).Error
@@ -209,6 +224,20 @@ func FlowUpload(c *gin.Context) {
 	nowCST := now.In(time.FixedZone("UTC+8", 8*3600))
 	dbpkg.DB.Model(&model.Forward{}).Where("id = ?", fwdID).Updates(map[string]any{"in_flow": gorm.Expr("in_flow + ?", inInc), "out_flow": gorm.Expr("out_flow + ?", outInc), "updated_time": time.Now().UnixMilli()})
 	dbpkg.DB.Model(&model.User{}).Where("id = ?", userID).Updates(map[string]any{"in_flow": gorm.Expr("in_flow + ?", inInc), "out_flow": gorm.Expr("out_flow + ?", outInc), "updated_time": time.Now().UnixMilli()})
+	// user_node (entry node) flow for legacy payloads
+	var un model.UserNode
+	if err := dbpkg.DB.Where("user_id=? AND node_id=?", userID, tun.InNodeID).First(&un).Error; err == nil && un.ID > 0 {
+		dbpkg.DB.Model(&model.UserNode{}).Where("id = ?", un.ID).
+			Updates(map[string]any{"in_flow": gorm.Expr("in_flow + ?", inInc), "out_flow": gorm.Expr("out_flow + ?", outInc)})
+		un.InFlow += inInc
+		un.OutFlow += outInc
+		if overUserNodeLimit(un) || expired(un.ExpTime) || un.Status != 1 {
+			un.Status = 0
+			_ = dbpkg.DB.Save(&un).Error
+			pauseUserNodeForwards(un.UserID, un.NodeID)
+			go pushAnyTLSConfigToNode(un.NodeID)
+		}
+	}
 	if utID != 0 {
 		dbpkg.DB.Model(&model.UserTunnel{}).Where("id = ?", utID).Updates(map[string]any{"in_flow": gorm.Expr("in_flow + ?", inInc), "out_flow": gorm.Expr("out_flow + ?", outInc)})
 	}
@@ -237,6 +266,7 @@ func FlowUpload(c *gin.Context) {
 			InBytes:     inInc,
 			OutBytes:    outInc,
 			BilledBytes: calc,
+			Source:      "gost",
 			TimeMs:      now.UnixMilli(),
 			CreatedTime: now.UnixMilli(),
 		}).Error
@@ -272,6 +302,10 @@ func overUserLimit(u model.User) bool {
 	limit := u.Flow * 1024 * 1024 * 1024
 	return limit > 0 && (u.InFlow+u.OutFlow) > limit
 }
+func overUserNodeLimit(un model.UserNode) bool {
+	limit := un.Flow * 1024 * 1024 * 1024
+	return limit > 0 && (un.InFlow+un.OutFlow) > limit
+}
 func overUTunnelLimit(ut model.UserTunnel) bool {
 	limit := ut.Flow * 1024 * 1024 * 1024
 	return limit > 0 && (ut.InFlow+ut.OutFlow) > limit
@@ -306,5 +340,22 @@ func pauseUserTunnelForwards(userID, tunnelID int64) {
 				_ = sendWSCommand(outNodeIDOr0(t), "PauseService", map[string]interface{}{"services": []string{name}})
 			}
 		}
+	}
+}
+
+func pauseUserNodeForwards(userID, nodeID int64) {
+	var forwards []struct {
+		model.Forward
+		InNodeID int64 `gorm:"column:in_node_id"`
+	}
+	dbpkg.DB.Table("forward f").
+		Select("f.*, t.in_node_id").
+		Joins("left join tunnel t on t.id = f.tunnel_id").
+		Where("f.user_id = ? AND t.in_node_id = ?", userID, nodeID).
+		Scan(&forwards)
+	for _, f := range forwards {
+		dbpkg.DB.Model(&model.Forward{}).Where("id = ?", f.ID).Update("status", 0)
+		name := buildServiceName(f.ID, f.UserID, f.TunnelID)
+		_ = sendWSCommand(nodeID, "PauseService", map[string]interface{}{"services": []string{name}})
 	}
 }

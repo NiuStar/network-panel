@@ -96,11 +96,13 @@ func Init() error {
 		&model.Tunnel{},
 		&model.Forward{},
 		&model.UserTunnel{},
+		&model.UserNode{},
 		&model.SpeedLimit{},
 		&model.ViteConfig{},
 		&model.StatisticsFlow{},
 		&model.ExitSetting{},
 		&model.AnyTLSSetting{},
+		&model.ExitNodeExternal{},
 		&model.ProbeTarget{},
 		&model.NodeProbeResult{},
 		&model.NodeDisconnectLog{},
@@ -113,6 +115,7 @@ func Init() error {
 		&model.FlowTimeseries{},
 		&model.EasyTierResult{},
 		&model.NQResult{},
+		&model.NodeDiagResult{},
 	); err != nil {
 		return err
 	}

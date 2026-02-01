@@ -593,23 +593,23 @@ build_from_source() {
     log "Building frontend assets..."
     (
       set -e
-      cd "$ROOT_DIR/vite-frontend"
+      cd "$ROOT_DIR/vite-frontend-v2"
       npm install --legacy-peer-deps --no-audit --no-fund
       npm run build
     )
-    if [[ -d "$ROOT_DIR/vite-frontend/dist" ]]; then
+    if [[ -d "$ROOT_DIR/vite-frontend-v2/dist" ]]; then
       rm -rf "$INSTALL_DIR/public"
       mkdir -p "$INSTALL_DIR/public"
-      cp -r "$ROOT_DIR/vite-frontend/dist"/* "$INSTALL_DIR/public/"
+      cp -r "$ROOT_DIR/vite-frontend-v2/dist"/* "$INSTALL_DIR/public/"
       log "✅ Frontend assets installed to $INSTALL_DIR/public"
     else
       log "⚠️  Frontend build did not produce dist/; UI may be unavailable"
     fi
   else
-    if [[ -d "$ROOT_DIR/vite-frontend/dist" ]]; then
+    if [[ -d "$ROOT_DIR/vite-frontend-v2/dist" ]]; then
       rm -rf "$INSTALL_DIR/public"
       mkdir -p "$INSTALL_DIR/public"
-      cp -r "$ROOT_DIR/vite-frontend/dist"/* "$INSTALL_DIR/public/"
+      cp -r "$ROOT_DIR/vite-frontend-v2/dist"/* "$INSTALL_DIR/public/"
       log "✅ Frontend assets installed to $INSTALL_DIR/public"
     else
       log "⚠️  'node' or 'npm' not found; skipping frontend build."

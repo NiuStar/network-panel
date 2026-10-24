@@ -38,6 +38,18 @@ func agentAutoUpgradeEnabled() bool {
 	}
 }
 
+// updateNodeConnectionState never writes a websocket's stale node snapshot.
+func updateNodeConnectionState(nodeID int64, status int, version string) error {
+	if nodeID <= 0 {
+		return fmt.Errorf("invalid node ID: %d", nodeID)
+	}
+	updates := map[string]interface{}{"status": status}
+	if version != "" {
+		updates["version"] = version
+	}
+	return dbpkg.DB.Model(&model.Node{}).Where("id = ?", nodeID).Updates(updates).Error
+}
+
 // jlog emits structured JSON logs for easier tracing
 func jlog(m map[string]interface{}) {
 	b, _ := json.Marshal(m)
@@ -352,7 +364,7 @@ func SystemInfoWS(c *gin.Context) {
 		if version != "" {
 			node.Version = version
 		}
-		_ = dbpkg.DB.Save(&node).Error
+		_ = updateNodeConnectionState(node.ID, s, version)
 		// auto join easytier if enabled
 		go ensureEasyTierAutoJoinFor(node.ID)
 		// close an open disconnect log if any
@@ -412,7 +424,7 @@ func SystemInfoWS(c *gin.Context) {
 					delete(nodeConns, node.ID)
 					s := 0
 					node.Status = &s
-					_ = dbpkg.DB.Save(&node).Error
+					_ = updateNodeConnectionState(node.ID, 0, "")
 				}
 				offline := (len(nodeConns[node.ID]) == 0)
 				nodeConnMu.Unlock()

@@ -150,7 +150,7 @@ func anyTLSCertPinFromPEM(raw string) string {
 }
 
 func anyTLSNodeCertPin(nodeID int64, domain string) string {
-	if nodeID <= 0 || domain == "" || dbpkg.DB == nil {
+	if !isAnyTLSCertNodeAllowed(nodeID) || domain == "" || dbpkg.DB == nil {
 		return ""
 	}
 	caCert, _, caPEM, err := ensureAnyTLSCA()
@@ -297,6 +297,27 @@ func getViteConfigValue(name string) string {
 	return cfg.Value
 }
 
+// isAnyTLSCertNodeAllowed is a deployment-only scope, independent of the DB feature flag.
+// Validate the entire list before granting access; malformed or duplicate IDs deny all.
+func isAnyTLSCertNodeAllowed(nodeID int64) bool {
+	if nodeID <= 0 {
+		return false
+	}
+	raw := strings.TrimSpace(os.Getenv("ANYTLS_CERT_NODE_IDS"))
+	if raw == "" {
+		return true
+	}
+	seen := make(map[int64]bool)
+	for _, token := range strings.Split(raw, ",") {
+		id, err := strconv.ParseInt(token, 10, 64)
+		if err != nil || id <= 0 || strconv.FormatInt(id, 10) != token || seen[id] {
+			return false
+		}
+		seen[id] = true
+	}
+	return seen[nodeID]
+}
+
 func isAnyTLSCertFeatureEnabled() bool {
 	v := strings.TrimSpace(strings.ToLower(getViteConfigValue(anyTLSCertEnabledDBKey)))
 	switch v {
@@ -402,6 +423,9 @@ func isValidDNSName(domain string) bool {
 }
 
 func setAnyTLSCertDomain(nodeID int64, raw string) (string, error) {
+	if !isAnyTLSCertNodeAllowed(nodeID) {
+		return "", fmt.Errorf("AnyTLS certificate node scope disabled")
+	}
 	if nodeID <= 0 {
 		return "", fmt.Errorf("invalid node id")
 	}
@@ -445,6 +469,9 @@ func getAnyTLSCertDomain(nodeID int64) string {
 }
 
 func ensureAnyTLSCertDomain(nodeID int64, raw string) (string, error) {
+	if !isAnyTLSCertNodeAllowed(nodeID) {
+		return "", fmt.Errorf("AnyTLS certificate node scope disabled")
+	}
 	if strings.TrimSpace(raw) != "" {
 		return setAnyTLSCertDomain(nodeID, raw)
 	}
@@ -471,6 +498,9 @@ func getAnyTLSCertRevision(nodeID int64) int64 {
 }
 
 func bumpAnyTLSCertRevision(nodeID int64) (int64, error) {
+	if !isAnyTLSCertNodeAllowed(nodeID) {
+		return 0, fmt.Errorf("AnyTLS certificate node scope disabled")
+	}
 	if nodeID <= 0 {
 		return 0, fmt.Errorf("invalid node id")
 	}
@@ -512,6 +542,9 @@ func currentAnyTLSLeafWindow(now time.Time) (time.Time, time.Time) {
 }
 
 func anyTLSNodeCertStatus(nodeID int64, ensureDomain bool) (map[string]any, error) {
+	if !isAnyTLSCertNodeAllowed(nodeID) {
+		return nil, fmt.Errorf("AnyTLS certificate node scope disabled")
+	}
 	if nodeID <= 0 {
 		return nil, fmt.Errorf("invalid node id")
 	}
@@ -895,6 +928,9 @@ func anyTLSCAStatus() (map[string]any, error) {
 }
 
 func issueAnyTLSNodeCert(nodeID int64, rawDomain string) (*anyTLSNodeCertBundle, error) {
+	if !isAnyTLSCertNodeAllowed(nodeID) {
+		return nil, fmt.Errorf("AnyTLS certificate node scope disabled")
+	}
 	if nodeID <= 0 {
 		return nil, fmt.Errorf("invalid node id")
 	}
@@ -990,6 +1026,9 @@ func publishSharedAnyTLSLeaf(row model.AnyTLSNodeLeaf, nodeID int64, domain stri
 }
 
 func anyTLSCertPayload(nodeID int64, rawDomain string) (map[string]any, error) {
+	if !isAnyTLSCertNodeAllowed(nodeID) {
+		return nil, fmt.Errorf("AnyTLS certificate node scope disabled")
+	}
 	if !isAnyTLSCertFeatureEnabled() {
 		return nil, nil
 	}
@@ -1030,6 +1069,10 @@ func AgentAnyTLSCert(c *gin.Context) {
 	}
 	if !isAnyTLSCertFeatureEnabled() {
 		c.JSON(http.StatusOK, response.Ok(gin.H{"enabled": false, "reason": "controller_disabled"}))
+		return
+	}
+	if !isAnyTLSCertNodeAllowed(node.ID) {
+		c.JSON(http.StatusOK, response.Ok(gin.H{"enabled": false, "reason": "node_scope_disabled"}))
 		return
 	}
 	var st model.AnyTLSSetting

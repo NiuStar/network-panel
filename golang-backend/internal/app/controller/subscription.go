@@ -460,7 +460,10 @@ func subscriptionItems(c *gin.Context) (model.User, []subProxy, []subSkip, bool)
 					outID = t.InNodeID
 				}
 				outDomain := getAnyTLSCertDomain(outID)
-				params["cert-sha256"] = anyTLSNodeCertPin(outID, outDomain)
+				params["cert-sha256"] = ""
+				if isAnyTLSCertNodeAllowed(outID) {
+					params["cert-sha256"] = anyTLSNodeCertPin(outID, outDomain)
+				}
 				if pin, _ := params["cert-sha256"].(string); pin != "" {
 					if caPEM := anyTLSCAForPin(outID, outDomain, pin); caPEM != "" {
 						params["ca-cert"] = caPEM
@@ -707,7 +710,7 @@ func resolveExitProtocol(t model.Tunnel, ext *model.ExitNodeExternal, ssMap map[
 		if a, ok := anyTLSMap[outID]; ok {
 			params := map[string]interface{}{}
 			params = applyAnyTLSVerifyDefaults(params, getAnyTLSCertDomain(outID))
-			if isAnyTLSCertFeatureEnabled() && outID > 0 {
+			if isAnyTLSCertFeatureEnabled() && isAnyTLSCertNodeAllowed(outID) {
 				params["cert-sha256"] = anyTLSNodeCertPin(outID, getAnyTLSCertDomain(outID))
 			}
 			return "anytls", "", a.Password, params

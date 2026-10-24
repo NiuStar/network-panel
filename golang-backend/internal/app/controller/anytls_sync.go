@@ -201,6 +201,7 @@ func pushAnyTLSConfigToNode(nodeID int64) {
 			}
 		} else {
 			log.Printf("{\"event\":\"anytls_cert_payload_err\",\"nodeId\":%d,\"error\":%q}", nodeID, err.Error())
+			return nil
 		}
 		return req
 	}
@@ -210,6 +211,9 @@ func pushAnyTLSConfigToNode(nodeID int64) {
 			continue
 		}
 		req := buildReq(pm.Port, pm.ExitIP, allowFallback)
+		if req == nil {
+			return
+		}
 		_, _ = RequestOp(nodeID, "SetAnyTLS", req, 10*time.Second)
 	}
 	cleanupAnyTLSGostLoopServices(nodeID)

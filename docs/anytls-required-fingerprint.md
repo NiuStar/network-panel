@@ -18,6 +18,11 @@
 
 固定 sing-box v1.12.17 的 option.OutboundTLSOptions、NewSTDClient 已从精确公开源码核对：仅CA certificate/path，没有叶或SPKI指纹字段。当前范围不全局升级SDK；其AnyTLS配置导出必须失败关闭，不能声称写入 CA 等价为强制指纹。
 
+## 渐进部署环境变量
+
+- `ANYTLS_CERT_NODE_IDS=28` 将控制器管理证书的签发、下发、重签、状态和订阅 pin 发布限制为节点 28。逗号分隔 canonical 正 int64；空项、重复、前导零、符号、越界或错误值使全部节点关闭，不回退。未设置或仅空白保持历史全节点行为；全局数据库 `anytls_cert_enabled` 仍须单独启用。共享 CA 管理不受节点列表限制。外部节点显式 pin 和非 AnyTLS 协议不受影响。范围外旧 agent 轮询返回 `enabled:false, reason:node_scope_disabled`。
+- 面板进程 `AGENT_AUTO_UPGRADE=false`（同 `0/no/off`）禁止 websocket 重连时自动发送 `UpgradeAgent`，不禁止操作人手动升级。未设置保留历史默认开启；显式 `1/true/yes/on` 开启（忽略大小写和外围空白），空值及其他畸形值失败关闭。此变量须在面板服务设置，不能只设在 agent。
+
 ## 验证门
 
 1. 统一校验器和实际创建／编辑 API 的正确 pin 正控与空、错、冲突／跳验／raw 覆盖负控，负例数据库不写入。

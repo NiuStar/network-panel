@@ -24,6 +24,20 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// agentAutoUpgradeEnabled controls only server-initiated upgrades on reconnect.
+func agentAutoUpgradeEnabled() bool {
+	raw, set := os.LookupEnv("AGENT_AUTO_UPGRADE")
+	if !set {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 // jlog emits structured JSON logs for easier tracing
 func jlog(m map[string]interface{}) {
 	b, _ := json.Marshal(m)
@@ -370,7 +384,7 @@ func SystemInfoWS(c *gin.Context) {
 		if role == "agent2" {
 			expected = "go-agent2-" + sv
 		}
-		if version != "" && expected != "" && version != expected {
+		if agentAutoUpgradeEnabled() && version != "" && expected != "" && version != expected {
 			jlog(map[string]interface{}{"event": "agent_upgrade_trigger", "nodeId": node.ID, "from": version, "to": expected, "role": role})
 			_ = sendWSCommand(node.ID, "UpgradeAgent", map[string]any{"to": expected})
 		}

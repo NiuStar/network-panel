@@ -3,13 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
@@ -17,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math/big"
 	"net"
 	"net/http"
 	"net/netip"
@@ -98,6 +93,7 @@ type anytlsAuthRule struct {
 type anytlsServer struct {
 	tlsConfig        *tls.Config
 	authRules        []anytlsAuthRule
+	authIndex        map[[sha256.Size]byte]anytlsAuthRule
 	localTCPAddr     *net.TCPAddr
 	localUDPAddr     *net.UDPAddr
 	certDomain       string
@@ -119,9 +115,10 @@ type anytlsClientSettingReader interface {
 }
 
 type anytlsRuntime struct {
-	listeners []net.Listener
-	cancel    context.CancelFunc
-	current   anytlsConfig
+	listeners       []net.Listener
+	cancel          context.CancelFunc
+	current         anytlsConfig
+	certFingerprint string
 }
 
 type anytlsFlowDelta struct {
@@ -526,10 +523,12 @@ func applyAnyTLSConfig(port int, password string, exitIP string, enforceVerify b
 	if err != nil {
 		return err
 	}
-	// Cert files are shared by all AnyTLS instances on the node.
-	// Reload all runtimes so every active port switches to the new cert immediately.
+	// A no-op config update must still verify the post-reload certificate.
+	// The configured port loaded the leaf in startAnyTLS; reload the others.
 	if certChanged {
 		reloadAnyTLSRuntimesForCert(port)
+	} else {
+		emitAnyTLSInstalledCheck("post_reload", "", 0, "")
 	}
 	return nil
 }
@@ -545,6 +544,37 @@ func removeAnyTLSConfig(port int) error {
 	return saveAnyTLSConfigs(anytlsConfigs)
 }
 
+func anytlsCertChangedSinceRuntime(rt *anytlsRuntime) bool {
+	if rt == nil || rt.certFingerprint == "" {
+		return true
+	}
+	cert, _, err := readCompatFile(anytlsCertPath, legacyAnyTLSCertPath)
+	return err != nil || rt.certFingerprint != certFingerprintSHA256(string(cert))
+}
+
+// startSavedAnyTLSConfigs retains all desired ports, including failed starts.
+// Startup must run outside anytlsMu because startAnyTLS takes that lock.
+func startSavedAnyTLSConfigs(cfgs map[int]anytlsConfig, start func(anytlsConfig) error) bool {
+	anytlsMu.Lock()
+	for port, cfg := range cfgs {
+		anytlsConfigs[port] = cfg
+	}
+	anytlsMu.Unlock()
+	ports := make([]int, 0, len(cfgs))
+	for port := range cfgs {
+		ports = append(ports, port)
+	}
+	sort.Ints(ports)
+	allStarted := len(ports) > 0
+	for _, port := range ports {
+		if err := start(cfgs[port]); err != nil {
+			allStarted = false
+			log.Printf("{\"event\":\"edge_boot_err\",\"port\":%d,\"error\":%q}", port, err.Error())
+		}
+	}
+	return allStarted
+}
+
 func startAnyTLS(cfg anytlsConfig) error {
 	if cfg.Port <= 0 || cfg.Port > 65535 || cfg.Password == "" {
 		return fmt.Errorf("invalid anytls config")
@@ -554,6 +584,7 @@ func startAnyTLS(cfg anytlsConfig) error {
 	defer anytlsMu.Unlock()
 	if rt, ok := anytlsRuntimes[cfg.Port]; ok &&
 		rt != nil &&
+		!anytlsCertChangedSinceRuntime(rt) &&
 		cfg.Password == rt.current.Password &&
 		cfg.ExitIP == rt.current.ExitIP &&
 		cfg.CertDomain == rt.current.CertDomain &&
@@ -617,9 +648,11 @@ func startAnyTLS(cfg anytlsConfig) error {
 	if err != nil {
 		return err
 	}
+	rules := buildAnyTLSRules(cfg)
 	server := &anytlsServer{
 		tlsConfig:        tlsCfg,
-		authRules:        buildAnyTLSRules(cfg),
+		authRules:        rules,
+		authIndex:        buildAnyTLSIndex(rules),
 		localTCPAddr:     localTCP,
 		localUDPAddr:     localUDP,
 		certDomain:       cfg.CertDomain,
@@ -632,9 +665,10 @@ func startAnyTLS(cfg anytlsConfig) error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	anytlsRuntimes[cfg.Port] = &anytlsRuntime{
-		listeners: lns,
-		cancel:    cancel,
-		current:   cfg,
+		listeners:       lns,
+		cancel:          cancel,
+		current:         cfg,
+		certFingerprint: fmt.Sprintf("%x", sha256.Sum256(cert.Certificate[0])),
 	}
 	anytlsConfigs[cfg.Port] = cfg
 	for _, ln := range lns {
@@ -787,6 +821,21 @@ func buildAnyTLSRules(cfg anytlsConfig) []anytlsAuthRule {
 		rules = append(rules, anytlsAuthRule{userID: u.UserID, hash: sum[:], speedBps: u.SpeedBps})
 	}
 	return rules
+}
+
+func buildAnyTLSIndex(rules []anytlsAuthRule) map[[sha256.Size]byte]anytlsAuthRule {
+	index := make(map[[sha256.Size]byte]anytlsAuthRule, len(rules))
+	for _, rule := range rules {
+		if len(rule.hash) != sha256.Size {
+			continue
+		}
+		var key [sha256.Size]byte
+		copy(key[:], rule.hash)
+		if _, exists := index[key]; !exists {
+			index[key] = rule
+		}
+	}
+	return index
 }
 
 func anytlsAcceptLoop(ctx context.Context, ln net.Listener, s *anytlsServer) {
@@ -1080,15 +1129,13 @@ func (s *anytlsServer) fallbackConn(ctx context.Context, c net.Conn) {
 }
 
 func (s *anytlsServer) matchRule(hash []byte) (anytlsAuthRule, bool) {
-	if len(hash) == 0 {
+	if len(hash) != sha256.Size {
 		return anytlsAuthRule{}, false
 	}
-	for _, r := range s.authRules {
-		if bytes.Equal(hash, r.hash) {
-			return r, true
-		}
-	}
-	return anytlsAuthRule{}, false
+	var key [sha256.Size]byte
+	copy(key[:], hash)
+	rule, ok := s.authIndex[key]
+	return rule, ok
 }
 
 func clientSettingFromConn(conn net.Conn, key string) string {
@@ -2086,6 +2133,18 @@ func anyTLSConfigured() bool {
 	return len(anytlsConfigs) > 0
 }
 
+func certFingerprintSHA256(certPEM string) string {
+	block, _ := pem.Decode([]byte(certPEM))
+	if block == nil || block.Type != "CERTIFICATE" {
+		return ""
+	}
+	if _, err := x509.ParseCertificate(block.Bytes); err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(block.Bytes)
+	return fmt.Sprintf("%x", sum[:])
+}
+
 func certHashShort(certPEM string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(certPEM)))
 	return fmt.Sprintf("%x", sum[:8])
@@ -2116,8 +2175,8 @@ func mirrorLegacyFile(path, content string) {
 	_ = os.WriteFile(path, []byte(content+"\n"), 0o600)
 }
 
-func readInstalledAnyTLSCertInfo() (*anytlsInstalledCertInfo, error) {
-	certRaw, _, err := readCompatFile(anytlsCertPath, legacyAnyTLSCertPath)
+func readInstalledAnyTLSCertInfo(certPath, legacyCertPath string) (*anytlsInstalledCertInfo, error) {
+	certRaw, _, err := readCompatFile(certPath, legacyCertPath)
 	if err != nil {
 		return nil, err
 	}
@@ -2165,11 +2224,36 @@ func certDomainMatched(info *anytlsInstalledCertInfo, domain string) bool {
 	return false
 }
 
+func anyTLSInstalledCertValidAt(info *anytlsInstalledCertInfo, now time.Time) bool {
+	if info == nil || info.NotBeforeMS <= 0 || info.NotAfterMS <= 0 {
+		return false
+	}
+	ms := now.UnixMilli()
+	return ms >= info.NotBeforeMS && ms < info.NotAfterMS
+}
+
+func anyTLSRuntimeCertificateMatches(configs map[int]anytlsConfig, runtimes map[int]*anytlsRuntime, pin string) bool {
+	if pin == "" || len(configs) == 0 || len(configs) != len(runtimes) {
+		return false
+	}
+	for port := range configs {
+		rt := runtimes[port]
+		if rt == nil || rt.certFingerprint != pin || len(rt.listeners) == 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func emitAnyTLSInstalledCheck(context string, expectedDomain string, expectedNotAfterMS int64, expectedHash string) {
-	info, err := readInstalledAnyTLSCertInfo()
-	_, certPath, _ := readCompatFile(anytlsCertPath, legacyAnyTLSCertPath)
+	emitAnyTLSInstalledCheckFromPaths(context, expectedDomain, expectedNotAfterMS, expectedHash, anytlsCertPath, legacyAnyTLSCertPath)
+}
+
+func emitAnyTLSInstalledCheckFromPaths(context string, expectedDomain string, expectedNotAfterMS int64, expectedHash string, primaryPath, legacyPath string) {
+	info, err := readInstalledAnyTLSCertInfo(primaryPath, legacyPath)
+	_, certPath, _ := readCompatFile(primaryPath, legacyPath)
 	if certPath == "" {
-		certPath = anytlsCertPath
+		certPath = primaryPath
 	}
 	if err != nil {
 		emitAnyTLSCertLog("installed_check_err", "本地证书检测失败", map[string]any{
@@ -2195,19 +2279,38 @@ func emitAnyTLSInstalledCheck(context string, expectedDomain string, expectedNot
 		matchLatest = false
 		mismatch = append(mismatch, "not_after_mismatch")
 	}
+	if !anyTLSInstalledCertValidAt(info, time.Now()) {
+		matchLatest = false
+		mismatch = append(mismatch, "expired_or_not_yet_valid")
+	}
 
+	installedPEM, _, _ := readCompatFile(primaryPath, legacyPath)
+	installedPin := certFingerprintSHA256(string(installedPEM))
+	// Validate the configured port set, not just surviving runtimes: a failed
+	// reload may have removed a listener from anytlsRuntimes.
+	anytlsMu.Lock()
+	runtimeMatch := anyTLSRuntimeCertificateMatches(anytlsConfigs, anytlsRuntimes, installedPin)
+	configuredPorts := len(anytlsConfigs)
+	anytlsMu.Unlock()
+	if !runtimeMatch {
+		matchLatest = false
+		mismatch = append(mismatch, "runtime_cert_mismatch")
+	}
 	data := map[string]any{
-		"context": context,
+		"context":         context,
+		"processId":       anyTLSProcessID,
+		"configuredPorts": configuredPorts,
 		"installed": map[string]any{
-			"path":        certPath,
-			"hash":        info.Hash,
-			"commonName":  info.CommonName,
-			"dnsNames":    info.DNSNames,
-			"subject":     info.Subject,
-			"issuer":      info.Issuer,
-			"serial":      info.Serial,
-			"notBeforeMs": info.NotBeforeMS,
-			"notAfterMs":  info.NotAfterMS,
+			"path":              certPath,
+			"hash":              info.Hash,
+			"fingerprintSha256": certFingerprintSHA256(string(installedPEM)),
+			"commonName":        info.CommonName,
+			"dnsNames":          info.DNSNames,
+			"subject":           info.Subject,
+			"issuer":            info.Issuer,
+			"serial":            info.Serial,
+			"notBeforeMs":       info.NotBeforeMS,
+			"notAfterMs":        info.NotAfterMS,
 		},
 		"matchLatest": matchLatest,
 	}
@@ -2323,6 +2426,7 @@ func reloadAnyTLSRuntimesForCert(skipPort int) {
 		cfgs = filtered
 	}
 	if len(cfgs) == 0 {
+		emitAnyTLSInstalledCheck("post_reload", "", 0, "")
 		return
 	}
 	okCount := 0
@@ -2338,7 +2442,9 @@ func reloadAnyTLSRuntimesForCert(skipPort int) {
 		}
 	}
 	emitAnyTLSCertLog("reload_done", "证书热重载完成", map[string]any{"total": len(cfgs), "ok": okCount, "failed": len(cfgs) - okCount})
-	emitAnyTLSInstalledCheck("post_reload", "", 0, "")
+	if okCount == len(cfgs) {
+		emitAnyTLSInstalledCheck("post_reload", "", 0, "")
+	}
 }
 
 func pullAnyTLSCertFromPanel(addr, secret, scheme string) (bool, error) {
@@ -2434,6 +2540,7 @@ func periodicAnyTLSCertRefresh(addr, secret, scheme string, done <-chan struct{}
 		} else {
 			log.Printf("{\"event\":\"edge_cert_unchanged\"}")
 			emitAnyTLSCertLog("unchanged", "周期证书拉取无变化", nil)
+			emitAnyTLSInstalledCheck("post_reload", "", 0, "")
 		}
 	}
 	timer := time.NewTimer(8 * time.Second)
@@ -2455,86 +2562,24 @@ func periodicAnyTLSCertRefresh(addr, secret, scheme string, done <-chan struct{}
 }
 
 func ensureAnyTLSCert(certDomain string, enforceVerify bool) (*tls.Certificate, error) {
-	if certPEM, _, err := readCompatFile(anytlsCertPath, legacyAnyTLSCertPath); err == nil {
-		if keyPEM, _, err := readCompatFile(anytlsKeyPath, legacyAnyTLSKeyPath); err == nil {
-			if pair, err := tls.X509KeyPair(certPEM, keyPEM); err == nil {
-				return &pair, nil
-			}
-		}
+	if !enforceVerify || strings.TrimSpace(certDomain) == "" {
+		return nil, fmt.Errorf("controller-issued certificate with domain and enforcement required")
 	}
-	if enforceVerify {
-		return nil, fmt.Errorf("site cert file missing: set exit cert from controller first")
-	}
-	domain := strings.TrimSpace(certDomain)
-	if domain == "" {
-		domain = "www.docker.com"
-	}
-	pair, err := ensureAnyTLSSelfSigned(domain)
+	certPEM, _, err := readCompatFile(anytlsCertPath, legacyAnyTLSCertPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("controller-issued certificate missing: %w", err)
 	}
-	return pair, nil
-}
-
-func ensureAnyTLSSelfSigned(domain string) (*tls.Certificate, error) {
-	if certPEM, _, err := readCompatFile(anytlsCertPath, legacyAnyTLSCertPath); err == nil {
-		if keyPEM, _, err := readCompatFile(anytlsKeyPath, legacyAnyTLSKeyPath); err == nil {
-			if pair, err := tls.X509KeyPair(certPEM, keyPEM); err == nil {
-				return &pair, nil
-			}
-		}
-	}
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	keyPEM, _, err := readCompatFile(anytlsKeyPath, legacyAnyTLSKeyPath)
 	if err != nil {
-		return nil, fmt.Errorf("self-signed cert key gen failed: %w", err)
-	}
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return nil, fmt.Errorf("self-signed cert serial failed: %w", err)
-	}
-	now := time.Now().UTC()
-	tpl := &x509.Certificate{
-		SerialNumber: serial,
-		Subject: pkix.Name{
-			CommonName:   "E8",
-			Organization: []string{"Let's Encrypt"},
-		},
-		NotBefore:             now.Add(-1 * time.Hour),
-		NotAfter:              now.Add(90 * 24 * time.Hour),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-		DNSNames:              []string{domain},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, &priv.PublicKey, priv)
-	if err != nil {
-		return nil, fmt.Errorf("self-signed cert create failed: %w", err)
-	}
-	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
-	if err != nil {
-		return nil, fmt.Errorf("self-signed key marshal failed: %w", err)
-	}
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
-	if err := os.MkdirAll(filepath.Dir(anytlsCertPath), 0o700); err != nil {
-		return nil, fmt.Errorf("self-signed cert mkdir failed: %w", err)
-	}
-	if err := os.WriteFile(anytlsCertPath, certPEM, 0o600); err != nil {
-		return nil, fmt.Errorf("self-signed cert write failed: %w", err)
-	}
-	if err := os.WriteFile(anytlsKeyPath, keyPEM, 0o600); err != nil {
-		return nil, fmt.Errorf("self-signed key write failed: %w", err)
+		return nil, fmt.Errorf("controller-issued certificate key missing: %w", err)
 	}
 	pair, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		return nil, fmt.Errorf("self-signed cert parse failed: %w", err)
+	if err != nil || len(pair.Certificate) == 0 {
+		return nil, fmt.Errorf("invalid controller-issued certificate: %v", err)
 	}
-	emitAnyTLSCertLog("self_signed", "证书功能关闭，已生成本地临时证书", map[string]any{
-		"domain":      domain,
-		"pathCert":    anytlsCertPath,
-		"pathKey":     anytlsKeyPath,
-		"notBeforeMs": tpl.NotBefore.UnixMilli(),
-		"notAfterMs":  tpl.NotAfter.UnixMilli(),
-	})
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil || leaf.VerifyHostname(certDomain) != nil || time.Now().Before(leaf.NotBefore) || time.Now().After(leaf.NotAfter) {
+		return nil, fmt.Errorf("controller-issued certificate does not match domain or is expired")
+	}
 	return &pair, nil
 }

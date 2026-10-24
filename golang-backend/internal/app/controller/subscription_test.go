@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -25,9 +26,10 @@ func TestBuildAnyTLSURI_WithSNIAndEgressIP(t *testing.T) {
 		"sni":              "www.apple.com",
 		"egress-ip":        "203.0.113.10",
 		"skip-cert-verify": false,
+		"cert-sha256":      "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
 	}
 	got := buildAnyTLSURI("u1:Wangzai007..@@", it, params)
-	want := "anytls://Wangzai007..%40%40@example.com:443/?sni=www.apple.com&egress-ip=203.0.113.10&insecure=0#node-a"
+	want := "anytls://Wangzai007..%40%40@example.com:443/?sni=www.apple.com&egress-ip=203.0.113.10&cert-sha256=aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899&insecure=0#node-a"
 	if got != want {
 		t.Fatalf("unexpected uri\nwant: %s\ngot:  %s", want, got)
 	}
@@ -43,9 +45,10 @@ func TestBuildAnyTLSURI_InvalidEgressIPOmitted(t *testing.T) {
 		"sni":              "www.apple.com",
 		"egress-ip":        "hinetkvm001.nmcloud.cc",
 		"skip-cert-verify": false,
+		"cert-sha256":      "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
 	}
 	got := buildAnyTLSURI("u1:Wangzai007..@@", it, params)
-	want := "anytls://Wangzai007..%40%40@example.com:443/?sni=www.apple.com&insecure=0#node-a"
+	want := "anytls://Wangzai007..%40%40@example.com:443/?sni=www.apple.com&cert-sha256=aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899&insecure=0#node-a"
 	if got != want {
 		t.Fatalf("unexpected uri\nwant: %s\ngot:  %s", want, got)
 	}
@@ -62,6 +65,7 @@ func TestBuildAnyTLSURI_AliasParams(t *testing.T) {
 		"egress_ip":        "2001:db8::1",
 		"ca_cert_path":     "/etc/anytls/ca.crt",
 		"skip-cert-verify": false,
+		"cert-sha256":      "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
 	}
 	got := buildAnyTLSURI("u1:Wangzai007..@@", it, params)
 	if !strings.Contains(got, "egress-ip=2001%3Adb8%3A%3A1") {
@@ -98,6 +102,7 @@ func TestBuildSurgeAnyTLSLine_StripPrefixAndAppendEgress(t *testing.T) {
 		"sni":              "www.apple.com",
 		"egress-ip":        "203.0.113.10",
 		"skip-cert-verify": false,
+		"cert-sha256":      "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
 	}
 	got := buildSurgeAnyTLSLine("node-a", "1.2.3.4", 10086, "u2:abc123", params)
 	if strings.Contains(got, "u2:") {
@@ -125,6 +130,7 @@ func TestBuildQXLine_AnyTLS_WithEgressIP(t *testing.T) {
 		"sni":              "www.apple.com",
 		"egress-ip":        "203.0.113.10",
 		"skip-cert-verify": false,
+		"cert-sha256":      "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
 	}
 	got := buildQXLine("anytls", it, params)
 	if strings.Contains(got, "u1:") {
@@ -133,61 +139,105 @@ func TestBuildQXLine_AnyTLS_WithEgressIP(t *testing.T) {
 	if !strings.Contains(got, "anytls=1.2.3.4:10086") {
 		t.Fatalf("unexpected qx anytls line: %s", got)
 	}
-	if !strings.Contains(got, "sni=www.apple.com") {
-		t.Fatalf("missing sni: %s", got)
+	if !strings.Contains(got, "over-tls=true") || !strings.Contains(got, "tls-host=www.apple.com") || strings.Contains(got, ",sni=") {
+		t.Fatalf("missing documented QX TLS fields: %s", got)
 	}
 	if !strings.Contains(got, "egress-ip=203.0.113.10") {
 		t.Fatalf("missing egress-ip: %s", got)
 	}
 }
 
-func TestBuildAnyTLSURI_SkipVerify_OmitsSNI(t *testing.T) {
-	it := subProxy{
-		Name:   "node-a",
-		Server: "example.com",
-		Port:   443,
-	}
+func TestSurgeRendererCannotBypassAnyTLSPinWithRawOverride(t *testing.T) {
 	params := map[string]interface{}{
-		"sni":              "www.apple.com",
-		"skip-cert-verify": true,
+		"sni": "node.example.com", "skip-cert-verify": false,
+		"cert-sha256": strings.Repeat("a", 64),
+		"surge":       "{name} = anytls, {server}, {port}, password=unsafe, skip-cert-verify=true",
 	}
-	got := buildAnyTLSURI("u1:Wangzai007..@@", it, params)
-	if strings.Contains(got, "sni=") {
-		t.Fatalf("sni should be omitted when skip verify is true: %s", got)
-	}
-	if !strings.Contains(got, "insecure=1") {
-		t.Fatalf("expected insecure=1 when skip verify is true: %s", got)
+	items := []subProxy{{Name: "node", Type: "anytls", Server: "192.0.2.1", Port: 443, Password: "secret", Params: params}}
+	for name, output := range map[string]string{
+		"template": buildSurgeConfigWithTemplate("[Proxy]\n{{PROXIES}}\n[Proxy Group]\nProxy = select\n", items),
+		"legacy":   buildSurgeConfigLegacy(items, nil, "5", "https://example.com/sub"),
+	} {
+		if strings.Contains(output, " = anytls,") {
+			t.Errorf("%s accepted a raw trust override: %s", name, output)
+		}
 	}
 }
 
-func TestBuildSurgeAnyTLSLine_SkipVerify_OmitsSNI(t *testing.T) {
-	params := map[string]interface{}{
-		"sni":              "www.apple.com",
-		"skip-cert-verify": true,
+func TestAnyTLSRawRendererDoesNotExposeCAInClash(t *testing.T) {
+	oldDB := dbpkg.DB
+	testDB, err := gorm.Open(sqlite.Open("file:clash_ca_render?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	got := buildSurgeAnyTLSLine("node-a", "1.2.3.4", 10086, "u2:abc123", params)
-	if strings.Contains(got, "sni=") {
-		t.Fatalf("sni should be omitted when skip verify is true: %s", got)
+	dbpkg.DB = testDB
+	t.Cleanup(func() { dbpkg.DB = oldDB })
+	if err := testDB.AutoMigrate(&model.ViteConfig{}); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(got, "skip-cert-verify=true") {
-		t.Fatalf("missing skip-cert-verify=true: %s", got)
+	params := map[string]interface{}{"sni": "node.example.com", "skip-cert-verify": false, "cert-sha256": strings.Repeat("a", 64), "ca-cert": "-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----"}
+	item := subProxy{Name: "node", Type: "anytls", Server: "192.0.2.1", Port: 443, Password: "secret", Params: params}
+	for name, config := range map[string]string{"legacy": buildClashConfigLegacy([]subProxy{item}, nil), "template": buildClashConfig([]subProxy{item}, nil)} {
+		if strings.Contains(config, "ca-cert:") || strings.Contains(config, "BEGIN CERTIFICATE") {
+			t.Errorf("%s leaked non-Clash CA field: %s", name, config)
+		}
 	}
 }
 
-func TestBuildQXLine_AnyTLS_SkipVerify_OmitsSNI(t *testing.T) {
-	it := subProxy{
-		Name:     "node-a",
-		Server:   "1.2.3.4",
-		Port:     10086,
-		Password: "u1:abc123",
+func TestAnyTLSRawURIOverrideCannotBypassPin(t *testing.T) {
+	params := map[string]interface{}{"uri": "anytls://secret@example.com:443?insecure=1#unsafe"}
+	it := subProxy{Name: "unsafe", Type: "anytls", Server: "192.0.2.1", Port: 443, Password: "secret", Params: params}
+	if got := buildV2rayURI("anytls", it, params); got != "" {
+		t.Fatalf("raw AnyTLS override bypassed pin: %q", got)
 	}
-	params := map[string]interface{}{
-		"sni":              "www.apple.com",
-		"skip-cert-verify": true,
+}
+
+func TestSingboxAnyTLSRejectsRawOverride(t *testing.T) {
+	params := map[string]interface{}{"singbox": `{"type":"anytls","tag":"unsafe","tls":{"insecure":true}}`}
+	it := subProxy{Name: "unsafe", Type: "anytls", Server: "192.0.2.1", Port: 443, Password: "secret", Params: params}
+	if ob := buildSingboxOutbound("anytls", it, params); len(ob) != 0 {
+		t.Fatalf("raw override bypassed verification: %#v", ob)
 	}
-	got := buildQXLine("anytls", it, params)
-	if strings.Contains(got, "sni=") {
-		t.Fatalf("sni should be omitted when skip verify is true: %s", got)
+}
+
+func TestSingboxAnyTLSRejectsEvenTrustedPrivateCAWithoutPinSupport(t *testing.T) {
+	oldDB := dbpkg.DB
+	db, err := gorm.Open(sqlite.Open("file:singbox_private_ca?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbpkg.DB = db
+	t.Cleanup(func() { dbpkg.DB = oldDB })
+	if err := db.AutoMigrate(&model.ViteConfig{}, &model.AnyTLSCAAuthority{}, &model.AnyTLSNodeLeaf{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.ViteConfig{Name: anyTLSCertEnabledDBKey, Value: "true"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(anyTLSCertDirEnv, t.TempDir())
+	bundle, err := issueAnyTLSNodeCert(55, "node.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := map[string]interface{}{"sni": bundle.Domain, "cert-sha256": anyTLSCertPinFromPEM(bundle.CertPEM), "ca-cert": bundle.CAPEM}
+	it := subProxy{Name: "node", Type: "anytls", Server: "192.0.2.1", Port: 443, Password: "secret", Params: params}
+	ob := buildSingboxOutbound("anytls", it, params)
+	if len(ob) != 0 {
+		t.Fatalf("private CA must not substitute for unsupported leaf pinning: %#v", ob)
+	}
+}
+
+func TestAnyTLSFormattersRejectUnsafeSkip(t *testing.T) {
+	params := map[string]interface{}{"sni": "node.example.com", "skip-cert-verify": true}
+	it := subProxy{Name: "node-a", Type: "anytls", Server: "192.0.2.1", Port: 443, Password: "u1:abc123", Params: params}
+	for name, output := range map[string]string{
+		"uri":   buildAnyTLSURI(it.Password, it, params),
+		"surge": buildSurgeAnyTLSLine(it.Name, it.Server, it.Port, it.Password, params),
+		"qx":    buildQXLine("anytls", it, params),
+	} {
+		if output != "" {
+			t.Errorf("%s emitted AnyTLS without verified pin: %s", name, output)
+		}
 	}
 }
 
@@ -234,8 +284,8 @@ func TestBuildClashConfig_AnyTLS_NoDuplicateVerifyAliasKeys(t *testing.T) {
 		},
 	}
 	got := buildClashConfigLegacy(items, nil)
-	if strings.Count(got, "skip-cert-verify:") != 1 {
-		t.Fatalf("skip-cert-verify should appear once, got:\n%s", got)
+	if strings.Contains(got, "type: anytls") || strings.Contains(got, "skip-cert-verify:") {
+		t.Fatalf("unsafe unpinned AnyTLS should be omitted, got:\n%s", got)
 	}
 	for _, bad := range []string{
 		"skip_cert_verify:",
@@ -292,6 +342,7 @@ func TestAppendForwardNameSuffix(t *testing.T) {
 
 func TestSubscriptionItems_AnyTLSExpandByForwardEgresses(t *testing.T) {
 	t.Setenv("JWT_SECRET", "test-secret")
+	t.Setenv(anyTLSCertDirEnv, t.TempDir())
 	gin.SetMode(gin.TestMode)
 
 	oldDB := dbpkg.DB
@@ -310,10 +361,16 @@ func TestSubscriptionItems_AnyTLSExpandByForwardEgresses(t *testing.T) {
 		&model.ExitSetting{},
 		&model.AnyTLSSetting{},
 		&model.AnyTLSPortEgress{},
+		&model.NodeAnyTLSCertLog{},
+		&model.AnyTLSCAAuthority{},
+		&model.AnyTLSNodeLeaf{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	dbpkg.DB = db
+	if err := db.Create(&model.ViteConfig{Name: anyTLSCertEnabledDBKey, Value: "true"}).Error; err != nil {
+		t.Fatalf("enable cert: %v", err)
+	}
 
 	now := time.Now().UnixMilli()
 	status := 1
@@ -359,6 +416,12 @@ func TestSubscriptionItems_AnyTLSExpandByForwardEgresses(t *testing.T) {
 	if err := db.Create(&anytls).Error; err != nil {
 		t.Fatalf("create anytls setting: %v", err)
 	}
+	bundle, err := issueAnyTLSNodeCert(node.ID, "node.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPin := anyTLSCertPinFromPEM(bundle.CertPEM)
+	insertAnyTLSTestBoot(t, db, node.ID)
 	fwd := model.Forward{
 		BaseEntity: model.BaseEntity{ID: 501, CreatedTime: now, UpdatedTime: now, Status: &status},
 		UserID:     101,
@@ -381,6 +444,16 @@ func TestSubscriptionItems_AnyTLSExpandByForwardEgresses(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/api/v1/subscription/clash?token="+token, nil)
+	_, premature, skippedPremature, okPremature := subscriptionItems(c)
+	if !okPremature || len(premature) != 0 || len(skippedPremature) != 1 {
+		t.Fatalf("unconfirmed certificate leaked to subscription: items=%d skipped=%d", len(premature), len(skippedPremature))
+	}
+	if err := db.Create(&model.NodeAnyTLSCertLog{NodeID: node.ID, Step: "installed_check", TimeMs: time.Now().UnixMilli(), Data: fmt.Sprintf(`{"processId":"test-agent","context":"post_reload","matchLatest":true,"installed":{"fingerprintSha256":%q}}`, wantPin)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	w = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/api/v1/subscription/clash?token="+token, nil)
 
 	_, items, skipped, ok := subscriptionItems(c)
 	if !ok {
@@ -400,6 +473,12 @@ func TestSubscriptionItems_AnyTLSExpandByForwardEgresses(t *testing.T) {
 		}
 		if it.Server != "198.51.100.9" || it.Port != 44006 {
 			t.Fatalf("unexpected endpoint: %s:%d", it.Server, it.Port)
+		}
+		if it.Params["cert-sha256"] != wantPin {
+			t.Fatal("subscription pin does not match issued leaf")
+		}
+		if line := buildSurgeAnyTLSLine(it.Name, it.Server, it.Port, it.Password, it.Params); !strings.Contains(line, "server-cert-fingerprint-sha256="+wantPin) || strings.Contains(line, "skip-cert-verify=true") {
+			t.Fatal("Surge line not pinned securely")
 		}
 		eg, _ := it.Params["egress-ip"].(string)
 		got[it.Name] = eg
@@ -433,6 +512,7 @@ func TestSubscriptionItems_AnyTLSExpandByForwardEgresses(t *testing.T) {
 
 func TestSubscriptionItems_AnyTLSPortMappingEgressFallback(t *testing.T) {
 	t.Setenv("JWT_SECRET", "test-secret")
+	t.Setenv(anyTLSCertDirEnv, t.TempDir())
 	gin.SetMode(gin.TestMode)
 
 	oldDB := dbpkg.DB
@@ -451,10 +531,16 @@ func TestSubscriptionItems_AnyTLSPortMappingEgressFallback(t *testing.T) {
 		&model.ExitSetting{},
 		&model.AnyTLSSetting{},
 		&model.AnyTLSPortEgress{},
+		&model.NodeAnyTLSCertLog{},
+		&model.AnyTLSCAAuthority{},
+		&model.AnyTLSNodeLeaf{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	dbpkg.DB = db
+	if err := db.Create(&model.ViteConfig{Name: anyTLSCertEnabledDBKey, Value: "true"}).Error; err != nil {
+		t.Fatalf("enable cert: %v", err)
+	}
 
 	now := time.Now().UnixMilli()
 	status := 1
@@ -501,6 +587,17 @@ func TestSubscriptionItems_AnyTLSPortMappingEgressFallback(t *testing.T) {
 	}
 	if err := db.Create(&anytls).Error; err != nil {
 		t.Fatalf("create anytls setting: %v", err)
+	}
+	if _, err := issueAnyTLSNodeCert(node.ID, "mapped.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	mappedBundle, err := issueAnyTLSNodeCert(node.ID, "mapped.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertAnyTLSTestBoot(t, db, node.ID)
+	if err := db.Create(&model.NodeAnyTLSCertLog{NodeID: node.ID, Step: "installed_check", TimeMs: time.Now().UnixMilli(), Data: fmt.Sprintf(`{"processId":"test-agent","context":"post_reload","matchLatest":true,"installed":{"fingerprintSha256":%q}}`, anyTLSCertPinFromPEM(mappedBundle.CertPEM))}).Error; err != nil {
+		t.Fatal(err)
 	}
 	mappedEgress := "2001:db8::20"
 	if err := db.Create(&model.AnyTLSPortEgress{

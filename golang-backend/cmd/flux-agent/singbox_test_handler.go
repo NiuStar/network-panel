@@ -6,8 +6,10 @@ import (
 	"anytls/util"
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -279,8 +281,84 @@ func parseAnyTLSOutbound(outbound map[string]interface{}) (server string, port i
 	return
 }
 
+// anyTLSClientCertificatePin validates configured trust before any network I/O.
+// The digest covers the complete leaf DER certificate, never its SPKI or a
+// client-fingerprint (uTLS browser profile). SNI and public CA trust are optional.
+func anyTLSClientCertificatePin(outbound map[string]interface{}) ([]byte, error) {
+	var pin []byte
+	var walk func(map[string]interface{}) error
+	var walkValue func(interface{}) error
+	walkValue = func(value interface{}) error {
+		switch nested := value.(type) {
+		case map[string]interface{}:
+			return walk(nested)
+		case []interface{}:
+			for _, entry := range nested {
+				if err := walkValue(entry); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	walk = func(values map[string]interface{}) error {
+		for key, value := range values {
+			key = strings.NewReplacer("-", "", "_", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(key)))
+			switch key {
+			case "skipcertverify", "skipverify", "skiptlsverify", "insecure", "allowinsecure", "tlsinsecure", "insecureskipverify", "tlsverificationdisabled":
+				safe := false
+				if b, ok := value.(bool); ok {
+					safe = !b
+				}
+				if s, ok := value.(string); ok {
+					safe = strings.EqualFold(strings.TrimSpace(s), "false")
+				}
+				if !safe {
+					return fmt.Errorf("AnyTLS certificate verification cannot be disabled")
+				}
+			case "tls", "verify", "verifycertificate", "certverify":
+				if b, ok := value.(bool); ok && !b {
+					return fmt.Errorf("AnyTLS TLS and certificate verification are required")
+				}
+			case "certsha256", "fingerprintsha256", "servercertfingerprintsha256", "certificatefingerprint", "fingerprint":
+				raw, ok := value.(string)
+				if !ok {
+					return fmt.Errorf("AnyTLS certificate SHA-256 pin is invalid or conflicting")
+				}
+				raw = strings.ToLower(strings.TrimSpace(raw))
+				for _, prefix := range []string{"sha256:", "sha256=", "sha-256:", "sha-256="} {
+					raw = strings.TrimPrefix(raw, prefix)
+				}
+				raw = strings.NewReplacer(":", "", "-", "", " ", "").Replace(strings.TrimSpace(raw))
+				candidate, err := hex.DecodeString(raw)
+				if err != nil || len(candidate) != sha256.Size || (pin != nil && subtle.ConstantTimeCompare(pin, candidate) != 1) {
+					return fmt.Errorf("AnyTLS certificate SHA-256 pin is invalid or conflicting")
+				}
+				pin = candidate
+			case "clash", "clashmeta", "singbox", "surge", "uri", "url", "shadowrocket", "loon", "qx", "quantumultx", "stash":
+				return fmt.Errorf("AnyTLS raw client configuration overrides are not allowed")
+			}
+			if err := walkValue(value); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := walk(outbound); err != nil {
+		return nil, err
+	}
+	if pin == nil {
+		return nil, fmt.Errorf("AnyTLS requires a leaf certificate SHA-256 pin")
+	}
+	return pin, nil
+}
+
 func dialAnyTLSStream(ctx context.Context, outbound map[string]interface{}, network string, addr string, egressIP string) (net.Conn, error) {
 	_ = network
+	pin, err := anyTLSClientCertificatePin(outbound)
+	if err != nil {
+		return nil, err
+	}
 	server, port, password, sni, err := parseAnyTLSOutbound(outbound)
 	if err != nil {
 		return nil, err
@@ -292,7 +370,20 @@ func dialAnyTLSStream(ctx context.Context, outbound map[string]interface{}, netw
 		return nil, err
 	}
 	tlsCfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		// Identity is exclusively the mandatory configured leaf DER digest.
+		// This replaces PKIX verification, not certificate authentication.
 		InsecureSkipVerify: true,
+		VerifyConnection: func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 {
+				return fmt.Errorf("AnyTLS peer certificate is missing")
+			}
+			digest := sha256.Sum256(state.PeerCertificates[0].Raw)
+			if subtle.ConstantTimeCompare(digest[:], pin) != 1 {
+				return fmt.Errorf("AnyTLS leaf certificate SHA-256 pin mismatch")
+			}
+			return nil
+		},
 	}
 	if sni != "" {
 		tlsCfg.ServerName = sni

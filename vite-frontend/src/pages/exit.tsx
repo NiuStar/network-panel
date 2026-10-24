@@ -40,6 +40,7 @@ type ExitNodeItem = {
   anytlsPort?: number;
   protocol?: string;
   port?: number;
+  config?: Record<string, any>;
 };
 
 type ExitExternalForm = {
@@ -48,6 +49,7 @@ type ExitExternalForm = {
   host: string;
   port: string;
   protocol: string;
+  params: Record<string, any>;
 };
 
 const EMPTY_FORM: ExitExternalForm = {
@@ -55,6 +57,7 @@ const EMPTY_FORM: ExitExternalForm = {
   host: "",
   port: "",
   protocol: "",
+  params: {},
 };
 
 export default function ExitNodePage() {
@@ -99,6 +102,7 @@ export default function ExitNodePage() {
       host: item.host || "",
       port: item.port ? String(item.port) : "",
       protocol: item.protocol || "",
+      params: item.config || {},
     });
     onOpen();
   };
@@ -112,6 +116,15 @@ export default function ExitNodePage() {
       toast.error("请填写正确的名称、地址和端口");
       return;
     }
+    const params = { ...form.params };
+    if (form.protocol.toLowerCase().replace(/[ _-]/g, "") === "anytls") {
+      const pin = String(params["cert-sha256"] || "").trim();
+      if (!/^[0-9a-fA-F]{64}$/.test(pin)) {
+        toast.error("请填写可信来源的叶证书 SHA-256 指纹（64 位十六进制）");
+        return;
+      }
+      params["cert-sha256"] = pin.toLowerCase();
+    }
     setSaving(true);
     try {
       const payload = {
@@ -119,6 +132,7 @@ export default function ExitNodePage() {
         host,
         port,
         protocol: form.protocol.trim() || undefined,
+        config: params,
       };
       const r: any = form.id
         ? await updateExitExternal({ id: form.id, ...payload })
@@ -324,6 +338,21 @@ export default function ExitNodePage() {
                     setForm((prev) => ({ ...prev, protocol: e.target.value }))
                   }
                 />
+                {form.protocol.toLowerCase().replace(/[ _-]/g, "") === "anytls" && <>
+                  <Input
+                    isRequired
+                    label="AnyTLS 密码"
+                    value={form.params.password || ""}
+                    onChange={(e) => setForm((prev) => ({ ...prev, params: { ...prev.params, password: e.target.value } }))}
+                  />
+                  <Input
+                    isRequired
+                    label="叶证书 SHA-256 指纹"
+                    placeholder="可信来源的 64 位十六进制；不是 uTLS 客户端指纹"
+                    value={form.params["cert-sha256"] || ""}
+                    onChange={(e) => setForm((prev) => ({ ...prev, params: { ...prev.params, "cert-sha256": e.target.value } }))}
+                  />
+                </>}
               </ModalBody>
               <ModalFooter>
                 <Button variant="light" onPress={onClose}>

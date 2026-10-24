@@ -273,8 +273,11 @@ func buildSingboxOutboundForForward(f model.Forward, t model.Tunnel, testNodeID 
 	if t.OutExitID != nil {
 		var e model.ExitNodeExternal
 		if err := dbpkg.DB.First(&e, *t.OutExitID).Error; err == nil {
+			var raw []byte
+			if e.Config != nil { raw = []byte(*e.Config) }
+			if err := validateExternalAnyTLSConfig(e.Protocol, raw); err != nil { return nil, "", err }
 			ext = &e
-		}
+		} else { return nil, "", fmt.Errorf("外部出口节点不存在") }
 	}
 	outIDs := map[int64]struct{}{}
 	if t.OutNodeID != nil {
@@ -354,7 +357,14 @@ func buildSingboxOutboundForForward(f model.Forward, t model.Tunnel, testNodeID 
 		Password: password,
 		Params:   params,
 	}
-	ob := buildSingboxOutbound(proto, item, params)
+	var ob map[string]interface{}
+	if normalizeProtocol(proto) == "anytls" {
+		var err error
+		ob, err = buildPinnedAnyTLSAgentOutbound(item, params)
+		if err != nil { return nil, "", err }
+	} else {
+		ob = buildSingboxOutbound(proto, item, params)
+	}
 	if len(ob) == 0 {
 		return nil, "", fmt.Errorf("协议参数不完整")
 	}

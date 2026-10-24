@@ -1,15 +1,20 @@
 package controller
 
 import (
+	"bytes"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -18,9 +23,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"network-panel/golang-backend/internal/app/model"
 	"network-panel/golang-backend/internal/app/response"
 	"network-panel/golang-backend/internal/app/util"
@@ -71,23 +79,214 @@ func anyTLSCertDir() string {
 	return p
 }
 
+var anyTLSLeafCertMu sync.Mutex
+
+func anyTLSNodeCertPath(nodeID int64) string {
+	return filepath.Join(anyTLSCertDir(), "nodes", strconv.FormatInt(nodeID, 10), "cert.pem")
+}
+
+func anyTLSNodeKeyPath(nodeID int64) string {
+	return filepath.Join(anyTLSCertDir(), "nodes", strconv.FormatInt(nodeID, 10), "key.pem")
+}
+
+func anyTLSLeafDBKey(nodeID int64, domain string, revision int64, ca *x509.Certificate) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%d|%x", nodeID, domain, revision, ca.Raw)))
+	return hex.EncodeToString(sum[:])
+}
+
+func selectSharedAnyTLSLeaf(row model.AnyTLSNodeLeaf, nodeID int64, domain string, revision int64, caCert *x509.Certificate, caPEM string) (*anyTLSNodeCertBundle, bool) {
+	pair, err := tls.X509KeyPair([]byte(row.CertPEM), []byte(row.KeyPEM))
+	if err != nil || len(pair.Certificate) == 0 {
+		return nil, false
+	}
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil || leaf.CheckSignatureFrom(caCert) != nil || leaf.VerifyHostname(domain) != nil ||
+		leaf.NotAfter.Before(time.Now().Add(7*24*time.Hour)) || leaf.NotBefore.After(time.Now()) ||
+		leaf.Subject.SerialNumber != strconv.FormatInt(revision, 10) {
+		return nil, false
+	}
+	return &anyTLSNodeCertBundle{Domain: domain, CertPEM: row.CertPEM, KeyPEM: row.KeyPEM, CAPEM: caPEM,
+		NotBeforeMS: leaf.NotBefore.UnixMilli(), NotAfterMS: leaf.NotAfter.UnixMilli()}, true
+}
+
+func readAnyTLSNodeCertDB(key string, nodeID int64, domain string, revision int64, caCert *x509.Certificate, caPEM string) (*anyTLSNodeCertBundle, bool) {
+	if dbpkg.DB == nil {
+		return nil, false
+	}
+	var row model.AnyTLSNodeLeaf
+	if err := dbpkg.DB.Where("leaf_key = ?", key).First(&row).Error; err != nil {
+		return nil, false
+	}
+	return selectSharedAnyTLSLeaf(row, nodeID, domain, revision, caCert, caPEM)
+}
+
+func anyTLSCAForPin(nodeID int64, domain, pin string) string {
+	if pin == "" {
+		return ""
+	}
+	ca, _, pemText, err := ensureAnyTLSCA()
+	if err != nil {
+		return ""
+	}
+	revision := getAnyTLSCertRevision(nodeID)
+	key := anyTLSLeafDBKey(nodeID, domain, revision, ca)
+	bundle, ok := readAnyTLSNodeCertDB(key, nodeID, domain, revision, ca, pemText)
+	if !ok || !strings.EqualFold(anyTLSCertPinFromPEM(bundle.CertPEM), pin) {
+		return ""
+	}
+	return pemText
+}
+
+func anyTLSCertPinFromPEM(raw string) string {
+	block, _ := pem.Decode([]byte(raw))
+	if block == nil || block.Type != "CERTIFICATE" {
+		return ""
+	}
+	if _, err := x509.ParseCertificate(block.Bytes); err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(block.Bytes)
+	return hex.EncodeToString(sum[:])
+}
+
+func anyTLSNodeCertPin(nodeID int64, domain string) string {
+	if nodeID <= 0 || domain == "" || dbpkg.DB == nil {
+		return ""
+	}
+	caCert, _, caPEM, err := ensureAnyTLSCA()
+	if err != nil {
+		return ""
+	}
+	key := anyTLSLeafDBKey(nodeID, domain, getAnyTLSCertRevision(nodeID), caCert)
+	bundle, ok := readAnyTLSNodeCertDB(key, nodeID, domain, getAnyTLSCertRevision(nodeID), caCert, caPEM)
+	if !ok {
+		return ""
+	}
+	pin := anyTLSCertPinFromPEM(bundle.CertPEM)
+	if pin == "" {
+		return ""
+	}
+	// Only publish a pin once the agent has reported the same installed leaf.
+	var log model.NodeAnyTLSCertLog
+	if err := dbpkg.DB.Where("node_id = ? AND step = ?", nodeID, "installed_check").Order("time_ms desc, id desc").First(&log).Error; err != nil {
+		return ""
+	}
+	if log.TimeMs > time.Now().UnixMilli()+5000 || time.Since(time.UnixMilli(log.TimeMs)) > 2*time.Minute {
+		return ""
+	}
+	var boot model.NodeAnyTLSCertLog
+	if err := dbpkg.DB.Where("node_id = ? AND step = ?", nodeID, "agent_boot").Order("time_ms desc, id desc").First(&boot).Error; err != nil || boot.TimeMs > log.TimeMs || (boot.TimeMs == log.TimeMs && boot.ID >= log.ID) {
+		return ""
+	}
+	var bootData struct {
+		ProcessID string `json:"processId"`
+	}
+	var confirmation struct {
+		ProcessID string `json:"processId"`
+	}
+	if json.Unmarshal([]byte(boot.Data), &bootData) != nil || json.Unmarshal([]byte(log.Data), &confirmation) != nil || bootData.ProcessID == "" || bootData.ProcessID != confirmation.ProcessID {
+		return ""
+	}
+	// A newer reload failure invalidates an older successful confirmation.
+	var newerFailure model.NodeAnyTLSCertLog
+	if err := dbpkg.DB.Where("node_id = ? AND step = ? AND (time_ms > ? OR (time_ms = ? AND id > ?))", nodeID, "reload_err", log.TimeMs, log.TimeMs, log.ID).Order("time_ms desc, id desc").First(&newerFailure).Error; err == nil {
+		return ""
+	}
+	// Agent boot marks the old process's runtime confirmation obsolete, even
+	// when the certificate itself has not changed.
+	var newerBoot model.NodeAnyTLSCertLog
+	if err := dbpkg.DB.Where("node_id = ? AND step = ? AND (time_ms > ? OR (time_ms = ? AND id > ?))", nodeID, "agent_boot", log.TimeMs, log.TimeMs, log.ID).First(&newerBoot).Error; err == nil {
+		return ""
+	}
+	var report struct {
+		Context   string `json:"context"`
+		Installed struct {
+			Fingerprint string `json:"fingerprintSha256"`
+		} `json:"installed"`
+		MatchLatest bool `json:"matchLatest"`
+	}
+	if json.Unmarshal([]byte(log.Data), &report) != nil || report.Context != "post_reload" || !report.MatchLatest || !strings.EqualFold(report.Installed.Fingerprint, pin) {
+		return ""
+	}
+	if _, err := tls.X509KeyPair([]byte(bundle.CertPEM), []byte(bundle.KeyPEM)); err != nil {
+		return ""
+	}
+	block, _ := pem.Decode([]byte(bundle.CertPEM))
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil || leaf.VerifyHostname(domain) != nil || leaf.NotBefore.After(time.Now()) ||
+		leaf.NotAfter.Before(time.Now().Add(7*24*time.Hour)) ||
+		leaf.Subject.SerialNumber != strconv.FormatInt(getAnyTLSCertRevision(nodeID), 10) {
+		return ""
+	}
+	if leaf.CheckSignatureFrom(caCert) != nil {
+		return ""
+	}
+	return pin
+}
+
+func readAnyTLSNodeCert(nodeID int64, domain string, revision int64, caCert *x509.Certificate, caPEM string) (*anyTLSNodeCertBundle, bool) {
+	certPEM, err := os.ReadFile(anyTLSNodeCertPath(nodeID))
+	if err != nil {
+		return nil, false
+	}
+	keyPEM, err := os.ReadFile(anyTLSNodeKeyPath(nodeID))
+	if err != nil {
+		return nil, false
+	}
+	pair, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil || len(pair.Certificate) == 0 {
+		return nil, false
+	}
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil || leaf.CheckSignatureFrom(caCert) != nil || leaf.VerifyHostname(domain) != nil ||
+		leaf.NotAfter.Before(time.Now().Add(7*24*time.Hour)) || leaf.NotBefore.After(time.Now()) ||
+		leaf.Subject.SerialNumber != strconv.FormatInt(revision, 10) {
+		return nil, false
+	}
+	return &anyTLSNodeCertBundle{Domain: domain, CertPEM: string(certPEM), KeyPEM: string(keyPEM), CAPEM: caPEM,
+		NotBeforeMS: leaf.NotBefore.UnixMilli(), NotAfterMS: leaf.NotAfter.UnixMilli()}, true
+}
+
+func saveAnyTLSNodeCert(nodeID int64, certPEM, keyPEM string) error {
+	folder := filepath.Dir(anyTLSNodeCertPath(nodeID))
+	if err := os.MkdirAll(folder, 0o700); err != nil {
+		return err
+	}
+	write := func(path, value string) error {
+		tmp, err := os.CreateTemp(folder, ".anytls-*")
+		if err != nil {
+			return err
+		}
+		defer os.Remove(tmp.Name())
+		if err := tmp.Chmod(0o600); err != nil {
+			tmp.Close()
+			return err
+		}
+		if _, err := tmp.WriteString(value); err != nil {
+			tmp.Close()
+			return err
+		}
+		if err := tmp.Sync(); err != nil {
+			tmp.Close()
+			return err
+		}
+		if err := tmp.Close(); err != nil {
+			return err
+		}
+		return os.Rename(tmp.Name(), path)
+	}
+	if err := write(anyTLSNodeKeyPath(nodeID), keyPEM); err != nil {
+		return err
+	}
+	return write(anyTLSNodeCertPath(nodeID), certPEM)
+}
+
 func anyTLSCACertPath() string {
 	return filepath.Join(anyTLSCertDir(), anyTLSCACertFileName)
 }
 
 func anyTLSCAKeyPath() string {
 	return filepath.Join(anyTLSCertDir(), anyTLSCAKeyFileName)
-}
-
-func upsertViteConfigValue(name, value string) error {
-	now := time.Now().UnixMilli()
-	var cfg model.ViteConfig
-	if err := dbpkg.DB.Where("name = ?", name).First(&cfg).Error; err == nil {
-		cfg.Value = value
-		cfg.Time = now
-		return dbpkg.DB.Save(&cfg).Error
-	}
-	return dbpkg.DB.Create(&model.ViteConfig{Name: name, Value: value, Time: now}).Error
 }
 
 func getViteConfigValue(name string) string {
@@ -106,25 +305,6 @@ func isAnyTLSCertFeatureEnabled() bool {
 	default:
 		return false
 	}
-}
-
-func saveAnyTLSCAToDB(certPEM, keyPEM string) error {
-	if strings.TrimSpace(certPEM) == "" || strings.TrimSpace(keyPEM) == "" {
-		return fmt.Errorf("empty ca pem")
-	}
-	if err := upsertViteConfigValue(anyTLSCACertDBKey, certPEM); err != nil {
-		return err
-	}
-	return upsertViteConfigValue(anyTLSCAKeyDBKey, keyPEM)
-}
-
-func loadAnyTLSCAFromDB() (string, string, bool) {
-	certPEM := strings.TrimSpace(getViteConfigValue(anyTLSCACertDBKey))
-	keyPEM := strings.TrimSpace(getViteConfigValue(anyTLSCAKeyDBKey))
-	if certPEM == "" || keyPEM == "" {
-		return "", "", false
-	}
-	return certPEM, keyPEM, true
 }
 
 func normalizeAnyTLSCertDomain(nodeID int64, raw string) (string, error) {
@@ -496,64 +676,127 @@ func parsePrivateKeyPEM(pemBytes []byte) (any, error) {
 	return nil, fmt.Errorf("unsupported private key format")
 }
 
-func ensureAnyTLSCA() (*x509.Certificate, any, string, error) {
-	if err := os.MkdirAll(anyTLSCertDir(), 0o700); err != nil {
-		return nil, nil, "", err
+func parseAnyTLSCA(certPEM, keyPEM string) (*x509.Certificate, crypto.Signer, error) {
+	block, _ := pem.Decode([]byte(certPEM))
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil, nil, fmt.Errorf("invalid CA certificate PEM")
 	}
-
-	certPath := anyTLSCACertPath()
-	keyPath := anyTLSCAKeyPath()
-
-	// Prefer DB as source-of-truth to avoid CA/key drift across restarts or multi-instance deployments.
-	if certPEMFromDB, keyPEMFromDB, ok := loadAnyTLSCAFromDB(); ok {
-		block, _ := pem.Decode([]byte(certPEMFromDB))
-		if block != nil {
-			if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
-				if cert.IsCA && time.Until(cert.NotAfter) > anyTLSCARefreshBefore {
-					if key, err := parsePrivateKeyPEM([]byte(keyPEMFromDB)); err == nil {
-						_ = os.WriteFile(certPath, []byte(certPEMFromDB+"\n"), 0o600)
-						_ = os.WriteFile(keyPath, []byte(keyPEMFromDB+"\n"), 0o600)
-						return cert, key, certPEMFromDB, nil
-					}
-				}
-			}
-		}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil || !cert.IsCA || cert.KeyUsage&x509.KeyUsageCertSign == 0 || time.Until(cert.NotAfter) <= anyTLSCARefreshBefore {
+		return nil, nil, fmt.Errorf("invalid or expiring CA certificate")
 	}
-
-	// Fallback: recover CA from local files, then sync back to DB.
-	certPEM, certErr := os.ReadFile(certPath)
-	keyPEM, keyErr := os.ReadFile(keyPath)
-	if certErr == nil && keyErr == nil {
-		if block, _ := pem.Decode(certPEM); block != nil {
-			if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
-				if cert.IsCA && time.Until(cert.NotAfter) > anyTLSCARefreshBefore {
-					if key, err := parsePrivateKeyPEM(keyPEM); err == nil {
-						_ = saveAnyTLSCAToDB(string(certPEM), string(keyPEM))
-						return cert, key, string(certPEM), nil
-					}
-				}
-			}
-		}
+	parsed, err := parsePrivateKeyPEM([]byte(keyPEM))
+	if err != nil {
+		return nil, nil, err
 	}
-
-	return generateAnyTLSCA()
+	key, ok := parsed.(crypto.Signer)
+	if !ok {
+		return nil, nil, fmt.Errorf("CA key is not a signer")
+	}
+	pub, err := x509.MarshalPKIXPublicKey(key.Public())
+	if err != nil {
+		return nil, nil, err
+	}
+	certPub, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
+	if err != nil || !bytes.Equal(pub, certPub) {
+		return nil, nil, fmt.Errorf("CA key does not match certificate")
+	}
+	return cert, key, nil
 }
 
-func generateAnyTLSCA() (*x509.Certificate, any, string, error) {
-	if err := os.MkdirAll(anyTLSCertDir(), 0o700); err != nil {
+func readSharedAnyTLSCA() (*x509.Certificate, crypto.Signer, string, error) {
+	if dbpkg.DB == nil {
+		return nil, nil, "", fmt.Errorf("shared CA database unavailable")
+	}
+	var row model.AnyTLSCAAuthority
+	if err := dbpkg.DB.Where("id = ?", 1).First(&row).Error; err != nil {
 		return nil, nil, "", err
 	}
-	certPath := anyTLSCACertPath()
-	keyPath := anyTLSCAKeyPath()
-
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	cert, key, err := parseAnyTLSCA(row.CertPEM, row.KeyPEM)
 	if err != nil {
 		return nil, nil, "", err
+	}
+	return cert, key, row.CertPEM, nil
+}
+
+func legacyAnyTLSCAValue(name string) (string, error) {
+	var cfg model.ViteConfig
+	err := dbpkg.DB.Where("name = ?", name).Order("id desc").First(&cfg).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return cfg.Value, nil
+}
+
+func ensureAnyTLSCA() (*x509.Certificate, any, string, error) {
+	if dbpkg.DB == nil {
+		return nil, nil, "", fmt.Errorf("shared CA database unavailable")
+	}
+	// Legacy DB pair, if present, is the authoritative migration source. Do
+	// not recover from local files, which may differ between controllers.
+	var row model.AnyTLSCAAuthority
+	err := dbpkg.DB.Where("id = ?", 1).First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		certPEM, readErr := legacyAnyTLSCAValue(anyTLSCACertDBKey)
+		if readErr != nil {
+			return nil, nil, "", readErr
+		}
+		keyPEM, readErr := legacyAnyTLSCAValue(anyTLSCAKeyDBKey)
+		if readErr != nil {
+			return nil, nil, "", readErr
+		}
+		if (certPEM == "") != (keyPEM == "") {
+			return nil, nil, "", fmt.Errorf("partial legacy AnyTLS CA pair")
+		}
+		if certPEM != "" {
+			if _, _, err := parseAnyTLSCA(certPEM, keyPEM); err != nil {
+				return nil, nil, "", err
+			}
+			row = model.AnyTLSCAAuthority{ID: 1, CertPEM: certPEM, KeyPEM: keyPEM}
+		} else {
+			// Local-only CA is ambiguous in a multi-controller deployment.
+			// Refuse to mint a different CA until an operator imports the
+			// existing authority into the shared store.
+			for _, path := range []string{filepath.Join(anyTLSCertDir(), anyTLSCACertFileName), filepath.Join(anyTLSCertDir(), anyTLSCAKeyFileName)} {
+				_, statErr := os.Stat(path)
+				if statErr == nil {
+					return nil, nil, "", fmt.Errorf("legacy local AnyTLS CA requires explicit shared migration")
+				}
+				if !errors.Is(statErr, os.ErrNotExist) {
+					return nil, nil, "", statErr
+				}
+			}
+			certPEM, keyPEM, err = createAnyTLSCA()
+			if err != nil {
+				return nil, nil, "", err
+			}
+			row = model.AnyTLSCAAuthority{ID: 1, CertPEM: certPEM, KeyPEM: keyPEM}
+		}
+		if err := dbpkg.DB.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
+			return nil, nil, "", err
+		}
+	} else if err != nil {
+		return nil, nil, "", err
+	}
+	cert, key, selectedPEM, err := readSharedAnyTLSCA()
+	if err != nil {
+		return nil, nil, "", err
+	}
+	return cert, key, selectedPEM, nil
+}
+
+func createAnyTLSCA() (string, string, error) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return "", "", err
 	}
 	now := time.Now().UTC()
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
-		return nil, nil, "", err
+		return "", "", err
 	}
 	tpl := &x509.Certificate{
 		SerialNumber: serial,
@@ -570,35 +813,43 @@ func generateAnyTLSCA() (*x509.Certificate, any, string, error) {
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, pub, priv)
 	if err != nil {
-		return nil, nil, "", err
+		return "", "", err
 	}
 	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
 	if err != nil {
-		return nil, nil, "", err
+		return "", "", err
 	}
 	newCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	newKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
-	if err := os.WriteFile(certPath, newCertPEM, 0o600); err != nil {
-		return nil, nil, "", err
+	return string(newCertPEM), string(newKeyPEM), nil
+}
+
+func generateAnyTLSCA() (*x509.Certificate, any, string, error) {
+	if dbpkg.DB == nil {
+		return nil, nil, "", fmt.Errorf("shared CA database unavailable")
 	}
-	if err := os.WriteFile(keyPath, newKeyPEM, 0o600); err != nil {
-		return nil, nil, "", err
-	}
-	_ = saveAnyTLSCAToDB(string(newCertPEM), string(newKeyPEM))
-	cert, err := x509.ParseCertificate(der)
+	certPEM, keyPEM, err := createAnyTLSCA()
 	if err != nil {
 		return nil, nil, "", err
 	}
-	return cert, priv, string(newCertPEM), nil
+	// Force rotation is an explicit operation; update the shared pair as one
+	// row rather than independently overwriting two legacy config values.
+	row := model.AnyTLSCAAuthority{ID: 1, CertPEM: certPEM, KeyPEM: keyPEM}
+	if err := dbpkg.DB.Clauses(clause.OnConflict{UpdateAll: true}).Create(&row).Error; err != nil {
+		return nil, nil, "", err
+	}
+	cert, key, selectedPEM, err := readSharedAnyTLSCA()
+	if err != nil {
+		return nil, nil, "", err
+	}
+	return cert, key, selectedPEM, nil
 }
 
 func anyTLSCAStatus() (map[string]any, error) {
 	enabled := isAnyTLSCertFeatureEnabled()
 	info := map[string]any{
 		"enabled":             enabled,
-		"certDir":             anyTLSCertDir(),
-		"caCertPath":          anyTLSCACertPath(),
-		"caKeyPath":           anyTLSCAKeyPath(),
+		"caStorage":           "shared_database",
 		"caExists":            false,
 		"keyExists":           false,
 		"caRefreshBeforeMs":   int64(anyTLSCARefreshBefore / time.Millisecond),
@@ -614,30 +865,13 @@ func anyTLSCAStatus() (map[string]any, error) {
 		return info, nil
 	}
 
-	certPath := anyTLSCACertPath()
-	keyPath := anyTLSCAKeyPath()
-	if st, err := os.Stat(certPath); err == nil {
-		info["caExists"] = true
-		info["caUpdatedAtMs"] = st.ModTime().UnixMilli()
-	}
-	if st, err := os.Stat(keyPath); err == nil {
-		info["keyExists"] = true
-		info["keyUpdatedAtMs"] = st.ModTime().UnixMilli()
-	}
-	certPEM, err := os.ReadFile(certPath)
-	if err != nil {
-		return info, nil
-	}
-	block, _ := pem.Decode(certPEM)
-	if block == nil {
-		info["parseError"] = "invalid cert pem"
-		return info, nil
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
+	cert, _, _, err := readSharedAnyTLSCA()
 	if err != nil {
 		info["parseError"] = err.Error()
-		return info, nil
+		return info, err
 	}
+	info["caExists"] = true
+	info["keyExists"] = true
 	now := time.Now().UTC()
 	info["serialNumber"] = cert.SerialNumber.String()
 	info["subject"] = cert.Subject.String()
@@ -664,6 +898,8 @@ func issueAnyTLSNodeCert(nodeID int64, rawDomain string) (*anyTLSNodeCertBundle,
 	if nodeID <= 0 {
 		return nil, fmt.Errorf("invalid node id")
 	}
+	anyTLSLeafCertMu.Lock()
+	defer anyTLSLeafCertMu.Unlock()
 	domain, err := ensureAnyTLSCertDomain(nodeID, rawDomain)
 	if err != nil {
 		return nil, err
@@ -673,10 +909,15 @@ func issueAnyTLSNodeCert(nodeID int64, rawDomain string) (*anyTLSNodeCertBundle,
 		return nil, err
 	}
 
+	revision := getAnyTLSCertRevision(nodeID)
+	key := anyTLSLeafDBKey(nodeID, domain, revision, caCert)
+	if cached, ok := readAnyTLSNodeCertDB(key, nodeID, domain, revision, caCert, caPEM); ok {
+		return cached, nil
+	}
+
 	now := time.Now().UTC()
 	notBeforeWithSkew, notAfter := currentAnyTLSLeafWindow(now)
 	notBefore := notBeforeWithSkew.Add(1 * time.Hour)
-	revision := getAnyTLSCertRevision(nodeID)
 	leafPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
@@ -694,6 +935,7 @@ func issueAnyTLSNodeCert(nodeID int64, rawDomain string) (*anyTLSNodeCertBundle,
 		Subject: pkix.Name{
 			CommonName:   anyTLSCertCommonName,
 			Organization: []string{anyTLSCertOrganization},
+			SerialNumber: strconv.FormatInt(revision, 10),
 		},
 		NotBefore:             notBeforeWithSkew,
 		NotAfter:              notAfter,
@@ -712,14 +954,39 @@ func issueAnyTLSNodeCert(nodeID int64, rawDomain string) (*anyTLSNodeCertBundle,
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
-	return &anyTLSNodeCertBundle{
-		Domain:      domain,
-		CertPEM:     string(certPEM),
-		KeyPEM:      string(keyPEM),
-		CAPEM:       caPEM,
-		NotBeforeMS: tpl.NotBefore.UnixMilli(),
-		NotAfterMS:  tpl.NotAfter.UnixMilli(),
-	}, nil
+	row := model.AnyTLSNodeLeaf{Key: key, CertPEM: string(certPEM), KeyPEM: string(keyPEM)}
+	return publishSharedAnyTLSLeaf(row, nodeID, domain, revision, caCert, caPEM)
+}
+
+func publishSharedAnyTLSLeaf(row model.AnyTLSNodeLeaf, nodeID int64, domain string, revision int64, caCert *x509.Certificate, caPEM string) (*anyTLSNodeCertBundle, error) {
+	key := row.Key
+	// A leaf near expiry must be replaced under the same key. Use a compare-and-
+	// swap so only one controller wins, then return precisely the shared winner.
+	var prior model.AnyTLSNodeLeaf
+	switch err := dbpkg.DB.Where("leaf_key = ?", key).First(&prior).Error; {
+	case err == nil:
+		// Another controller may have renewed after our initial cache miss.
+		// Never replace its valid winner with our already-generated candidate.
+		if selected, ok := selectSharedAnyTLSLeaf(prior, nodeID, domain, revision, caCert, caPEM); ok {
+			return selected, nil
+		}
+		res := dbpkg.DB.Model(&model.AnyTLSNodeLeaf{}).Where("leaf_key = ? AND cert_pem = ? AND key_pem = ?", key, prior.CertPEM, prior.KeyPEM).
+			Updates(map[string]interface{}{"cert_pem": row.CertPEM, "key_pem": row.KeyPEM})
+		if res.Error != nil {
+			return nil, res.Error
+		}
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		if err := dbpkg.DB.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
+			return nil, err
+		}
+	default:
+		return nil, err
+	}
+	selected, ok := readAnyTLSNodeCertDB(key, nodeID, domain, revision, caCert, caPEM)
+	if !ok {
+		return nil, fmt.Errorf("shared AnyTLS leaf unavailable or invalid")
+	}
+	return selected, nil
 }
 
 func anyTLSCertPayload(nodeID int64, rawDomain string) (map[string]any, error) {

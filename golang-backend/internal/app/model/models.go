@@ -225,6 +225,26 @@ type NodeOpLog struct {
 
 func (NodeOpLog) TableName() string { return "node_op_log" }
 
+// AnyTLSCAAuthority is the single shared CA/key pair selected atomically by
+// all controller instances. The fixed primary key prevents split-brain CA.
+type AnyTLSCAAuthority struct {
+	ID      int    `gorm:"primaryKey;column:id"`
+	CertPEM string `gorm:"column:cert_pem;type:longtext"`
+	KeyPEM  string `gorm:"column:key_pem;type:longtext"`
+}
+
+func (AnyTLSCAAuthority) TableName() string { return "anytls_ca_authority" }
+
+// AnyTLSNodeLeaf is the shared, immutable certificate selected per node,
+// domain, revision and CA. The unique key makes concurrent issuers converge.
+type AnyTLSNodeLeaf struct {
+	Key     string `gorm:"primaryKey;column:leaf_key;size:191"`
+	CertPEM string `gorm:"column:cert_pem;type:longtext"`
+	KeyPEM  string `gorm:"column:key_pem;type:longtext"`
+}
+
+func (AnyTLSNodeLeaf) TableName() string { return "anytls_node_leaf" }
+
 // NodeAnyTLSCertLog stores dedicated AnyTLS certificate install/refresh logs from agent.
 type NodeAnyTLSCertLog struct {
 	ID      int64  `gorm:"primaryKey;column:id" json:"id"`

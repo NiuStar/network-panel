@@ -293,7 +293,7 @@ export default function ExitNodePage() {
       name: item.name || "",
       host: item.host || "",
       port: item.port ? String(item.port) : "",
-      protocol: item.protocol || "ss",
+      protocol: (item.protocol || "").toLowerCase().replace(/[ _-]/g, "") === "anytls" ? "anytls" : item.protocol || "ss",
       params,
     });
     onOpen();
@@ -312,6 +312,14 @@ export default function ExitNodePage() {
     setSaving(true);
     try {
       const params = { ...(form.params || {}) };
+      if (protocol.toLowerCase().replace(/[ _-]/g, "") === "anytls") {
+        const pin = String(params["cert-sha256"] || "").trim();
+        if (!/^[0-9a-fA-F]{64}$/.test(pin)) {
+          toast.error("请填写可信来源的叶证书 SHA-256 指纹（64 位十六进制）");
+          return;
+        }
+        params["cert-sha256"] = pin.toLowerCase();
+      }
       if ((protocol === "ss" || protocol === "ssr") && !params.cipher) {
         params.cipher = DEFAULT_SS_CIPHER;
       }
@@ -1850,7 +1858,7 @@ export default function ExitNodePage() {
                           </Checkbox>
                           <div className="exit-option-desc">减少握手延迟以提升连接速度</div>
                         </div>
-                        <div className="exit-option">
+                        {protocol !== "anytls" && <div className="exit-option">
                           <Checkbox
                             isSelected={!!params["skip-cert-verify"]}
                             onValueChange={(val) => updateParam("skip-cert-verify", val)}
@@ -1859,7 +1867,15 @@ export default function ExitNodePage() {
                             不校验证书
                           </Checkbox>
                           <div className="exit-option-desc">当证书链无法验证时继续连接</div>
-                        </div>
+                        </div>}
+                        {protocol === "anytls" && <ExitInput
+                          isRequired
+                          label="叶证书 SHA-256 指纹"
+                          placeholder="可信来源的 64 位十六进制；不是 uTLS 客户端指纹"
+                          value={params["cert-sha256"] || ""}
+                          classNames={inputClassNames}
+                          onChange={(e: InputChangeEvent) => updateParam("cert-sha256", e.target.value)}
+                        />}
                         {protocol === "tuic" || protocol === "tuicv5" ? (
                           <>
                             <Checkbox

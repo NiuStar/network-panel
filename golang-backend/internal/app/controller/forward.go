@@ -3140,6 +3140,9 @@ func loadExternalExit(t model.Tunnel) (*model.ExitNodeExternal, bool) {
 	if err := dbpkg.DB.First(&ext, *t.OutExitID).Error; err != nil {
 		return nil, false
 	}
+	if ext.Config != nil {
+		if err := validateExternalAnyTLSConfig(ext.Protocol, json.RawMessage(*ext.Config)); err != nil { return nil, false }
+	} else if err := validateExternalAnyTLSConfig(ext.Protocol, nil); err != nil { return nil, false }
 	return &ext, true
 }
 

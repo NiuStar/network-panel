@@ -127,4 +127,4 @@ require (
 	modernc.org/sqlite v1.23.1 // indirect
 )
 
-replace anytls => github.com/NiuStar/anytls-go v0.0.23
+replace anytls => github.com/NiuStar/anytls-go v0.0.27

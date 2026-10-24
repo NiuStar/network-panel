@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/md5"
+	crand "crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -40,11 +42,12 @@ import (
 )
 
 var (
-	newline   = []byte{'\n'}
-	space     = []byte{' '}
-	opLogCh   = make(chan map[string]any, 128)
-	certLogCh = make(chan map[string]any, 256)
-	wsWriteMu sync.Map // map[*websocket.Conn]*sync.Mutex
+	newline         = []byte{'\n'}
+	space           = []byte{' '}
+	opLogCh         = make(chan map[string]any, 128)
+	certLogCh       = make(chan map[string]any, 256)
+	anyTLSProcessID string
+	wsWriteMu       sync.Map // map[*websocket.Conn]*sync.Mutex
 	// Reuse one HTTP client for local GOST API calls to reduce allocations.
 	gostAPIHTTPClient = &http.Client{Timeout: 5 * time.Second}
 	// Reuse one HTTP client for panel APIs to avoid repeated allocations.
@@ -512,6 +515,12 @@ func main() {
 	u.RawQuery = q.Encode()
 
 	setAnyTLSPanelContext(addr, secret, scheme)
+	var processErr error
+	anyTLSProcessID, processErr = newAnyTLSProcessID()
+	if processErr != nil {
+		log.Printf("anytls process identity unavailable: %v", processErr)
+		return
+	}
 
 	// 不再自动启用 Web API，仅做报告（前端可手动触发启用）。
 	// 但如果已配置 API 且绑定为 :PORT / 0.0.0.0，则自动纠正到 127.0.0.1:PORT。
@@ -520,6 +529,7 @@ func main() {
 		_ = normalizeConfiguredGostAPIBindLocalOnly()
 	}()
 	cfgs, ok := loadAnyTLSConfigs()
+	emitAnyTLSCertLog("agent_boot", "进程启动，旧证书运行时确认失效", nil)
 	if changed, err := pullAnyTLSCertFromPanel(addr, secret, scheme); err != nil {
 		log.Printf("{\"event\":\"edge_cert_boot_pull_err\",\"error\":%q}", err.Error())
 		emitAnyTLSCertLog("boot_pull_err", "启动时证书拉取失败", map[string]any{"error": err.Error()})
@@ -531,15 +541,8 @@ func main() {
 		emitAnyTLSCertLog("boot_unchanged", "启动时证书无变化", nil)
 	}
 	if ok {
-		ports := make([]int, 0, len(cfgs))
-		for p := range cfgs {
-			ports = append(ports, p)
-		}
-		sort.Ints(ports)
-		for _, p := range ports {
-			if err := startAnyTLS(cfgs[p]); err != nil {
-				log.Printf("{\"event\":\"edge_boot_err\",\"port\":%d,\"error\":%q}", p, err.Error())
-			}
+		if startSavedAnyTLSConfigs(cfgs, startAnyTLS) {
+			emitAnyTLSInstalledCheck("post_reload", "", 0, "")
 		}
 	} else {
 		log.Printf("{\"event\":\"edge_boot_skip\",\"reason\":\"no_valid_edge_config\"}")
@@ -598,6 +601,10 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 	wsWriteMu.Store(c, &sync.Mutex{})
 	defer wsWriteMu.Delete(c)
 	log.Printf("{\"event\":\"connected\"}")
+	// A new websocket epoch invalidates confirmations from an earlier connection.
+	// A fresh installed check is queued only after the boot barrier.
+	emitAnyTLSCertLog("agent_boot", "连接建立，旧运行时确认失效", nil)
+	emitAnyTLSInstalledCheck("post_reload", "", 0, "")
 
 	// 不在重连时自动启用/重启 GOST，仅保持心跳与命令通道
 
@@ -615,6 +622,20 @@ func runOnce(wsURL, addr, secret, scheme string) error {
 	go periodicReportServices(addr, secret, scheme, done)
 	// Pull AnyTLS cert from controller periodically and hot-reload runtimes when rotated.
 	go periodicAnyTLSCertRefresh(addr, secret, scheme, done)
+	// Keep runtime/port confirmation fresh; a historical success expires when
+	// the agent stops reporting, even if the websocket dies without a boot log.
+	go func() {
+		ticker := time.NewTicker(45 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				emitAnyTLSInstalledCheck("post_reload", "", 0, "")
+			}
+		}
+	}()
 	// OpLog forwarder: send queued op logs to server as {type:"OpLog", step, message, data}
 	go func() {
 		for {
@@ -3209,6 +3230,14 @@ func redactValue(v any) any {
 	}
 }
 
+func newAnyTLSProcessID() (string, error) {
+	var raw [16]byte
+	if _, err := crand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
 // emitOpLog queues an OpLog frame to panel via WS sender (runOnce).
 func emitOpLog(step, message string, data map[string]any) {
 	select {
@@ -3220,6 +3249,13 @@ func emitOpLog(step, message string, data map[string]any) {
 
 // emitAnyTLSCertLog queues dedicated AnyTLS certificate logs to panel via WS sender (runOnce).
 func emitAnyTLSCertLog(step, message string, data map[string]any) {
+	if anyTLSProcessID == "" {
+		return
+	}
+	if data == nil {
+		data = map[string]any{}
+	}
+	data["processId"] = anyTLSProcessID
 	select {
 	case certLogCh <- map[string]any{"step": step, "message": message, "data": data}:
 	default:

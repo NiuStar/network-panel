@@ -252,6 +252,10 @@ func ExitExternalCreate(c *gin.Context) {
 		c.JSON(http.StatusOK, response.ErrMsg("参数错误"))
 		return
 	}
+	if err := validateExternalAnyTLSConfig(p.Protocol, p.Config); err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg(err.Error()))
+		return
+	}
 	p.Name = strings.TrimSpace(p.Name)
 	p.Host = strings.TrimSpace(p.Host)
 	if p.Name == "" || p.Host == "" || p.Port <= 0 || p.Port > 65535 {
@@ -301,6 +305,10 @@ func ExitExternalUpdate(c *gin.Context) {
 	var item model.ExitNodeExternal
 	if err := dbpkg.DB.First(&item, p.ID).Error; err != nil {
 		c.JSON(http.StatusOK, response.ErrMsg("记录不存在"))
+		return
+	}
+	if err := validateExternalAnyTLSConfig(p.Protocol, p.Config); err != nil {
+		c.JSON(http.StatusOK, response.ErrMsg(err.Error()))
 		return
 	}
 	p.Name = strings.TrimSpace(p.Name)

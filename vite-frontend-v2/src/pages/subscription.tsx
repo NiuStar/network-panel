@@ -351,7 +351,7 @@ export default function SubscriptionPage() {
             <div className="np-soft p-4 space-y-2">
               <div className="text-sm font-semibold">Shadowrocket 分流使用说明</div>
               <p className="text-xs text-default-500">
-                将上方「Shadowrocket 分流配置」链接导入 Shadowrocket 的「配置」并设为使用中；它已包含节点和规则，无需再导入纯节点订阅。节点变更后重新下载配置。地区策略组按节点名称匹配，请在节点名标明 HK/JP/US 等地区；未匹配到的策略组需在 App 中手动选择可用节点。
+                将上方「Shadowrocket 分流配置」链接复制到 Shadowrocket 底部「配置」→ 右上角「+」下载，点已下载文件选择「使用配置」；首页「全局路由」请选择「配置」，不要将此链接作为首页 Subscribe 节点订阅。打开该配置的「ⓘ」→「代理分组」，在 AI、谷歌、油管等业务组中分别选择具体节点。规则通过 LingJingMaster 规则集匹配；如需节点出现在首页，请另导入「纯节点订阅」。节点变更后在「配置」页重新下载，旧的纯节点订阅不会自动启用规则。
               </p>
               <div className="flex gap-2">
                 <Button size="sm" variant="bordered" onPress={() => copyText(shadowrocketRulesUrl, "上游规则原址")}>

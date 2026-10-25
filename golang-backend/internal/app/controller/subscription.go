@@ -709,10 +709,10 @@ func resolveExitProtocol(t model.Tunnel, ext *model.ExitNodeExternal, ssMap map[
 	case "anytls":
 		if a, ok := anyTLSMap[outID]; ok {
 			params := map[string]interface{}{}
-			params = applyAnyTLSVerifyDefaults(params, getAnyTLSCertDomain(outID))
 			if isAnyTLSCertFeatureEnabled() && isAnyTLSCertNodeAllowed(outID) {
 				params["cert-sha256"] = anyTLSNodeCertPin(outID, getAnyTLSCertDomain(outID))
 			}
+			params = applyAnyTLSVerifyDefaults(params, getAnyTLSCertDomain(outID))
 			return "anytls", "", a.Password, params
 		}
 	default:
@@ -725,6 +725,10 @@ func applyAnyTLSVerifyDefaults(params map[string]interface{}, certDomain string)
 	if params == nil {
 		params = map[string]interface{}{}
 	}
+	_, pinErr := requiredAnyTLSCertificatePin(params)
+	// Managed pin-only clients authenticate the installed leaf, not its DNS
+	// name. Keep explicit client names and the legacy PKIX name fallback.
+	hasExplicitSNI := paramStringFirst(params, "sni", "server_name") != ""
 	enabled := isAnyTLSCertFeatureEnabled()
 	certDomain = strings.TrimSpace(certDomain)
 	// Canonicalize verify flags: keep only hyphen style key for downstream outputs.
@@ -734,10 +738,12 @@ func applyAnyTLSVerifyDefaults(params map[string]interface{}, certDomain string)
 	delete(params, "insecure")
 	if enabled {
 		params["skip-cert-verify"] = false
-		if certDomain != "" {
-			params["sni"] = certDomain
-		} else if strings.TrimSpace(paramString(params, "sni")) == "" {
-			params["sni"] = defaultAnyTLSSNI
+		if !hasExplicitSNI && pinErr != nil {
+			if certDomain != "" {
+				params["sni"] = certDomain
+			} else {
+				params["sni"] = defaultAnyTLSSNI
+			}
 		}
 	} else {
 		params["skip-cert-verify"] = true

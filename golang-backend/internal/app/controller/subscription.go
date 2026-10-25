@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"sort"
@@ -402,7 +403,7 @@ func subscriptionItems(c *gin.Context) (model.User, []subProxy, []subSkip, bool)
 				ext = &e
 			}
 		}
-		proto, cipher, password, params := resolveExitProtocol(t, ext, ssMap, anyTLSMap)
+		proto, cipher, password, params := resolveExitProtocolForEndpoint(t, ext, ssMap, anyTLSMap, entryHost)
 		anyTLSEgressFallback := ""
 		if normalizeProtocol(proto) == "anytls" && ext == nil && user.ID > 0 {
 			if paramString(params, "password") == "" {
@@ -451,9 +452,8 @@ func subscriptionItems(c *gin.Context) (model.User, []subProxy, []subSkip, bool)
 			delete(params, "ca_cert_path")
 			delete(params, "ca-cert")
 			delete(params, "ca_cert")
-			if t.OutExitID == nil {
-				params = applyAnyTLSVerifyDefaults(params, "")
-			}
+			// Managed defaults were applied by the resolver using entryHost;
+			// applying generic defaults again would reintroduce the name.
 			if isAnyTLSCertFeatureEnabled() && t.OutExitID == nil {
 				outID := outNodeIDOr0(t)
 				if outID == 0 {
@@ -664,6 +664,12 @@ func normalizeProtocol(proto string) string {
 }
 
 func resolveExitProtocol(t model.Tunnel, ext *model.ExitNodeExternal, ssMap map[int64]model.ExitSetting, anyTLSMap map[int64]model.AnyTLSSetting) (string, string, string, map[string]interface{}) {
+	// Unknown endpoint keeps the legacy name default. Only callers that have
+	// resolved the actual connection address may opt into the public-IP case.
+	return resolveExitProtocolForEndpoint(t, ext, ssMap, anyTLSMap, "")
+}
+
+func resolveExitProtocolForEndpoint(t model.Tunnel, ext *model.ExitNodeExternal, ssMap map[int64]model.ExitSetting, anyTLSMap map[int64]model.AnyTLSSetting, endpoint string) (string, string, string, map[string]interface{}) {
 	if ext != nil {
 		params := parseExitConfig(ext.Config)
 		proto := normalizeProtocol(ptrString(ext.Protocol))
@@ -712,7 +718,7 @@ func resolveExitProtocol(t model.Tunnel, ext *model.ExitNodeExternal, ssMap map[
 			if isAnyTLSCertFeatureEnabled() && isAnyTLSCertNodeAllowed(outID) {
 				params["cert-sha256"] = anyTLSNodeCertPin(outID, getAnyTLSCertDomain(outID))
 			}
-			params = applyAnyTLSVerifyDefaults(params, getAnyTLSCertDomain(outID))
+			params = applyManagedAnyTLSVerifyDefaults(params, getAnyTLSCertDomain(outID), endpoint)
 			return "anytls", "", a.Password, params
 		}
 	default:
@@ -722,12 +728,21 @@ func resolveExitProtocol(t model.Tunnel, ext *model.ExitNodeExternal, ssMap map[
 }
 
 func applyAnyTLSVerifyDefaults(params map[string]interface{}, certDomain string) map[string]interface{} {
+	return applyAnyTLSVerifyDefaultsWithSNI(params, certDomain, false)
+}
+
+// Only managed callers may suppress a synthesized name, after resolving the
+// installed-confirmed leaf pin and the final endpoint (including probe hairpin).
+func applyManagedAnyTLSVerifyDefaults(params map[string]interface{}, certDomain, endpoint string) map[string]interface{} {
+	_, pinErr := requiredAnyTLSCertificatePin(params)
+	return applyAnyTLSVerifyDefaultsWithSNI(params, certDomain, pinErr == nil && isAnyTLSPublicIPEndpoint(endpoint))
+}
+
+func applyAnyTLSVerifyDefaultsWithSNI(params map[string]interface{}, certDomain string, omitDefaultSNI bool) map[string]interface{} {
 	if params == nil {
 		params = map[string]interface{}{}
 	}
-	_, pinErr := requiredAnyTLSCertificatePin(params)
-	// Managed pin-only clients authenticate the installed leaf, not its DNS
-	// name. Keep explicit client names and the legacy PKIX name fallback.
+	// Explicit names are never synthesized and must not be overwritten.
 	hasExplicitSNI := paramStringFirst(params, "sni", "server_name") != ""
 	enabled := isAnyTLSCertFeatureEnabled()
 	certDomain = strings.TrimSpace(certDomain)
@@ -738,7 +753,7 @@ func applyAnyTLSVerifyDefaults(params map[string]interface{}, certDomain string)
 	delete(params, "insecure")
 	if enabled {
 		params["skip-cert-verify"] = false
-		if !hasExplicitSNI && pinErr != nil {
+		if !hasExplicitSNI && !omitDefaultSNI {
 			if certDomain != "" {
 				params["sni"] = certDomain
 			} else {
@@ -755,6 +770,42 @@ func applyAnyTLSVerifyDefaults(params map[string]interface{}, certDomain string)
 		delete(params, "ca_cert")
 	}
 	return params
+}
+
+// Global unicast alone includes private and special-use space. Be conservative:
+// accept ordinary public literals, not DNS, zones, mapped/transition addresses,
+// documentation, benchmarking, shared, or reserved space. Never resolve/dial.
+func isAnyTLSPublicIPEndpoint(endpoint string) bool {
+	ip, err := netip.ParseAddr(strings.TrimSpace(endpoint))
+	if err != nil || ip.Zone() != "" || ip.Is4In6() || !ip.IsGlobalUnicast() || ip.IsPrivate() {
+		return false
+	}
+	if ip.Is6() && !netip.MustParsePrefix("2000::/3").Contains(ip) {
+		return false
+	}
+	for _, prefix := range anyTLSNonPublicPrefixes {
+		if prefix.Contains(ip) {
+			return false
+		}
+	}
+	return true
+}
+
+var anyTLSNonPublicPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("192.88.99.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("2001::/23"),
+	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("3ffe::/16"),
+	netip.MustParsePrefix("3fff::/20"),
 }
 
 func anyTLSSkipCertVerify(params map[string]interface{}) bool {

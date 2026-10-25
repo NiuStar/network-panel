@@ -303,7 +303,15 @@ func buildSingboxOutboundForForward(f model.Forward, t model.Tunnel, testNodeID 
 		}
 	}
 
-	proto, cipher, password, params := resolveExitProtocol(t, ext, ssMap, anyTLSMap)
+	// Resolve hairpin substitution before applying endpoint-sensitive TLS defaults.
+	if testNodeID > 0 && testNodeID == t.InNodeID && isLikelyEntryHost(entryHost, entryNode, t.InIP) {
+		if strings.Contains(entryHost, ":") {
+			entryHost = "::1"
+		} else {
+			entryHost = "127.0.0.1"
+		}
+	}
+	proto, cipher, password, params := resolveExitProtocolForEndpoint(t, ext, ssMap, anyTLSMap, entryHost)
 	if strings.TrimSpace(proto) == "" {
 		return nil, "", fmt.Errorf("出口协议为空")
 	}
@@ -332,16 +340,6 @@ func buildSingboxOutboundForForward(f model.Forward, t model.Tunnel, testNodeID 
 				if es, ok := ssMap[t.InNodeID]; ok && es.Port > 0 {
 					testPort = es.Port
 				}
-			}
-		}
-	}
-	// avoid hairpin/NAT loop when testing on the same node as entry
-	if testNodeID > 0 && testNodeID == t.InNodeID {
-		if isLikelyEntryHost(entryHost, entryNode, t.InIP) {
-			if strings.Contains(entryHost, ":") {
-				entryHost = "::1"
-			} else {
-				entryHost = "127.0.0.1"
 			}
 		}
 	}

@@ -3,10 +3,8 @@ package controller
 import (
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"network-panel/golang-backend/internal/app/model"
 )
@@ -14,35 +12,16 @@ import (
 // Exercise the real managed resolver with an issued leaf and current installed
 // confirmation, not a synthetic pin added after defaults have already run.
 func TestManagedAnyTLSPinDoesNotInjectSNI(t *testing.T) {
-	db := setupTunnelExternalTestDB(t)
-	if err := db.AutoMigrate(&model.ViteConfig{}, &model.AnyTLSCAAuthority{}, &model.AnyTLSNodeLeaf{}, &model.NodeAnyTLSCertLog{}); err != nil {
-		t.Fatal(err)
+	_, _, _, pin := setupAnyTLSSNIScopeFixture(t, false)
+	items, skipped := scopeSubscriptionItems(t)
+	if len(items) != 1 || len(skipped) != 0 {
+		t.Fatalf("items=%d skipped=%v", len(items), skipped)
 	}
-	if err := db.Create(&model.ViteConfig{Name: anyTLSCertEnabledDBKey, Value: "1"}).Error; err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv(anyTLSCertDirEnv, t.TempDir())
-	t.Setenv("ANYTLS_CERT_NODE_IDS", "")
-	bundle, err := issueAnyTLSNodeCert(73, "issued.example.com")
-	if err != nil {
-		t.Fatal(err)
-	}
-	pin := anyTLSCertPinFromPEM(bundle.CertPEM)
-	insertAnyTLSTestBoot(t, db, 73)
-	if err := db.Create(&model.NodeAnyTLSCertLog{NodeID: 73, Step: "installed_check", TimeMs: time.Now().UnixMilli(), Data: fmt.Sprintf(`{"processId":"test-agent","context":"post_reload","matchLatest":true,"installed":{"fingerprintSha256":%q}}`, pin)}).Error; err != nil {
-		t.Fatal(err)
-	}
-	proto := "anytls"
-	_, _, password, params := resolveExitProtocol(model.Tunnel{InNodeID: 73, Protocol: &proto}, nil, nil, map[int64]model.AnyTLSSetting{73: {Password: "secret"}})
-	// subscriptionItems applies defaults again before refreshing the confirmed pin.
-	params = applyAnyTLSVerifyDefaults(params, "")
-	if got, err := requiredAnyTLSCertificatePin(params); err != nil || got != pin {
-		t.Fatalf("lost confirmed pin: %q %v", got, err)
-	}
+	item := items[0]
+	params, password := item.Params, item.Password
 	if params["sni"] != nil || params["server_name"] != nil {
-		t.Errorf("managed leaf pin injected SNI: %#v", params)
+		t.Errorf("managed public-IP leaf pin injected SNI: %#v", params)
 	}
-	item := subProxy{Name: "managed-pin", Group: "managed-group", Type: proto, Server: "192.0.2.73", Port: 443, Password: password, Params: params}
 	for name, render := range map[string]func() string{
 		"clash":        func() string { return buildClashConfig([]subProxy{item}, nil) },
 		"clash-meta":   func() string { return buildClashMetaConfig([]subProxy{item}, nil) },
@@ -72,7 +51,7 @@ func TestManagedAnyTLSPinDoesNotInjectSNI(t *testing.T) {
 			if !strings.Contains(out, pin) {
 				t.Fatalf("export lost pin: %s", out)
 			}
-			if strings.Contains(out, "issued.example.com") || strings.Contains(out, defaultAnyTLSSNI) {
+			if strings.Contains(out, "node.example.com") || strings.Contains(out, defaultAnyTLSSNI) {
 				t.Fatalf("export injected SNI: %s", out)
 			}
 		})

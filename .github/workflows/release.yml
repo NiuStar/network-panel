@@ -31,6 +31,7 @@ jobs:
           grep -F "var versionBase = \"$version\"" golang-backend/cmd/flux-agent/main.go
           bash -n install.sh scripts/build_flux_agent_all.sh scripts/build_server_all.sh publish.sh
           python3 scripts/test_install_proxy.py
+          python3 scripts/test_publish.py
           python3 scripts/test_shadowrocket_rule_guidance.py
           go test -p 2 ./golang-backend/...
           go vet -p 2 ./golang-backend/...

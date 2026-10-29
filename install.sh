@@ -6,6 +6,7 @@ STATIC_BASE="https://panel-static.199028.xyz/network-panel"
 GITHUB_DL_BASE="https://github.com/NiuStar/network-panel/releases/latest/download"
 # GOST 最新版本 API（自动匹配资产）
 BASE_GOST_REPO_API="https://api.github.com/repos/go-gost/gost/releases/latest"
+DEFAULT_PROXY_PREFIX="https://proxy.yjkj02.com/"
 PROXY_PREFIX=""
 FORCE_PROXY_GITHUB=0
 # 下载源模式：global(默认) | cn | static | github | auto(等价于 global)
@@ -85,7 +86,7 @@ init_source_mode() {
   if [[ "$mode" == "auto" ]]; then mode="global"; fi
   case "$mode" in
     cn)
-      [[ -z "$PROXY_PREFIX" ]] && PROXY_PREFIX="https://proxy.199028.xyz/"
+      [[ -z "$PROXY_PREFIX" ]] && PROXY_PREFIX="$DEFAULT_PROXY_PREFIX"
       SOURCE_DESC="静态镜像 > GitHub(代理) > GitHub(直连) > 面板"
       ;;
     panel)
@@ -808,30 +809,74 @@ EOF
   start_flux_agent_service
   echo "✅ Go Agent 已安装并启用 (flux-agent.service)"
 }
-# 解析命令行参数
+# 解析命令行参数（getopts 保留现有短参数及其紧凑写法）
+usage() {
+  cat <<EOF
+用法: bash install.sh [-a 面板地址] [-s 密钥] [-p 4|6] [-m 下载源模式] [--proxy URL]
+  -p 4, -4       使用默认 GitHub 代理: $DEFAULT_PROXY_PREFIX
+  -p 6, -6       使用内置 IPv6 GitHub 代理
+  --proxy URL    自定义 GitHub 代理前缀，优先于 -p；自动补齐末尾 /
+                 也支持 --proxy=URL；GitHub 请求只走指定代理
+  -m MODE        global（默认）| cn | static | github | panel | auto
+  -h, --help     显示帮助
+EOF
+}
+
 PROXY_MODE=""
-while getopts "a:s:p:m:" opt; do
+CUSTOM_PROXY=""
+while getopts ":a:s:p:m:46h-:" opt; do
   case $opt in
     a) SERVER_ADDR="$OPTARG" ;;
     s) SECRET="$OPTARG" ;;
     p) PROXY_MODE="$OPTARG" ;;
     m) SOURCE_MODE="$OPTARG" ;;
-    *) echo "❌ 无效参数"; exit 1 ;;
+    4|6) PROXY_MODE="$opt" ;;
+    h) usage; exit 0 ;;
+    -)
+      case "$OPTARG" in
+        proxy)
+          CUSTOM_PROXY="${!OPTIND}"
+          if [[ -z "$CUSTOM_PROXY" || "$CUSTOM_PROXY" == -* ]]; then
+            echo "❌ --proxy 需要提供 HTTP(S) 代理地址" >&2
+            exit 1
+          fi
+          OPTIND=$((OPTIND + 1))
+          ;;
+        proxy=*) CUSTOM_PROXY="${OPTARG#proxy=}" ;;
+        help) usage; exit 0 ;;
+        *) echo "❌ 无效参数: --$OPTARG" >&2; exit 1 ;;
+      esac
+      if [[ "$OPTARG" == proxy || "$OPTARG" == proxy=* ]]; then
+        if [[ ! "$CUSTOM_PROXY" =~ ^https?://[^/?#[:space:]]+(/[^?#[:space:]]*)?$ ]]; then
+          echo "❌ --proxy 必须是有效的 HTTP(S) URL 前缀（不含空白、查询串或片段）" >&2
+          exit 1
+        fi
+        CUSTOM_PROXY="${CUSTOM_PROXY%/}/"
+      fi
+      ;;
+    :) echo "❌ 参数 -$OPTARG 缺少值" >&2; exit 1 ;;
+    *) echo "❌ 无效参数: -$OPTARG" >&2; exit 1 ;;
   esac
 done
+shift $((OPTIND - 1))
+if (( $# > 0 )); then
+  echo "❌ 无效参数: $1" >&2
+  exit 1
+fi
 
 # 设置代理前缀（用于 GitHub 下载加速）
-if [[ "$PROXY_MODE" == "4" ]]; then
-  PROXY_PREFIX="https://proxy.199028.xyz/"
-elif [[ "$PROXY_MODE" == "6" ]]; then
-  PROXY_PREFIX="http://[240b:4000:93:de01:ffff:c725:3c65:47ff]:5000/"
+case "$PROXY_MODE" in
+  4) PROXY_PREFIX="$DEFAULT_PROXY_PREFIX" ;;
+  6) PROXY_PREFIX="http://[240b:4000:93:de01:ffff:c725:3c65:47ff]:5000/" ;;
+  "") ;;
+  *) echo "❌ 无效 -p 参数: $PROXY_MODE (仅支持 4 或 6)" >&2; exit 1 ;;
+esac
+# 自定义地址始终优先，不受参数顺序影响
+if [[ -n "$CUSTOM_PROXY" ]]; then
+  PROXY_PREFIX="$CUSTOM_PROXY"
 fi
-# 带 -p 时，强制 GitHub 相关下载只走代理，不做直连回退
-if [[ -n "$PROXY_MODE" ]]; then
-  if [[ -z "$PROXY_PREFIX" ]]; then
-    echo "❌ 无效 -p 参数: $PROXY_MODE (仅支持 4 或 6)"
-    exit 1
-  fi
+# 带 -p / -4 / -6 / --proxy 时，GitHub 请求只走代理，不做直连回退
+if [[ -n "$PROXY_PREFIX" ]]; then
   FORCE_PROXY_GITHUB=1
 fi
 init_source_mode

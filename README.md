@@ -214,6 +214,25 @@ curl -fsSL https://raw.githubusercontent.com/NiuStar/network-panel/refs/heads/ma
 - 如需手动安装，可使用 `scripts/install_server.sh`（服务器有 Node/npm 时将自动构建前端并安装到 `public/`）
 
 ---
+## 节点安装脚本的 GitHub 代理
+
+节点使用根目录 `install.sh`（不是面板安装脚本 `panel_install.sh`）：
+
+```bash
+# 默认代理地址：https://proxy.yjkj02.com/（-4 等价于 -p 4）
+bash install.sh -a 面板地址:端口 -s 节点密钥 -p 4
+
+# 自定义代理，无需同时传 -p 4；也支持 --proxy=https://your-proxy.example/
+bash install.sh -a 面板地址:端口 -s 节点密钥 --proxy https://your-proxy.example/
+```
+
+- `--proxy URL` 是 GitHub 下载加速 URL 前缀，不是 HTTP/SOCKS 转发代理；请求格式为 `代理前缀/https://github.com/...`。
+- 自定义地址优先于 `-p 4` / `-p 6`，与参数顺序无关；省略末尾 `/` 时自动补齐。
+- 显式指定 `-p`、`-4`、`-6` 或 `--proxy` 后，GitHub API、下载及探测只走所选代理，不回退 GitHub 直连；面板和静态源仍按原下载源模式参与回退。
+- 不传代理参数时保持原来的默认直连行为；`-m cn` 的默认代理也更新为 `https://proxy.yjkj02.com/`，仍保留原有直连回退。
+- `bash install.sh --help` 查看参数说明。
+
+---
 ## Agent 自升级
 
 - 行为：Agent 建立 WS 连接 `/system-info` 时会携带自身版本（如 `go-agent-1.0.1`）。后端的期望 Agent 版本与后端版本完全一致（不再支持自定义环境变量覆盖）。若不一致会下发 `UpgradeAgent` 指令触发在线升级。

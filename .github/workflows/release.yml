@@ -1,0 +1,144 @@
+name: Release Network Panel
+
+on:
+  push:
+    tags:
+      - 'v2.*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Verify version, installer and backend
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          grep -F "var serverVersion = \"$version\"" golang-backend/internal/app/version/version.go
+          grep -F "var versionBase = \"$version\"" golang-backend/cmd/flux-agent/main.go
+          bash -n install.sh scripts/build_flux_agent_all.sh scripts/build_server_all.sh publish.sh
+          python3 scripts/test_install_proxy.py
+          python3 scripts/test_shadowrocket_rule_guidance.py
+          go test -p 2 ./golang-backend/...
+          go vet -p 2 ./golang-backend/...
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build frontend
+        working-directory: vite-frontend-v2
+        run: npm install --legacy-peer-deps --no-audit --no-fund && npm run build
+      - name: Package frontend
+        run: |
+          mkdir -p release-assets
+          (cd vite-frontend-v2/dist && zip -qr ../../release-assets/frontend-dist.zip .)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend
+          path: release-assets/*
+          if-no-files-found: error
+
+  binaries:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: core
+            agents: linux_amd64 linux_arm64 linux_armv7
+            servers: linux_amd64 linux_arm64 linux_armv7
+          - group: x86
+            agents: linux_386 linux_amd64v3
+            servers: linux_386 linux_amd64v3
+          - group: other
+            agents: linux_loong64 linux_riscv64 linux_s390x
+            servers: linux_loong64 linux_riscv64 linux_s390x
+          - group: mips
+            agents: linux_mips64le_hardfloat linux_mips64_hardfloat linux_mipsle_hardfloat linux_mipsle_softfloat linux_mips_hardfloat linux_mips_softfloat
+            servers: ''
+          - group: legacy
+            agents: linux_armv5 linux_armv6 freebsd_386 freebsd_amd64
+            servers: ''
+          - group: desktop
+            agents: darwin_arm64 darwin_amd64 windows_386 windows_amd64 windows_amd64v3 windows_arm64
+            servers: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build binaries
+        env:
+          AGENT_TARGETS: ${{ matrix.agents }}
+          SERVER_TARGETS: ${{ matrix.servers }}
+        run: |
+          set -euo pipefail
+          bash scripts/build_flux_agent_all.sh
+          if [[ -n "$SERVER_TARGETS" ]]; then bash scripts/build_server_all.sh; fi
+          mkdir -p release-assets
+          cp golang-backend/public/flux-agent/* release-assets/
+          if [[ -n "$SERVER_TARGETS" ]]; then cp golang-backend/public/server/* release-assets/; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.group }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish:
+    needs: [verify, frontend, binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Package scripts, provenance and checksums
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          cp install.sh panel_install.sh release-assets/
+          cp scripts/install_server.sh release-assets/
+          git archive --format=tar.gz --prefix="network-panel-$RELEASE_TAG/" HEAD > "release-assets/network-panel-$RELEASE_TAG-source.tar.gz"
+          python3 - <<'PY'
+          import json, os, pathlib
+          root = pathlib.Path('release-assets')
+          binaries = [p for p in root.iterdir() if p.name.startswith(('flux-agent-', 'flux-agent2-', 'network-panel-server-'))]
+          assert len(binaries) == 56, len(binaries)
+          (root / 'BUILD-INFO.json').write_text(json.dumps({'tag': os.environ['RELEASE_TAG'], 'commit': os.environ['RELEASE_SHA']}, indent=2) + '\n')
+          PY
+          (cd release-assets && sha256sum * > ../SHA256SUMS)
+          mv SHA256SUMS release-assets/
+          chmod +x release-assets/flux-agent*-linux-amd64
+          release-assets/flux-agent-linux-amd64 -v | grep -Fx "go-agent-${RELEASE_TAG#v}"
+          release-assets/flux-agent2-linux-amd64 -v | grep -Fx "go-agent2-${RELEASE_TAG#v}"
+      - name: Create draft, upload and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" --verify-tag --draft --title "Network Panel $RELEASE_TAG" --notes-file "docs/releases/$RELEASE_TAG.md"
+          gh release upload "$RELEASE_TAG" release-assets/*
+          gh release edit "$RELEASE_TAG" --draft=false --latest

@@ -41,6 +41,10 @@ TARGETS=(
   windows_amd64v3
   windows_arm64
 )
+# Optional whitespace-separated subset for parallel release jobs.
+if [[ -n "${AGENT_TARGETS:-}" ]]; then
+  read -r -a TARGETS <<< "$AGENT_TARGETS"
+fi
 
 build_one() {
   local target="$1"

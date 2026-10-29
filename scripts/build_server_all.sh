@@ -24,6 +24,10 @@ TARGETS=(
   linux_s390x
   linux_loong64
 )
+# Optional whitespace-separated subset for parallel release jobs.
+if [[ -n "${SERVER_TARGETS:-}" ]]; then
+  read -r -a TARGETS <<< "$SERVER_TARGETS"
+fi
 
 build_one() {
   local target="$1"

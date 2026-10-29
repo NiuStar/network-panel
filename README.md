@@ -1,5 +1,9 @@
 # network-panel 组网面板（叮当猫组网面板）
 
+## v2.0.0.30：安装代理可配置
+
+`install.sh -p 4`（或 `-4`）默认使用 `https://proxy.yjkj02.com/`，新增 `--proxy URL` 自定义 GitHub 加速前缀。版本与发布边界见 [v2.0.0.30 发布说明](docs/releases/v2.0.0.30.md)。
+
 ## AnyTLS 公网 IP SNI 修复（2026-10-25）
 
 已发布源码 `4248fff4…` 和 `linux/amd64` 不可变镜像 `24802117/network-panel:sni-4248fff4e94c@sha256:ff2819c100f87692c4660d29db771b6a399d16d5346aa0f6329976a9931dd92e`；只对有效严格整叶 pin 的托管公网 IP 省略自动合成的域名 SNI，保留其他端点默认名称和外部显式 SNI。`latest`、生产入口及运行 agent 未改动。验证及第三方原生兼容等未关闭边界见 [发布核验说明](docs/releases/anytls-sni-2026-10-25.md)。

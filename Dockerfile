@@ -6,7 +6,7 @@ FROM scratch AS fe_local
 COPY vite-frontend-v2/dist /fe/dist
 
 # Option B: build inside Docker
-FROM node:22-alpine AS fe_build
+FROM --platform=$BUILDPLATFORM node:22-alpine AS fe_build
 WORKDIR /fe
 COPY vite-frontend-v2/package*.json ./
 RUN npm install --legacy-peer-deps --no-audit --no-fund
@@ -64,7 +64,6 @@ COPY --from=app_build /app/launcher /app/launcher
 COPY --from=fe_build /fe/dist /app/public
 
 # 发布多架构 agent
-RUN mkdir -p /app/public/flux-agent
 COPY --from=agent_build /app/flux-agent-linux-amd64   /app/public/flux-agent/flux-agent-linux-amd64
 COPY --from=agent_build /app/flux-agent-linux-arm64   /app/public/flux-agent/flux-agent-linux-arm64
 COPY --from=agent_build /app/flux-agent-linux-armv7   /app/public/flux-agent/flux-agent-linux-armv7
@@ -75,7 +74,6 @@ COPY --from=agent_build /app/flux-agent2-linux-armv7  /app/public/flux-agent/flu
 # serve install.sh from the backend container
 COPY install.sh /app/install.sh
 # ship easytier assets for download by agents
-RUN mkdir -p /app/easytier
 COPY easytier/ /app/easytier/
 
 EXPOSE 6365
@@ -93,7 +91,6 @@ COPY --from=app_build /app/launcher /app/launcher
 COPY --from=fe_local /fe/dist /app/public
 
 # 发布多架构 agent
-RUN mkdir -p /app/public/flux-agent
 COPY --from=agent_build /app/flux-agent-linux-amd64   /app/public/flux-agent/flux-agent-linux-amd64
 COPY --from=agent_build /app/flux-agent-linux-arm64   /app/public/flux-agent/flux-agent-linux-arm64
 COPY --from=agent_build /app/flux-agent-linux-armv7   /app/public/flux-agent/flux-agent-linux-armv7
@@ -103,7 +100,6 @@ COPY --from=agent_build /app/flux-agent2-linux-armv7  /app/public/flux-agent/flu
 
 COPY install.sh /app/install.sh
 # ship easytier assets for download by agents
-RUN mkdir -p /app/easytier
 COPY easytier/ /app/easytier/
 
 EXPOSE 6365

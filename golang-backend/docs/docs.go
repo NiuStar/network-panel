@@ -2046,10 +2046,10 @@ const docTemplate = `{
                 "tags": [
                     "version"
                 ],
-                "summary": "升级后端（并可返回重启模式）",
+                "summary": "启动原生事务升级（202 仅表示受理）",
                 "parameters": [
                     {
-                        "description": "代理前缀",
+                        "description": "固定发布标签与可选下载代理",
                         "name": "data",
                         "in": "body",
                         "schema": {
@@ -2058,14 +2058,17 @@ const docTemplate = `{
                     }
                 ],
                 "responses": {
-                    "200": {
-                        "description": "OK",
+                    "202": {
+                        "description": "Accepted",
                         "schema": {
                             "$ref": "#/definitions/controller.SwaggerVersionUpgradeResp"
                         }
                     }
                 }
             }
+        },
+        "/api/v1/version/upgrade-status": {
+            "get": {"summary": "查询升级事务状态（仅 COMMITTED 成功）", "tags": ["version"], "parameters": [{"name":"id","in":"query","required":true,"type":"string"}], "responses": {"200": {"description":"OK", "schema":{"$ref":"#/definitions/controller.SwaggerVersionUpgradeResp"}}}}
         },
         "/system-info": {
             "get": {
@@ -3181,10 +3184,12 @@ const docTemplate = `{
         },
         "controller.SwaggerVersionUpgradeReq": {
             "type": "object",
+            "required": ["tag"],
             "properties": {
+                "tag": {"type": "string", "example": "v2.0.0.31"},
                 "proxyPrefix": {
                     "type": "string",
-                    "example": "https://ghproxy.com"
+                    "example": "https://proxy.yjkj02.com/"
                 }
             }
         },
@@ -3198,21 +3203,25 @@ const docTemplate = `{
                 "data": {
                     "type": "object",
                     "properties": {
-                        "created": {},
+                        "id": {
+                            "type": "string"
+                        },
+                        "state": {
+                            "type": "string",
+                            "example": "QUEUED"
+                        },
+                        "tag": {
+                            "type": "string"
+                        },
+                        "error": {
+                            "type": "string"
+                        },
                         "errors": {
                             "type": "array",
                             "items": {
                                 "type": "string"
                             }
-                        },
-                        "logs": {
-                            "type": "array",
-                            "items": {
-                                "type": "string"
-                            }
-                        },
-                        "restart": {},
-                        "tag": {}
+                        }
                     }
                 },
                 "msg": {

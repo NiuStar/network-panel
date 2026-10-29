@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { Button } from "@heroui/button";
 import {
@@ -21,6 +21,8 @@ import { toast } from "react-hot-toast";
 import { Logo } from "@/components/icons";
 import { updatePassword, getVersionInfo, getLatestVersionInfo } from "@/api";
 import { safeLogout } from "@/utils/logout";
+import { createUpgradeController } from "@/utils/upgrade-transaction";
+import { createUpgradeRequest } from "@/utils/upgrade-request";
 import { siteConfig, getCachedConfig } from "@/config/site";
 
 interface MenuItem {
@@ -63,6 +65,23 @@ export default function AdminLayout({
   const [serverVersion, setServerVersion] = useState<string>("");
   const [latestTag, setLatestTag] = useState<string>("");
   const [upgradeBusy, setUpgradeBusy] = useState(false);
+  const [deployment, setDeployment] = useState<string>("");
+  const [onlineUpgradeSupported, setOnlineUpgradeSupported] = useState<boolean | undefined>();
+  const [onlineUpgradeReason, setOnlineUpgradeReason] = useState("");
+  const upgradeController = useRef<ReturnType<typeof createUpgradeController> | null>(null);
+  const upgradeLocked = useRef(false);
+
+  useEffect(() => {
+    const cancel = () => {
+      upgradeController.current?.cancel();
+      upgradeController.current = null;
+    };
+    window.addEventListener("pagehide", cancel);
+    return () => {
+      window.removeEventListener("pagehide", cancel);
+      cancel();
+    };
+  }, []);
   const [upgradeLog, setUpgradeLog] = useState<string[]>([]);
   const [upgradeLogOpen, setUpgradeLogOpen] = useState(false);
   // 菜单显示开关（来自网站配置）
@@ -293,6 +312,9 @@ export default function AdminLayout({
       .then((res: any) => {
         if (res.code === 0 && res.data) {
           setServerVersion(res.data.server || "");
+          setDeployment(res.data.deployment || "");
+          setOnlineUpgradeSupported(res.data.onlineUpgradeSupported);
+          setOnlineUpgradeReason(res.data.onlineUpgradeReason || "");
           setShowCenter(
             res.data.centerOn === true || res.data.center === "true",
           );
@@ -325,73 +347,57 @@ export default function AdminLayout({
   const [upgradeDoneFlag, setUpgradeDoneFlag] = useState(false);
 
   const doUpgrade = async () => {
-    setUpgradeLog(["开始升级..."]);
+    if (upgradeLocked.current || upgradeBusy) return;
     setUpgradeLogOpen(true);
-    setUpgradeBusy(true);
     setUpgradeDoneFlag(false);
-    let upgradeCompleted = false;
-
+    if (deployment === "docker" || onlineUpgradeSupported === false) {
+      setUpgradeLog([
+        deployment === "docker"
+          ? "Docker 部署请在宿主机拉取新版镜像并重建容器，保留原有数据卷和配置；不能在容器内替换二进制。"
+          : "此部署不支持面板在线升级。",
+        onlineUpgradeReason,
+      ].filter(Boolean));
+      return;
+    }
+    upgradeLocked.current = true;
+    setUpgradeBusy(true);
+    setUpgradeLog(["提交事务升级请求（仅一次）..."]);
+    const controller = createUpgradeController();
+    upgradeController.current = controller;
     try {
-      const token = localStorage.getItem("token") || "";
-      const headers: Record<string, string> = { Accept: "text/event-stream" };
-
-      if (token) headers["Authorization"] = token;
-      const res = await fetch("/api/v1/version/upgrade-stream", {
-        method: "GET",
-        headers,
-        credentials: "include",
+      const result = await controller.run({
+        tag: latestTag,
+        request: createUpgradeRequest(),
+        onProgress: (status) => {
+          setUpgradeLog([
+            `事务 ID: ${status.id || "尚未取得"}`,
+            `状态: ${status.state}`,
+            ...(Array.isArray(status.logs) ? status.logs : []),
+            ...(status.error ? [status.error] : []),
+            ...(Array.isArray(status.errors) ? status.errors : []),
+            ...(status.state === "ROLLED_BACK" ? ["升级失败，后端已确认回滚到原版本。"] : []),
+            ...(["ROLLBACK_FAILED", "RECOVERY_REQUIRED"].includes(status.state) ? ["回滚未完成，需要人工恢复，请勿重复升级。"] : []),
+          ]);
+        },
       });
-
-      if (!res.ok) {
-        throw new Error(`获取升级日志失败: HTTP ${res.status}`);
+      if (upgradeController.current !== controller || result.state === "CANCELLED") return;
+      if (result.state === "COMMITTED") {
+        setUpgradeDoneFlag(true);
+        toast.success("升级事务已提交，健康检查通过");
+      } else {
+        toast.error(result.error || result.errors?.join("；") || `升级未成功：${result.state}（事务 ${result.id || "未知"}）`);
       }
-      if (!res.body) throw new Error("无法获取升级日志流");
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder("utf-8");
-      const appendLog = (line: string) =>
-        setUpgradeLog((prev) => [...prev, line]);
-      const pump = async () => {
-        while (true) {
-          const { value, done } = await reader.read();
-
-          if (done) break;
-          const chunk = decoder.decode(value, { stream: true });
-
-          chunk.split("\n\n").forEach((blk) => {
-            const line = blk.trim();
-
-            if (!line.startsWith("data:")) return;
-            const payload = line.slice(5).trim();
-
-            try {
-              const evt = JSON.parse(payload);
-
-              if (evt.event === "log") appendLog(evt.data);
-              if (evt.event === "done") {
-                appendLog("升级完成");
-                upgradeCompleted = true;
-              }
-              if (evt.event === "error") {
-                appendLog("错误: " + evt.data);
-                toast.error(evt.data);
-              }
-            } catch {
-              appendLog(payload);
-            }
-          });
-        }
-      };
-
-      await pump();
-      toast.success(`升级流程已结束`);
-    } catch (e: any) {
-      const msg = e?.message || "升级失败";
-
-      setUpgradeLog((prev) => [...prev, `升级失败: ${msg}`]);
-      toast.error(msg);
+      // Unconfirmed acknowledgement/status must not invite a second POST.
+      upgradeLocked.current = result.state === "UNCONFIRMED";
+    } catch {
+      if (upgradeController.current !== controller) return;
+      setUpgradeLog((prev) => [...prev, "升级结果未确认，请检查服务及事务状态，勿重复提交。"]);
+      toast.error("升级结果未确认");
     } finally {
-      setUpgradeBusy(false);
-      setUpgradeDoneFlag(upgradeCompleted);
+      if (upgradeController.current === controller) {
+        upgradeController.current = null;
+        setUpgradeBusy(false);
+      }
     }
   };
 
@@ -664,10 +670,11 @@ export default function AdminLayout({
               <Button
                 color="warning"
                 isLoading={upgradeBusy}
+                isDisabled={upgradeBusy || upgradeLocked.current}
                 size="sm"
                 onPress={doUpgrade}
               >
-                升级到 {latestTag}
+                {deployment === "docker" ? "Docker 镜像升级说明" : onlineUpgradeSupported === false ? "外部升级说明" : `事务升级到 ${latestTag}`}
               </Button>
             )}
             <Button

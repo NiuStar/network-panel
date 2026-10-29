@@ -11,6 +11,7 @@ import (
 	"network-panel/golang-backend/docs"
 	"network-panel/golang-backend/internal/app/controller"
 	"network-panel/golang-backend/internal/app/middleware"
+	"network-panel/golang-backend/internal/panelupgrade"
 
 	"github.com/gin-gonic/gin"
 )
@@ -18,6 +19,17 @@ import (
 func RegisterRoutes(r *gin.Engine) {
 	// enable CORS and preflight handling globally
 	r.Use(middleware.CORS())
+	r.Use(func(c *gin.Context) {
+		if panelupgrade.Maintenance() {
+			switch c.Request.URL.Path {
+			case "/health", "/api/v1/version", "/api/v1/version/upgrade-status", "/api/v1/version/upgrade-stream":
+			default:
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"code": -1, "msg": "UPGRADE_VERIFYING: 面板升级验证中，业务和节点连接暂时关闭"})
+				return
+			}
+		}
+		c.Next()
+	})
 	// health
 	r.GET("/health", func(c *gin.Context) { c.String(200, "ok") })
 	// serve install script for nodes
@@ -278,6 +290,7 @@ func RegisterRoutes(r *gin.Engine) {
 	api.GET("/version", controller.Version)
 	api.GET("/version/latest", controller.VersionLatest)
 	api.POST("/version/upgrade", middleware.RequireRole(), controller.VersionUpgrade)
+	api.GET("/version/upgrade-status", middleware.RequireRole(), controller.VersionUpgradeStatus)
 	api.GET("/version/upgrade-stream", middleware.RequireRole(), controller.VersionUpgradeStream)
 
 	// public share (read-only views)

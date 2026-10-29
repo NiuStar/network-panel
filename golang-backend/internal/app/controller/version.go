@@ -1,13 +1,16 @@
 package controller
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"network-panel/golang-backend/internal/app/response"
 	appver "network-panel/golang-backend/internal/app/version"
+	"network-panel/golang-backend/internal/panelupgrade"
 )
 
 // Version 获取后端版本信息
@@ -27,12 +30,27 @@ func Version(c *gin.Context) {
 	// Expected agent versions strictly follow backend version
 	agentVer := "go-agent-" + base
 	agent2Ver := "go-agent2-" + base
+	deployment := "native"
+	if panelupgrade.Container() {
+		deployment = "docker"
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+	supportErr := panelupgrade.Supported(ctx)
+	reason := ""
+	if supportErr != nil {
+		reason = supportErr.Error()
+	}
 	c.JSON(http.StatusOK, response.Ok(map[string]any{
-		"server":   serverVer,
-		"agent":    agentVer,
-		"agent2":   agent2Ver,
-		"center":   os.Getenv("network-panel-center"),
-		"centerOn": centerEnabled(),
+		"deployment":             deployment,
+		"onlineUpgradeSupported": supportErr == nil,
+		"onlineUpgradeReason":    reason,
+		"server":                 serverVer,
+		"processId":              os.Getpid(),
+		"agent":                  agentVer,
+		"agent2":                 agent2Ver,
+		"center":                 os.Getenv("network-panel-center"),
+		"centerOn":               centerEnabled(),
 	}))
 }
 

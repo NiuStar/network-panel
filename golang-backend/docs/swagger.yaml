@@ -742,9 +742,13 @@ definitions:
         type: integer
     type: object
   controller.SwaggerVersionUpgradeReq:
+    required: [tag]
     properties:
+      tag:
+        type: string
+        example: v2.0.0.31
       proxyPrefix:
-        example: https://ghproxy.com
+        example: https://proxy.yjkj02.com/
         type: string
     type: object
   controller.SwaggerVersionUpgradeResp:
@@ -754,17 +758,19 @@ definitions:
         type: integer
       data:
         properties:
-          created: {}
+          id:
+            type: string
+          state:
+            type: string
+            example: QUEUED
+          error:
+            type: string
           errors:
             items:
               type: string
             type: array
-          logs:
-            items:
-              type: string
-            type: array
-          restart: {}
-          tag: {}
+          tag:
+            type: string
         type: object
       msg:
         example: 操作成功
@@ -2205,7 +2211,7 @@ paths:
       consumes:
       - application/json
       parameters:
-      - description: 代理前缀
+      - description: 固定发布标签与可选下载代理
         in: body
         name: data
         schema:
@@ -2213,13 +2219,28 @@ paths:
       produces:
       - application/json
       responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/controller.SwaggerVersionUpgradeResp'
+      summary: 启动原生事务升级（202 仅表示受理）
+      tags:
+      - version
+  /api/v1/version/upgrade-status:
+    get:
+      summary: 查询升级事务状态（仅 COMMITTED 成功）
+      tags: [version]
+      parameters:
+      - name: id
+        in: query
+        type: string
+        required: true
+      responses:
         "200":
           description: OK
           schema:
             $ref: '#/definitions/controller.SwaggerVersionUpgradeResp'
-      summary: 升级后端（并可返回重启模式）
-      tags:
-      - version
+
   /system-info:
     get:
       description: type=1 携带 secret、version 上报节点心跳；type=0 作为管理端订阅节点状态

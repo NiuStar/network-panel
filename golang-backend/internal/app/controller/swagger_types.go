@@ -126,11 +126,11 @@ type SwaggerVersionLatestResp struct {
 type SwaggerVersionUpgradeResp struct {
 	BaseSwaggerResp
 	Data struct {
-		Tag     interface{} `json:"tag"`
-		Created interface{} `json:"created"`
-		Logs    []string    `json:"logs"`
-		Restart interface{} `json:"restart,omitempty"`
-		Errors  []string    `json:"errors,omitempty"`
+		ID     string   `json:"id"`
+		State  string   `json:"state" example:"QUEUED"`
+		Tag    string   `json:"tag"`
+		Error  string   `json:"error,omitempty"`
+		Errors []string `json:"errors,omitempty"`
 	} `json:"data"`
 }
 
@@ -166,7 +166,8 @@ type SwaggerConfigUpdateSingle struct {
 
 // SwaggerVersionUpgradeReq 版本升级请求
 type SwaggerVersionUpgradeReq struct {
-	ProxyPrefix string `json:"proxyPrefix" example:"https://ghproxy.com"`
+	Tag         string `json:"tag" example:"v2.0.0.31"`
+	ProxyPrefix string `json:"proxyPrefix,omitempty" example:"https://proxy.yjkj02.com/"`
 }
 
 // Common simple request structs

@@ -38,6 +38,7 @@ jobs:
           mkdir -m 700 "$TMPDIR"
           go test -p 2 ./golang-backend/...
           go vet -p 2 ./golang-backend/...
+          go mod vendor
 
   frontend:
     runs-on: ubuntu-latest

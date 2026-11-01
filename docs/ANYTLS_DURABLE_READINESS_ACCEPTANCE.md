@@ -54,6 +54,24 @@ The isolated native smoke receipt's `anonymous_node_list_http` field is a histor
 
 No production cutover or image release is implied by this review. After this code branch is published, the next release gate is isolated MySQL/immutable-image acceptance, followed by explicit production-switch confirmation and authenticated post-cutover reconnect/subscription/forwarding readback.
 
+## Isolated MySQL 5.7 and image acceptance
+
+Production was read-only identified as MySQL **5.7.44 / REPEATABLE-READ**. The builder `10.126.126.3` ran the same MySQL image ID `sha256:4bc6bc963e6d8443453676cae56536f4b8156d78bae03c0145cbe47c2aad73bb` on a private internal Docker network, with fresh QA-only databases/accounts. No production DB or state was copied.
+
+Accepted implementation commit: `7d423770b5af9d5a868f7f522bdb2cf7c6745ab0`. All 101 production source files were compared with the independent reviewed manifest. The candidate server binary SHA256 is `1860dc2284dbd2243424f399759861d7b9a9369ba796a713a80c2f7fa57cbe81`.
+
+The backend-only **amd64 QA image**, built on the exact previously released `.32` base, is `network-panel-readiness-qa:7d423770`, image ID `sha256:caf3c07843b12308749903babbc35fe46331b182b43e9391f1f84b04744988b1`. It has not been registry-published and is not a new version Release or a multi-architecture release. Frontend, install script and both amd64 downloadable Agent files remain byte-identical to the base. The inherited downloadable Agent bytes differ from the independently approved formal GitHub asset; this QA does not approve them for node replacement. Production auto-upgrade remains outside this acceptance.
+
+Executed gates:
+
+- Actual candidate MySQL startup/schema migration, anonymous subscription HTTP 401, `/api/v1/version`, `/flow/test`, `/app/`, and `/install.sh` HTTP checks passed. State table initially had zero rows, not fabricated readiness.
+- Three fresh, empty QA databases each passed actual InnoDB acceptance: diagnostic row-cap/time deletion and complete audit deletion, retained invalidation, freshness/pin/process refusal, real held-row-lock release, final-write failure transaction rollback, eight independent OS writer processes/pools, stale-writer refusal, exact row counts and close/reopen persistence. No selected acceptance test was skipped.
+- A separate actual candidate process passed authenticated WebSocket → MySQL durable state → real HTTP Shadowrocket export. After deleting all diagnostic rows, strict pinned export remained available. Reload failure and replacement boot invalidated export; deleting their diagnostics did not clear invalidation, and an old-process confirmation could not restore readiness. This uses a dummy Agent and generated fixture CA only, not real production nodes or public forwarding.
+- Initial candidate HTTP probe incorrectly used a host-published port on an internal Docker network; retained failure was corrected to the private container IP. Initial WS fixture omitted the DB-backed certificate feature switch (an environment variable does not enable it); the failed attempt remains retained, and corrected acceptance used a new DB and container. Neither correction changed production code.
+- All owned QA panel and MySQL containers were stopped after evidence collection; data and stopped containers were retained, not deleted. Unrelated running container IDs/images were checked unchanged. Builder free disk remained approximately 2.57 GB; no global prune or package install occurred.
+
+Evidence is retained locally in `/workspace/network-panel-readiness-mysql-qa/final-builder-readback.json` (SHA256 `b9a57659919717315273551a00743eaeb2babe78d64547e074459b9cbced256a`) and on builder under `/workspace/np-readiness-qa-7d423770/`. The three DB test logs and corrected WS log are embedded in that readback with individual SHA checks. Earlier statements that MySQL was unexecuted describe the source-review stage; these new executions close that specific dialect/runtime gate. Race-detector and cross-controller failed-write-quarantine limitations remain unchanged.
+
 ## Remaining production state
 
 At diagnosis nodes20/21 have matching fresh installed checks but their boot logs are gone. No production repair, certificate migration, readiness-row insertion or restart is performed by this code task. Production subscriptions remain unverified until a separately approved rollout and authenticated reconnect/readback.

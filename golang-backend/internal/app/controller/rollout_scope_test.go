@@ -119,7 +119,7 @@ func TestAnyTLSCertRolloutScopeBoundaries(t *testing.T) {
 	}
 	dbpkg.DB = db
 	t.Cleanup(func() { dbpkg.DB = oldDB })
-	if err := db.AutoMigrate(&model.Node{}, &model.AnyTLSSetting{}, &model.ViteConfig{}, &model.AnyTLSCAAuthority{}, &model.AnyTLSNodeLeaf{}, &model.NodeAnyTLSCertLog{}); err != nil {
+	if err := db.AutoMigrate(&model.Node{}, &model.AnyTLSSetting{}, &model.ViteConfig{}, &model.AnyTLSCAAuthority{}, &model.AnyTLSNodeLeaf{}, &model.AnyTLSRuntimeState{}, &model.NodeAnyTLSCertLog{}); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("ANYTLS_CERT_NODE_IDS", "")

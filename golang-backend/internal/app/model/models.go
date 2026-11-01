@@ -245,6 +245,26 @@ type AnyTLSNodeLeaf struct {
 
 func (AnyTLSNodeLeaf) TableName() string { return "anytls_node_leaf" }
 
+// AnyTLSRuntimeState is bounded security state, not diagnostic history. Each
+// event retains its server receive order (time_ms, audit id), never raw data.
+// Process identities are SHA-256 digests, not arbitrary agent-supplied strings.
+type AnyTLSRuntimeEvent struct {
+	TimeMs      int64
+	ID          int64
+	ProcessHash string `gorm:"size:64"`
+}
+
+type AnyTLSRuntimeState struct {
+	NodeID      int64              `gorm:"primaryKey;autoIncrement:false;column:node_id"`
+	Boot        AnyTLSRuntimeEvent `gorm:"embedded;embeddedPrefix:boot_"`
+	Installed   AnyTLSRuntimeEvent `gorm:"embedded;embeddedPrefix:installed_"`
+	Failure     AnyTLSRuntimeEvent `gorm:"embedded;embeddedPrefix:failure_"`
+	Fingerprint string             `gorm:"size:64"`
+	Confirmed   bool
+}
+
+func (AnyTLSRuntimeState) TableName() string { return "anytls_runtime_state" }
+
 // NodeAnyTLSCertLog stores dedicated AnyTLS certificate install/refresh logs from agent.
 type NodeAnyTLSCertLog struct {
 	ID      int64  `gorm:"primaryKey;column:id" json:"id"`

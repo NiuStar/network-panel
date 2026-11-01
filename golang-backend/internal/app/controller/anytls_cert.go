@@ -29,6 +29,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"network-panel/golang-backend/internal/anytlsreadiness"
 	"network-panel/golang-backend/internal/app/model"
 	"network-panel/golang-backend/internal/app/response"
 	"network-panel/golang-backend/internal/app/util"
@@ -128,7 +129,10 @@ func anyTLSCAForPin(nodeID int64, domain, pin string) string {
 	if err != nil {
 		return ""
 	}
-	revision := getAnyTLSCertRevision(nodeID)
+	revision, err := readAnyTLSCertRevision(nodeID)
+	if err != nil {
+		return ""
+	}
 	key := anyTLSLeafDBKey(nodeID, domain, revision, ca)
 	bundle, ok := readAnyTLSNodeCertDB(key, nodeID, domain, revision, ca, pemText)
 	if !ok || !strings.EqualFold(anyTLSCertPinFromPEM(bundle.CertPEM), pin) {
@@ -157,8 +161,12 @@ func anyTLSNodeCertPin(nodeID int64, domain string) string {
 	if err != nil {
 		return ""
 	}
-	key := anyTLSLeafDBKey(nodeID, domain, getAnyTLSCertRevision(nodeID), caCert)
-	bundle, ok := readAnyTLSNodeCertDB(key, nodeID, domain, getAnyTLSCertRevision(nodeID), caCert, caPEM)
+	revision, err := readAnyTLSCertRevision(nodeID)
+	if err != nil {
+		return ""
+	}
+	key := anyTLSLeafDBKey(nodeID, domain, revision, caCert)
+	bundle, ok := readAnyTLSNodeCertDB(key, nodeID, domain, revision, caCert, caPEM)
 	if !ok {
 		return ""
 	}
@@ -166,46 +174,8 @@ func anyTLSNodeCertPin(nodeID int64, domain string) string {
 	if pin == "" {
 		return ""
 	}
-	// Only publish a pin once the agent has reported the same installed leaf.
-	var log model.NodeAnyTLSCertLog
-	if err := dbpkg.DB.Where("node_id = ? AND step = ?", nodeID, "installed_check").Order("time_ms desc, id desc").First(&log).Error; err != nil {
-		return ""
-	}
-	if log.TimeMs > time.Now().UnixMilli()+5000 || time.Since(time.UnixMilli(log.TimeMs)) > 2*time.Minute {
-		return ""
-	}
-	var boot model.NodeAnyTLSCertLog
-	if err := dbpkg.DB.Where("node_id = ? AND step = ?", nodeID, "agent_boot").Order("time_ms desc, id desc").First(&boot).Error; err != nil || boot.TimeMs > log.TimeMs || (boot.TimeMs == log.TimeMs && boot.ID >= log.ID) {
-		return ""
-	}
-	var bootData struct {
-		ProcessID string `json:"processId"`
-	}
-	var confirmation struct {
-		ProcessID string `json:"processId"`
-	}
-	if json.Unmarshal([]byte(boot.Data), &bootData) != nil || json.Unmarshal([]byte(log.Data), &confirmation) != nil || bootData.ProcessID == "" || bootData.ProcessID != confirmation.ProcessID {
-		return ""
-	}
-	// A newer reload failure invalidates an older successful confirmation.
-	var newerFailure model.NodeAnyTLSCertLog
-	if err := dbpkg.DB.Where("node_id = ? AND step = ? AND (time_ms > ? OR (time_ms = ? AND id > ?))", nodeID, "reload_err", log.TimeMs, log.TimeMs, log.ID).Order("time_ms desc, id desc").First(&newerFailure).Error; err == nil {
-		return ""
-	}
-	// Agent boot marks the old process's runtime confirmation obsolete, even
-	// when the certificate itself has not changed.
-	var newerBoot model.NodeAnyTLSCertLog
-	if err := dbpkg.DB.Where("node_id = ? AND step = ? AND (time_ms > ? OR (time_ms = ? AND id > ?))", nodeID, "agent_boot", log.TimeMs, log.TimeMs, log.ID).First(&newerBoot).Error; err == nil {
-		return ""
-	}
-	var report struct {
-		Context   string `json:"context"`
-		Installed struct {
-			Fingerprint string `json:"fingerprintSha256"`
-		} `json:"installed"`
-		MatchLatest bool `json:"matchLatest"`
-	}
-	if json.Unmarshal([]byte(log.Data), &report) != nil || report.Context != "post_reload" || !report.MatchLatest || !strings.EqualFold(report.Installed.Fingerprint, pin) {
+	state, err := anytlsreadiness.Load(dbpkg.DB, nodeID)
+	if err != nil || !anytlsreadiness.Ready(state, pin, time.Now()) {
 		return ""
 	}
 	if _, err := tls.X509KeyPair([]byte(bundle.CertPEM), []byte(bundle.KeyPEM)); err != nil {
@@ -215,7 +185,7 @@ func anyTLSNodeCertPin(nodeID int64, domain string) string {
 	leaf, err := x509.ParseCertificate(block.Bytes)
 	if err != nil || leaf.VerifyHostname(domain) != nil || leaf.NotBefore.After(time.Now()) ||
 		leaf.NotAfter.Before(time.Now().Add(7*24*time.Hour)) ||
-		leaf.Subject.SerialNumber != strconv.FormatInt(getAnyTLSCertRevision(nodeID), 10) {
+		leaf.Subject.SerialNumber != strconv.FormatInt(revision, 10) {
 		return ""
 	}
 	if leaf.CheckSignatureFrom(caCert) != nil {
@@ -479,6 +449,24 @@ func ensureAnyTLSCertDomain(nodeID int64, raw string) (string, error) {
 		return existing, nil
 	}
 	return setAnyTLSCertDomain(nodeID, "")
+}
+
+// Missing revision configuration denotes the original revision zero; a DB
+// failure or malformed stored value must not silently select revision zero.
+func readAnyTLSCertRevision(nodeID int64) (int64, error) {
+	var cfg model.ViteConfig
+	err := dbpkg.DB.Where("name = ?", anyTLSCertRevisionKey(nodeID)).Order("id desc").First(&cfg).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	v, err := strconv.ParseInt(strings.TrimSpace(cfg.Value), 10, 64)
+	if err != nil || v < 0 {
+		return 0, fmt.Errorf("invalid AnyTLS certificate revision")
+	}
+	return v, nil
 }
 
 func getAnyTLSCertRevision(nodeID int64) int64 {

@@ -113,6 +113,7 @@ func Init() error {
 		&model.NodeRuntime{},
 		&model.NodeOpLog{},
 		&model.NodeAnyTLSCertLog{},
+		&model.AnyTLSRuntimeState{},
 		&model.AnyTLSCAAuthority{},
 		&model.AnyTLSNodeLeaf{},
 		&model.ForwardMidPort{},

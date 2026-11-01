@@ -82,7 +82,7 @@ func setupAnyTLSSNIScopeFixture(t *testing.T, separateExit bool) (*gorm.DB, mode
 	t.Setenv(anyTLSCertDirEnv, t.TempDir())
 	gin.SetMode(gin.TestMode)
 	db := setupTunnelExternalTestDB(t)
-	if err := db.AutoMigrate(&model.User{}, &model.Forward{}, &model.ExitSetting{}, &model.AnyTLSSetting{}, &model.AnyTLSPortEgress{}, &model.NodeAnyTLSCertLog{}, &model.AnyTLSCAAuthority{}, &model.AnyTLSNodeLeaf{}); err != nil {
+	if err := db.AutoMigrate(&model.User{}, &model.Forward{}, &model.ExitSetting{}, &model.AnyTLSSetting{}, &model.AnyTLSPortEgress{}, &model.NodeAnyTLSCertLog{}, &model.AnyTLSRuntimeState{}, &model.AnyTLSCAAuthority{}, &model.AnyTLSNodeLeaf{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&model.ViteConfig{Name: anyTLSCertEnabledDBKey, Value: "true"}).Error; err != nil {

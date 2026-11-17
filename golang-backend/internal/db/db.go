@@ -125,6 +125,9 @@ func Init() error {
 	); err != nil {
 		return err
 	}
+	if err := ensureNodeListIndexes(DB); err != nil {
+		return err
+	}
 	// Seed admin user
 	if err := cleanupAutoFilledTunnelOutIP(); err != nil {
 		return err

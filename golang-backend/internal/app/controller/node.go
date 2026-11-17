@@ -104,6 +104,31 @@ func NodeCreate(c *gin.Context) {
 	c.JSON(http.StatusOK, response.OkMsg("节点创建成功"))
 }
 
+// latestNodeBindLogs returns at most one matching full row per visible node.
+func latestNodeBindLogs(nodeIDs []int64, failed bool) ([]model.NodeOpLog, error) {
+	logs := []model.NodeOpLog{}
+	if len(nodeIDs) == 0 {
+		return logs, nil
+	}
+	cmd := "OpLog:gost_api"
+	messages := []string{"bind verify", "bind verify retry"}
+	if failed {
+		cmd = "OpLog:gost_api_err"
+		messages = []string{"bind verify failed, try normalize services"}
+	}
+	// One scalar index lookup per visible node, then fetch only that full row.
+	// Select before parsing: a latest NULL/invalid stdout must hide older success.
+	// Scalar ORDER BY/LIMIT works on MySQL 5.7 and SQLite (no window functions).
+	err := dbpkg.DB.Table("node").Select("bind_log.*").
+		Joins(`JOIN node_op_log AS bind_log ON bind_log.id = (
+			SELECT candidate.id FROM node_op_log AS candidate
+			WHERE candidate.node_id = node.id AND candidate.cmd = ? AND candidate.message IN ?
+			ORDER BY candidate.time_ms DESC, candidate.id DESC LIMIT 1
+		)`, cmd, messages).
+		Where("node.id IN ?", nodeIDs).Order("node.id ASC").Scan(&logs).Error
+	return logs, err
+}
+
 // NodeList 节点列表
 // @Summary 节点列表
 // @Tags node
@@ -356,11 +381,7 @@ func NodeList(c *gin.Context) {
 				anyTLSRuntimeMap[lg.NodeID] = agg
 			}
 		}
-		var bindLogs []model.NodeOpLog
-		_ = dbpkg.DB.Select("node_id, time_ms, message, stdout").
-			Where("node_id in ? AND cmd = ? AND message in ?", idList, "OpLog:gost_api", []string{"bind verify", "bind verify retry"}).
-			Order("time_ms desc").
-			Find(&bindLogs).Error
+		bindLogs, _ := latestNodeBindLogs(idList, false)
 		for _, lg := range bindLogs {
 			if _, exists := gostAPIBindMap[lg.NodeID]; exists {
 				continue
@@ -408,11 +429,7 @@ func NodeList(c *gin.Context) {
 			}
 		}
 		if len(missIDs) > 0 {
-			var bindErrLogs []model.NodeOpLog
-			_ = dbpkg.DB.Select("node_id, time_ms, message").
-				Where("node_id in ? AND cmd = ? AND message = ?", missIDs, "OpLog:gost_api_err", "bind verify failed, try normalize services").
-				Order("time_ms desc").
-				Find(&bindErrLogs).Error
+			bindErrLogs, _ := latestNodeBindLogs(missIDs, true)
 			for _, lg := range bindErrLogs {
 				if _, exists := gostAPIBindMap[lg.NodeID]; exists {
 					continue

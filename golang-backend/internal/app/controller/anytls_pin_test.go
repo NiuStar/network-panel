@@ -41,7 +41,7 @@ func TestAnyTLSNodePinRejectsOldOrOtherProcessConfirmation(t *testing.T) {
 	}
 	dbpkg.DB = db
 	t.Cleanup(func() { dbpkg.DB = oldDB })
-	if err := db.AutoMigrate(&model.ViteConfig{}, &model.AnyTLSCAAuthority{}, &model.AnyTLSNodeLeaf{}, &model.NodeAnyTLSCertLog{}); err != nil {
+	if err := db.AutoMigrate(&model.ViteConfig{}, &model.AnyTLSCAAuthority{}, &model.AnyTLSNodeLeaf{}, &model.AnyTLSRuntimeState{}, &model.NodeAnyTLSCertLog{}); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(anyTLSCertDirEnv, t.TempDir())
@@ -85,7 +85,7 @@ func TestAnyTLSLeafSharedAcrossControllerDirectories(t *testing.T) {
 	}
 	dbpkg.DB = db
 	t.Cleanup(func() { dbpkg.DB = oldDB })
-	if err := db.AutoMigrate(&model.ViteConfig{}, &model.AnyTLSCAAuthority{}, &model.AnyTLSNodeLeaf{}, &model.NodeAnyTLSCertLog{}); err != nil {
+	if err := db.AutoMigrate(&model.ViteConfig{}, &model.AnyTLSCAAuthority{}, &model.AnyTLSNodeLeaf{}, &model.AnyTLSRuntimeState{}, &model.NodeAnyTLSCertLog{}); err != nil {
 		t.Fatal(err)
 	}
 	firstDir, secondDir := t.TempDir(), t.TempDir()
@@ -120,7 +120,7 @@ func TestAnyTLSNodePinRequiresInstalledConfirmation(t *testing.T) {
 	}
 	dbpkg.DB = db
 	t.Cleanup(func() { dbpkg.DB = oldDB })
-	if err := db.AutoMigrate(&model.ViteConfig{}, &model.AnyTLSCAAuthority{}, &model.AnyTLSNodeLeaf{}, &model.NodeAnyTLSCertLog{}); err != nil {
+	if err := db.AutoMigrate(&model.ViteConfig{}, &model.AnyTLSCAAuthority{}, &model.AnyTLSNodeLeaf{}, &model.AnyTLSRuntimeState{}, &model.NodeAnyTLSCertLog{}); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(anyTLSCertDirEnv, t.TempDir())

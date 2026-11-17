@@ -570,7 +570,18 @@ const ExitServiceModal = memo(
     >([]);
     const [exitIfaces, setExitIfaces] = useState<string[]>([]);
     const [exitIfaceSel, setExitIfaceSel] = useState<string>("");
-    const lastLoadedExitTypeRef = useRef<string>("");
+    const [loadedExitOwner, setLoadedExitOwner] = useState("");
+    const [exitSession, setExitSession] = useState(0);
+    const exitSessionRef = useRef(0);
+    const exitWritePendingRef = useRef(false);
+    const exitLoadGenerationRef = useRef(0);
+    const exitOwnerRef = useRef({ open: false, nodeId: node?.id, type: "ss" });
+    if (exitOwnerRef.current.open !== isOpen || exitOwnerRef.current.nodeId !== node?.id) {
+      exitSessionRef.current += 1;
+    }
+    exitOwnerRef.current = { open: isOpen, nodeId: node?.id, type: exitType };
+    const currentExitOwner = `${exitSessionRef.current}:${node?.id}:${exitType}`;
+    const canSaveExit = isOpen && !!node?.id && !exitWritePendingRef.current && loadedExitOwner === currentExitOwner;
 
     const resetDefaults = useCallback(
       (type: string) => {
@@ -586,14 +597,22 @@ const ExitServiceModal = memo(
           setExitIfaces([]);
         }
       },
-      [node],
+      [node?.portSta],
     );
 
     const loadExitConfig = useCallback(
       async (type: string) => {
-        if (!node?.id) return;
+        if (!node?.id || !exitOwnerRef.current.open ||
+            exitOwnerRef.current.nodeId !== node.id ||
+            exitOwnerRef.current.type !== type || exitSessionRef.current !== exitSession) return;
+        const session = exitSession;
+        const generation = ++exitLoadGenerationRef.current;
+        const owner = `${session}:${node.id}:${type}`;
+        const isCurrent = () => exitSessionRef.current === session &&
+          exitLoadGenerationRef.current === generation && exitOwnerRef.current.open &&
+          exitOwnerRef.current.nodeId === node.id && exitOwnerRef.current.type === type;
+        setLoadedExitOwner("");
         resetDefaults(type);
-        lastLoadedExitTypeRef.current = type;
 
         let dPort = node.portSta || 10000;
         let dPwd = "";
@@ -606,6 +625,8 @@ const ExitServiceModal = memo(
 
         try {
           const res = await getExitNode(node.id, type);
+          if (!isCurrent()) return;
+          if (res.code !== 0) return;
 
           if (res.code === 0 && res.data) {
             const data = res.data as any;
@@ -632,8 +653,9 @@ const ExitServiceModal = memo(
               }
             }
           }
-        } catch {}
+        } catch { return; }
 
+        if (!isCurrent()) return;
         setExitPort(dPort);
         setExitPassword(dPwd);
         setExitMethod(dMethod);
@@ -642,8 +664,9 @@ const ExitServiceModal = memo(
         setExitRLimiter(dRLimiter);
         setExitMetaItems(dMetaItems);
         setExitIfaceSel(dIfaceSel);
+        setLoadedExitOwner(owner);
       },
-      [node, resetDefaults],
+      [node?.id, node?.portSta, resetDefaults, exitSession],
     );
 
     useEffect(() => {
@@ -651,8 +674,8 @@ const ExitServiceModal = memo(
       let active = true;
 
       setExitType("ss");
-      lastLoadedExitTypeRef.current = "";
-      void loadExitConfig("ss");
+      setExitSession(exitSessionRef.current);
+      setLoadedExitOwner("");
 
       (async () => {
         try {
@@ -672,15 +695,23 @@ const ExitServiceModal = memo(
       return () => {
         active = false;
       };
-    }, [isOpen, node, loadExitConfig]);
+    }, [isOpen, node?.id]);
 
     useEffect(() => {
-      if (!isOpen || !node) return;
-      if (lastLoadedExitTypeRef.current === exitType) return;
+      if (!isOpen || !node?.id || exitSession !== exitSessionRef.current) return;
       void loadExitConfig(exitType);
-    }, [exitType, isOpen, node, loadExitConfig]);
+      return () => { exitLoadGenerationRef.current += 1; };
+    }, [exitType, isOpen, node?.id, loadExitConfig, exitSession]);
 
     const submitExit = async () => {
+      if (!canSaveExit || exitSubmitting || exitWritePendingRef.current) return;
+      const submitNodeId = node?.id;
+      const submitType = exitType;
+      const submitSession = exitSessionRef.current;
+      const submitGeneration = exitLoadGenerationRef.current;
+      const ownsSubmit = () => exitOwnerRef.current.open &&
+        exitOwnerRef.current.nodeId === submitNodeId && exitOwnerRef.current.type === submitType &&
+        exitSessionRef.current === submitSession && exitLoadGenerationRef.current === submitGeneration;
       if (!node?.id) {
         toast.error("无效的节点");
 
@@ -696,13 +727,14 @@ const ExitServiceModal = memo(
 
         return;
       }
+      exitWritePendingRef.current = true;
       setExitSubmitting(true);
       try {
         let res;
 
         if (exitType === "anytls") {
           res = await setExitNode({
-            nodeId: node.id,
+            nodeId: submitNodeId,
             type: "anytls",
             port: exitPort,
             password: exitPassword,
@@ -717,7 +749,7 @@ const ExitServiceModal = memo(
             (metadata as any)["interface"] = exitIfaceSel;
           }
           res = await setExitNode({
-            nodeId: node.id,
+            nodeId: submitNodeId,
             type: "ss",
             port: exitPort,
             password: exitPassword,
@@ -729,6 +761,7 @@ const ExitServiceModal = memo(
           } as any);
         }
 
+        if (!ownsSubmit()) return;
         if (res.code === 0) {
           toast.success(exitType === "anytls" ? "AnyTLS 已创建/更新" : "出口服务已创建/更新");
           onOpenChange(false);
@@ -736,8 +769,9 @@ const ExitServiceModal = memo(
           toast.error(res.msg || "操作失败");
         }
       } catch (e) {
-        toast.error("网络错误");
+        if (ownsSubmit()) toast.error("网络错误");
       } finally {
+        exitWritePendingRef.current = false;
         setExitSubmitting(false);
       }
     };
@@ -962,6 +996,7 @@ const ExitServiceModal = memo(
                 </Button>
                 <Button
                   color="primary"
+                  isDisabled={!canSaveExit || exitSubmitting}
                   isLoading={exitSubmitting}
                   onPress={submitExit}
                 >

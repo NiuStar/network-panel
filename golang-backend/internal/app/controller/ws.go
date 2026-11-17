@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"fmt"
+	"network-panel/golang-backend/internal/anytlsreadiness"
 	"network-panel/golang-backend/internal/app/model"
 	"network-panel/golang-backend/internal/app/response"
 	"network-panel/golang-backend/internal/app/util"
@@ -584,7 +585,12 @@ func SystemInfoWS(c *gin.Context) {
 						Message: strings.TrimSpace(msg),
 						Data:    dataRaw,
 					}
-					_ = dbpkg.DB.Create(&rec).Error
+					if err := anytlsreadiness.Persist(dbpkg.DB, node.ID, rec); err != nil {
+						// Do not log payloads or database errors (which may contain data).
+						jlog(map[string]interface{}{"event": "anytls_runtime_persist_failed", "nodeId": node.ID})
+						_ = conn.Close()
+						continue // next read runs the normal disconnect cleanup
+					}
 				} else {
 					// Other JSON payload received (debug)
 					jlog(map[string]interface{}{"event": "node_unknown_json", "nodeId": node.ID, "payload": string(msg)})

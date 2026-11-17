@@ -361,7 +361,7 @@ func TestSubscriptionItems_AnyTLSExpandByForwardEgresses(t *testing.T) {
 		&model.ExitSetting{},
 		&model.AnyTLSSetting{},
 		&model.AnyTLSPortEgress{},
-		&model.NodeAnyTLSCertLog{},
+		&model.NodeAnyTLSCertLog{}, &model.AnyTLSRuntimeState{},
 		&model.AnyTLSCAAuthority{},
 		&model.AnyTLSNodeLeaf{},
 	); err != nil {
@@ -531,7 +531,7 @@ func TestSubscriptionItems_AnyTLSPortMappingEgressFallback(t *testing.T) {
 		&model.ExitSetting{},
 		&model.AnyTLSSetting{},
 		&model.AnyTLSPortEgress{},
-		&model.NodeAnyTLSCertLog{},
+		&model.NodeAnyTLSCertLog{}, &model.AnyTLSRuntimeState{},
 		&model.AnyTLSCAAuthority{},
 		&model.AnyTLSNodeLeaf{},
 	); err != nil {

@@ -113,6 +113,7 @@ func Init() error {
 		&model.NodeRuntime{},
 		&model.NodeOpLog{},
 		&model.NodeAnyTLSCertLog{},
+		&model.AnyTLSRuntimeState{},
 		&model.AnyTLSCAAuthority{},
 		&model.AnyTLSNodeLeaf{},
 		&model.ForwardMidPort{},
@@ -122,6 +123,9 @@ func Init() error {
 		&model.NQResult{},
 		&model.NodeDiagResult{},
 	); err != nil {
+		return err
+	}
+	if err := ensureNodeListIndexes(DB); err != nil {
 		return err
 	}
 	// Seed admin user
